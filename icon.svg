@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" role="img" aria-label="Harbor">
+  <!-- Harbor mark: a terminal pane sitting on a quay. The prompt chevron and
+       the underscore are drawn on the same 1.6px stroke grid the host uses for
+       its own icons; the quay is a single solid rule, which is what keeps the
+       mark readable at 16px where three strokes would blur into one. -->
+  <rect x="2.6" y="3.6" width="18.8" height="13.6" rx="3.4" stroke="#4176E6" stroke-width="1.6"/>
+  <path d="M7.4 8.2L10.3 10.4L7.4 12.6" stroke="#4176E6" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M12.2 12.7H16.4" stroke="#4176E6" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M2.6 20.4H21.4" stroke="#4176E6" stroke-width="1.6" stroke-linecap="round" opacity="0.45"/>
+</svg>

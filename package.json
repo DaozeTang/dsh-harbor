@@ -1,0 +1,110 @@
+{
+  "name": "dsh-harbor",
+  "version": "0.2.0",
+  "description": "Harbor — remote operations workbench for DeepSeek Harness: SSH terminals, remote files, port forwarding, batch runs, and session logs, side by side with the conversation.",
+  "icon": "./icon.svg",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "ssh",
+    "terminal",
+    "xterm",
+    "remote",
+    "sftp",
+    "tunnel"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./typert": {
+      "default": "./lib/typert.js"
+    },
+    "./remote": {
+      "default": "./lib/remote.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "icon.svg",
+    "locale/*.json",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "INSTALL.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "docs/assets/*.png",
+    "docs/product-guide.md",
+    "docs/ui-guidelines.md",
+    "docs/icon-pipeline.md",
+    "scripts/*.mjs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-credentials": ">=0.1.5-alpha.1",
+    "@deepseek-ai/dsh-storage-domain": ">=0.1.5-alpha.1",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-alpha.1",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.1.5-alpha.1"
+  },
+  "peerDependenciesMeta": {},
+  "dependencies": {
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-credentials": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.2-rc.1",
+    "@eslint/js": "^10.0.1",
+    "@noble/hashes": "1.8.0",
+    "@types/node": "26.2.0",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-search": "0.15.0",
+    "@xterm/xterm": "5.5.0",
+    "esbuild": "^0.28.2",
+    "zod": "^4.6.7",
+    "eslint": "^10.10.0",
+    "globals": "^17.12.0",
+    "jsdom": "^26.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "scripts": {
+    "gen:xterm-css": "node scripts/gen-xterm-css.mjs",
+    "build:host": "node scripts/build-host.mjs",
+    "build:client": "node scripts/build-client.mjs",
+    "build": "npm run gen:xterm-css && npm run build:host && npm run build:client",
+    "prepare": "npm run build",
+    "lint": "eslint .",
+    "test": "node --test $(node scripts/list-tests.mjs)",
+    "preview:ui": "node scripts/build-preview.mjs",
+    "theme:snapshot": "node scripts/sync-theme-snapshot.mjs",
+    "install:dev": "node scripts/install-dev.mjs",
+    "pack:release": "npm run build && node scripts/package-release.mjs"
+  },
+  "overrides": {
+    "minimatch": "^11.0.5"
+  }
+}

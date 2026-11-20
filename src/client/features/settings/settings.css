@@ -1,0 +1,67 @@
+/*
+ * Settings surface: the layout the shared sheet cannot express.
+ *
+ * The page is one scrolling column inside DSH's own Settings, so it must not
+ * become its own viewport the way the workbench shell does. Everything here is
+ * structure (flex, wrapping, grid spans); colour, radius and type stay with the
+ * kit and resolve through the same --hb-* tokens.
+ */
+
+.hb.hb-settings {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  gap: 14px;
+  overflow: visible;
+  background: transparent;
+  padding: 4px 2px 24px;
+}
+
+/* Card headers carry a count plus up to three actions; let them wrap instead of
+ * squeezing the title on a narrow settings column. */
+.hb-settings .hb-card__head { flex-wrap: wrap; }
+
+/* One density for the whole page: the settings column is narrow, and a card
+ * taller than the viewport hides its own controls. */
+.hb-settings .hb-card__body { padding: 14px 16px; gap: 12px; }
+.hb-settings .hb-row { padding: 8px 10px; }
+.hb-settings .hb-row__title,
+.hb-settings .hb-row__meta { flex-wrap: wrap; }
+
+/* A collapsible group header: one full-width row that owns its disclosure. */
+.hb .hb-settings-groups { display: flex; flex-direction: column; gap: 4px; }
+.hb .hb-settings-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--hb-radius-sm);
+  background: transparent;
+  color: var(--hb-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--hb-fast) var(--hb-ease);
+}
+.hb .hb-settings-group__head:hover { background: var(--hb-hover); }
+.hb .hb-settings-group__name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hb .hb-settings-list { display: flex; flex-direction: column; gap: 2px; }
+.hb .hb-settings-empty { padding: 4px 10px; }
+
+/* The group manager is a disclosure, not a second-level panel. */
+.hb .hb-settings-fold > summary { cursor: pointer; width: fit-content; }
+
+/* Form layout: a field that spans a two-column grid, growing inputs in a row. */
+.hb .hb-settings-span { grid-column: 1 / -1; }
+.hb .hb-settings-grow { flex: 1 1 160px; min-width: 0; }
+.hb .hb-settings-formrow { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+
+/* Long fingerprints and duplicate-name lists wrap instead of scrolling sideways. */
+.hb .hb-settings-fingerprint { overflow-wrap: anywhere; line-height: 1.6; }
+.hb .hb-settings-scroll { max-height: 280px; overflow: auto; }
+.hb .hb-settings-file { height: auto; padding: 4px 8px; }
+
+/* A switch's visible label lives in the row title, so its own label is plain. */
+.hb .hb-settings-toggle { cursor: pointer; }

@@ -1,0 +1,258 @@
+/*
+ * Files pane — the geometry the kit cannot express.
+ *
+ * The vocabulary (hb-crumbs, hb-filelist, hb-file, hb-section) is the shared
+ * sheet's; this file only adds what a 360–480px sidebar pane needs beyond a
+ * generic row: the mode column's container query, the drop-zone overlay, the
+ * scrollable search results, and the editor's fill height. Everything resolves
+ * through the tokens declared in ui/styles/app.css — no colours, radii or type
+ * sizes of our own.
+ */
+
+/* Pane skeleton: a fixed chrome stack above one scrolling listing. */
+.hb .hb-files {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  padding: 8px 10px 0;
+}
+
+/* Two toolbars: where you are, then what you can do there. */
+.hb .hb-files__bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  min-width: 0;
+}
+
+/* Action row only: a 280px sidebar cannot fit six controls and the filter on
+   one line, so the filter drops to a second row instead of being clipped. */
+.hb .hb-files__bar--actions { flex-wrap: wrap; row-gap: 6px; }
+
+.hb .hb-files__bar .hb-crumbs { flex: 1 1 auto; min-width: 72px; }
+.hb .hb-files__bar .hb-crumb { display: inline-flex; align-items: center; gap: 3px; }
+.hb .hb-files__bar > .hb-btn,
+.hb .hb-files__bar > .hb-iconbtn { flex: none; }
+.hb .hb-files__sep { flex: none; color: var(--hb-text-tertiary); }
+.hb .hb-files__grow { flex: 1 1 auto; min-width: 0; }
+.hb .hb-files__filter { flex: 1 1 84px; width: auto; min-width: 64px; }
+.hb .hb-files__anchor { display: inline-flex; flex: none; }
+
+/* A file name is data: the kit's label treatment uppercases headings. */
+.hb .hb-files__menuname { font-family: var(--hb-mono); font-weight: 500; text-transform: none; letter-spacing: 0; }
+
+/* The "more" menu carries a paragraph, so it must not inherit the item width. */
+.hb .hb-files__menunote {
+  max-width: 248px;
+  padding: 2px 8px 6px;
+  color: var(--hb-text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* Busy marks fade in rather than flash on every keystroke-sized operation. */
+.hb .hb-files__busy {
+  display: inline-flex;
+  flex: none;
+  color: var(--hb-text-tertiary);
+  animation: hb-files-appear 0s linear 0.4s both;
+}
+
+@keyframes hb-files-appear {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Favorites ride on the path bar itself: chips for the other pinned paths,
+ * never a second row that looks like a duplicated breadcrumb. */
+.hb .hb-files__favorites {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 38%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.hb .hb-files__favorites::-webkit-scrollbar { display: none; }
+.hb .hb-files__favorite { display: inline-flex; align-items: center; gap: 1px; flex: none; }
+.hb .hb-files__favorite .hb-pill { max-width: 176px; }
+
+/* Notices and task sections sit above the listing and keep their own height. */
+.hb .hb-files__notice { display: flex; align-items: center; gap: 6px; flex: none; min-width: 0; }
+.hb .hb-files__notice .hb-notice { flex: 1 1 auto; min-width: 0; }
+
+.hb .hb-files__section { flex: none; }
+.hb .hb-files__tasks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 168px;
+  padding: 0 2px;
+  overflow: auto;
+}
+
+.hb .hb-files__task { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.hb .hb-files__taskline { display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* Search: the field row, then the hit list under it. */
+.hb .hb-files__search { display: flex; flex-direction: column; gap: 6px; flex: none; min-width: 0; }
+.hb .hb-files__searchbody { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.hb .hb-files__results {
+  display: flex;
+  flex-direction: column;
+  max-height: 148px;
+  overflow: auto;
+  border: 1px solid var(--hb-border-faint);
+  border-radius: var(--hb-radius-sm);
+}
+
+.hb .hb-files__result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: var(--hb-text);
+  font-family: var(--hb-mono);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.hb .hb-files__result:hover { background: var(--hb-hover); }
+.hb .hb-files__result .hb-truncate { flex: 1 1 auto; }
+
+/* The listing keeps its scroll position across reloads; the overlay floats. */
+.hb .hb-files__list { position: relative; flex: 1 1 auto; }
+
+/*
+ * A row is the shared .hb-file grid (icon | name | meta | tail) at 28px: a
+ * listing is scanned, not read. size+time always fit; the mode string is data
+ * for the wide pane only and disappears below 380px instead of squeezing the
+ * name out of the row.
+ */
+.hb .hb-files__list { container-type: inline-size; }
+
+/* Size, time and mode are one right-aligned group: it sizes to its content, so
+ * the name column is the only track that shrinks and nothing is ever clipped. */
+.hb .hb-files__row .hb-file__meta {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--hb-text-tertiary);
+  font-family: var(--hb-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hb .hb-files__perm { color: var(--hb-text-tertiary); font-family: var(--hb-mono); font-size: 11px; }
+
+.hb .hb-files__actions {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity var(--hb-fast) var(--hb-ease);
+}
+
+@container (max-width: 380px) {
+  .hb .hb-files__perm { display: none; }
+}
+
+.hb .hb-files__row:hover .hb-files__actions,
+.hb .hb-files__row[data-selected="true"] .hb-files__actions,
+.hb .hb-files__row:focus-within .hb-files__actions { opacity: 1; }
+
+/* Selection outranks hover: the row you acted on stays the one you can see. */
+.hb .hb-files__row[data-selected="true"] { background: var(--hb-accent-soft); }
+.hb .hb-files__row[data-selected="true"] .hb-file__name { font-weight: 500; }
+
+.hb .hb-files__drop {
+  position: absolute;
+  inset: 4px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  border: 1px dashed var(--hb-accent);
+  border-radius: var(--hb-radius-sm);
+  background: color-mix(in srgb, var(--hb-surface) 92%, transparent);
+  color: var(--hb-text);
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Centred loading and failure states inside the listing. */
+.hb .hb-files__center {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 12px;
+}
+
+.hb .hb-files__center .hb-error { width: 100%; }
+
+/* Editor dialog: the text area and the diff panes own their scroll. */
+.hb .hb-files__editor { display: flex; flex: 1 1 auto; flex-direction: column; gap: 8px; height: 100%; min-height: 0; }
+.hb .hb-files__code {
+  flex: 1 1 auto;
+  min-height: 240px;
+  resize: none;
+  font-family: var(--hb-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  tab-size: 2;
+}
+
+.hb .hb-files__diff {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-height: 0;
+}
+
+.hb .hb-files__diffcol { display: flex; flex: 1 1 auto; flex-direction: column; gap: 4px; min-width: 0; min-height: 0; }
+.hb .hb-files__difflabel { font-size: 12px; font-weight: 600; color: var(--hb-text-secondary); }
+
+.hb .hb-files__difftext {
+  flex: 1 1 auto;
+  min-height: 160px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--hb-border-faint);
+  border-radius: var(--hb-radius-sm);
+  background: var(--hb-surface-sunken);
+  font-family: var(--hb-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.hb .hb-files__removed { background: color-mix(in srgb, var(--hb-err) 18%, transparent); }
+.hb .hb-files__added { background: color-mix(in srgb, var(--hb-ok) 18%, transparent); }
+
+/* Upload-conflict dialog: the path can be arbitrarily long and must wrap. */
+.hb .hb-files__conflict { display: flex; flex-direction: column; gap: 10px; padding: 2px 0 8px; }
+.hb .hb-files__conflictpath { margin: 0; color: var(--hb-text); font-family: var(--hb-mono); font-size: 12px; overflow-wrap: anywhere; }
+.hb .hb-files__foot { display: flex; flex: 1 1 auto; align-items: center; gap: 8px; }
+
+/* SCP fallback: there is no listing to browse, so the pane becomes a form. */
+.hb .hb-files__scp { gap: 12px; padding: 10px 12px; overflow: auto; }

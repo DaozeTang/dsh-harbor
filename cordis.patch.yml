@@ -1,0 +1,5 @@
+# Harbor bundle patch — registers the workbench entry in a dsh profile.
+# Install with: dsh plugin --profile web add dsh-harbor
+- insert:
+    - id: harbor
+      name: 'dsh-harbor'
