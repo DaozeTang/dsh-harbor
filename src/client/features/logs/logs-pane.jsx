@@ -60,6 +60,7 @@ export function LogsPane({ api }) {
   const [selection, setSelection] = useState(() => new Set());
   const loadSeq = useRef(0);
   const rootRef = useRef(null);
+  const bodyRef = useRef(null);
   // Below this width the list and the reader cannot share one row: the
   // sidebar would give each ~180px. Swap to a master/detail view instead.
   const [narrow, setNarrow] = useState(false);
@@ -103,7 +104,12 @@ export function LogsPane({ api }) {
       setEof(value.eof);
       const readable = toReadableText(value.data);
       setContent((previous) => (append ? previous + readable : readable));
-      if (!append) setHits(null);
+      if (!append) {
+        setHits(null);
+        // A replacement recording starts at its first line; appending
+        // ("继续加载") keeps the reader where it is.
+        if (bodyRef.current !== null) bodyRef.current.scrollTop = 0;
+      }
     } catch (cause) {
       if (seq === loadSeq.current) setError(cause?.message ?? String(cause));
     } finally {
@@ -368,7 +374,7 @@ export function LogsPane({ api }) {
               </div>
 
               {hits !== null && (
-                <div className="hb-scroll" style={{ maxHeight: 140, padding: "6px 10px", borderBottom: "1px solid var(--hb-border-faint)" }}>
+                <div className="hb-scroll" style={{ maxHeight: 140, overflow: "auto", padding: "6px 10px", borderBottom: "1px solid var(--hb-border-faint)" }}>
                   <div className="hb-quiet">{t(`${hits.length} 处匹配`)}</div>
                   {hits.slice(0, 40).map((hit, index) => (
                     <div
@@ -382,7 +388,14 @@ export function LogsPane({ api }) {
                 </div>
               )}
 
-              <div className="hb-scroll hb-mono" style={{ flex: 1, minHeight: 0, padding: 10, whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.65 }}>
+              {/* The reader is the pane's slack-height element, so it must be the
+                  scroll container itself: without overflow the text spills under
+                  the footer and the shell clips it, leaving the tail unreachable. */}
+              <div
+                ref={bodyRef}
+                className="hb-scroll hb-mono"
+                style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 10, whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.65 }}
+              >
                 {segments.length === 0
                   ? <span className="hb-quiet">{t("这条记录是空的。")}</span>
                   : segments.map((segment, index) => (
