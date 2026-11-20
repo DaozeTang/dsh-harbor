@@ -9,8 +9,28 @@ import { DEFAULT_HOST_KEY_MODE } from "../hostkey.js";
 import { findReusableProfileConnection } from "../profile-connection.js";
 import { collectResourceBackup, previewResourceBackup, restoreResourceBackup } from "../resource-backup-store.js";
 import { encryptResourceBackup, decryptResourceBackup } from "../resource-backup-crypto.js";
-import { scanOpenSshConfig } from "../openssh-import.js";
+import { readIdentityPrivateKey, scanOpenSshConfig } from "../openssh-import.js";
 import { profileCredentialRefs, sharedCredentialRefs, profileJumpPasswordRef, profileJumpPrivateKeyRef, profileJumpPassphraseRef } from "./models.js";
+
+/**
+ * Copy the IdentityFile behind one imported resource into this profile's
+ * credential slot. The preview already reported whether the key is usable; the
+ * file is read again here so the import stores exactly what it described. Never
+ * throws: a key failure must not undo (or hide) the saved profile.
+ */
+async function importIdentityFileKey(credentials, profileId, entry) {
+  if (entry.authKind !== "key" || entry.keyPath === null) return {};
+  try {
+    const key = await readIdentityPrivateKey(entry.keyPath);
+    if (key.status !== "ready" && key.status !== "passphrase") return {};
+    if (typeof credentials?.set !== "function") return { error: t("当前 DSH 未提供凭据服务，无法保存私钥") };
+    const response = await credentials.set(credentialRef(profileCredentialRefs(profileId).privateKey), key.text);
+    if (response?.ok === false) return { error: response.error?.message ?? t("无法保存导入的私钥") };
+    return { imported: true, passphrase: key.status === "passphrase" };
+  } catch (error) {
+    return { error: error?.message ?? t("无法保存导入的私钥") };
+  }
+}
 
 export const withResources = (Base) => class extends Base {
   requireProfileTable() {
@@ -113,7 +133,7 @@ export const withResources = (Base) => class extends Base {
         } } };
       }
       if (request.selection.fingerprint !== fingerprint) {
-        return { ok: false, error: fail("ssh-config-changed", t("SSH 配置已变化，请重新打开导入预览。")) };
+        return { ok: false, error: fail("ssh-config-changed", t("SSH 配置或私钥文件已变化，请重新打开导入预览。")) };
       }
 
       const byName = new Map(entries.map((entry) => [key(entry.name), entry]));
@@ -129,7 +149,9 @@ export const withResources = (Base) => class extends Base {
       const skipped = entries.filter((entry) => selected.has(key(entry.name)) && existing.has(key(entry.name))).map((entry) => entry.name);
       const failed = [];
       const details = [];
+      const passphraseRequired = [];
       let created = 0;
+      let keysImported = 0;
       // Save dependencies first so a missing or failed jump is never imported
       // as an accidental direct connection. Store every hop in configured order.
       while (pending.length) {
@@ -165,14 +187,25 @@ export const withResources = (Base) => class extends Base {
           proxyJump: entry.hops.map((hop) => ({ profileId: available.get(key(hop)) }))
         });
         if (result.ok) {
-          available.set(key(entry.name), result.value.profile.profileId);
+          const profileId = result.value.profile.profileId;
+          available.set(key(entry.name), profileId);
           created += 1;
+          // IdentityFile keys travel with the profile: a configured key path that
+          // resolved in the preview is copied into this profile's credential slot
+          // so the resource is usable without a second manual step.
+          const identity = await importIdentityFileKey(this.ctx?.credentials, profileId, entry);
+          if (identity.imported) {
+            keysImported += 1;
+            if (identity.passphrase) passphraseRequired.push(entry.name);
+          } else if (identity.error !== undefined) {
+            details.push({ name: entry.name, reason: "key", items: [String(identity.error).slice(0, 500)] });
+          }
         } else {
           failed.push(entry.name);
           details.push({ name: entry.name, reason: "save", items: [result.error.message.slice(0, 500)] });
         }
       }
-      return { ok: true, value: { imported: { created, skipped, failed, details } } };
+      return { ok: true, value: { imported: { created, keysImported, passphraseRequired, skipped, failed, details } } };
     } catch {
       return { ok: false, error: fail("ssh-config-import", t("无法读取或导入 SSH 配置。请检查文件权限、大小以及是否包含暂不支持的 Match 或 Include 规则。")) };
     } finally {

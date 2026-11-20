@@ -234,7 +234,11 @@ export const resourceBackupImportRequestSchema = z.object({ password: z.string()
 export const profileConnectionStatusResultSchema = resultSchema(z.object({ profileIds: z.array(z.string().uuid()) }));
 const openSshPreviewEntrySchema = z.object({
   name: z.string(), host: z.string(), username: z.string(), port: z.number().int(),
-  hops: z.array(z.string()), issues: z.array(z.string()), unsupported: z.boolean(), existing: z.boolean(), authKind: z.enum(["key", "password"])
+  hops: z.array(z.string()), issues: z.array(z.string()), unsupported: z.boolean(), existing: z.boolean(), authKind: z.enum(["key", "password"]),
+  // The IdentityFile resolved on the host: its path and whether a usable key
+  // sits there. Only the status crosses the wire — never the key itself.
+  keyPath: z.string().max(4096).nullable(),
+  keyStatus: z.enum(["ready", "passphrase", "missing", "unreadable", "invalid"]).nullable()
 });
 export const openSshImportRequestSchema = z.object({
   selection: z.object({
@@ -245,7 +249,17 @@ export const openSshImportRequestSchema = z.object({
 });
 export const openSshImportResultSchema = resultSchema(z.union([
   z.object({ preview: z.object({ fingerprint: z.string(), entries: z.array(openSshPreviewEntrySchema).max(500) }) }),
-  z.object({ imported: z.object({ created: z.number().int(), skipped: z.array(z.string()), failed: z.array(z.string()), details: z.array(z.object({ name: z.string(), reason: z.enum(["unsupported", "cycle", "repeated", "missing", "save"]), items: z.array(z.string()) })) }) })
+  z.object({ imported: z.object({
+    created: z.number().int(),
+    // Keys copied from IdentityFile during this import; those profiles open
+    // without a second manual step.
+    keysImported: z.number().int(),
+    // Imported profiles whose key needs a passphrase before it can connect.
+    passphraseRequired: z.array(z.string()).max(500),
+    skipped: z.array(z.string()),
+    failed: z.array(z.string()),
+    details: z.array(z.object({ name: z.string(), reason: z.enum(["unsupported", "cycle", "repeated", "missing", "save", "key"]), items: z.array(z.string()) }))
+  }) })
 ]));
 export const resourceBackupImportResultSchema = resultSchema(z.object({ profiles: z.number().int(), groups: z.number().int(), credentials: z.number().int(), duplicates: z.array(z.string()).max(5000).optional(), skipped: z.number().int().optional(), retained: z.array(z.string()).max(5000).optional() }));
 export const profileAuthKindSchema = z.enum(["password", "key"]);

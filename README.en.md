@@ -48,7 +48,7 @@ Reaching a remote machine usually takes three windows: a terminal, an SFTP clien
 
 **Session logs.** Every terminal session leaves a host-side recording; the panel reads it in bounded chunks, searches, downloads plain text and deletes per record. Secrets are redacted before anything reaches the model.
 
-**Resources and policy.** Groups, search, shared credentials, jump chains (up to 8 hops), OpenSSH import, encrypted backup export/import, and three execution-policy tiers that can be loosened for a session but never persist. Fixed remote project directories and workspace bindings land the agent's `sftp_*` calls in the right remote directory.
+**Resources and policy.** Groups, search, shared credentials, jump chains (up to 8 hops), OpenSSH import, encrypted backup export/import, and three execution-policy tiers that can be loosened for a session but never persist. Importing `~/.ssh/config` carries each host's `IdentityFile` private key along, and key pickers accept extensionless files. Fixed remote project directories and workspace bindings land the agent's `sftp_*` calls in the right remote directory.
 
 ## Security model
 

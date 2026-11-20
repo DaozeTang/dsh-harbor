@@ -349,10 +349,11 @@ export function ConnectDialog({ api, credentials, open, onClose, onConnected, on
                   <TextArea value={form.privateKey} onChange={set("privateKey")} rows={4} className="hb-input--mono" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" />
                 </Field>
                 <div className="hb-inline">
+                  {/* No accept filter: a private key may have no extension at
+                      all (e.g. "1"), and extension filters hide such files. */}
                   <input
                     ref={keyFileRef}
                     type="file"
-                    accept=".pem,.key,.rsa,.ed25519,.txt,application/x-pem-file,application/x-pkcs8,text/plain"
                     onChange={importPrivateKey}
                     style={{ display: "none" }}
                   />
