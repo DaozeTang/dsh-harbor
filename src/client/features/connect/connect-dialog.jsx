@@ -20,7 +20,7 @@ import { privateKeyProblem } from "../../pemkey.js";
 import { t } from "../../../i18n/core.js";
 
 
-export function ConnectDialog({ api, credentials, open, onClose, onConnected, onDataChanged }) {
+export function ConnectDialog({ api, credentials, sessionId, open, onClose, onConnected, onDataChanged }) {
   const [profiles, setProfiles] = useState([]);
   const [sharedCredentials, setSharedCredentials] = useState([]);
   const [pickedProfileId, setPickedProfileId] = useState("");
@@ -79,7 +79,7 @@ export function ConnectDialog({ api, credentials, open, onClose, onConnected, on
     onConnected?.(connectionId);
     // The dialog is about to close, so a failure to open the PTY must surface
     // as a toast: setting it on a dismissed dialog hid the message entirely.
-    await api.openSession(connectionId, 100, 30).catch((sessionError) => {
+    await api.openSession(connectionId, 100, 30, { sessionId, openedBy: "panel" }).catch((sessionError) => {
       toast(t(`已连接，但无法自动打开终端：${sessionError?.message ?? String(sessionError)}`), { tone: "error" });
     });
     onDataChanged?.();
@@ -128,6 +128,7 @@ export function ConnectDialog({ api, credentials, open, onClose, onConnected, on
             profileId: pickedProfileId,
             readyTimeout: 15000,
             retries: 0,
+            sessionId,
             reuseExisting: reuseExisting && proxyJumps.length === 0,
  ...(proxyJumps.length > 0 ? { proxyJumpProfileIds: proxyJumps.map((hop) => hop.profileId) } : {})
           })
@@ -201,7 +202,7 @@ export function ConnectDialog({ api, credentials, open, onClose, onConnected, on
       }
       const profileId = saved?.profile?.profileId;
       if (profileId === undefined) throw new Error(t("保存资源后未能取得 profileId"));
-      const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0 });
+      const connection = await api.profileConnect({ profileId, readyTimeout: 15000, retries: 0, sessionId });
       setStatus(null);
       await finishConnect(connection.connectionId);
     } catch (cause) {

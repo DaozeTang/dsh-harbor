@@ -2,6 +2,20 @@
 
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。0.2.0 为首个公开版本，0.1.0 是其内部基线。
 
+## 0.3.0 — 2026-11-22
+
+**终端与会话绑定。** 在此之前，「一条 SSH 连接 = 一个终端」是全局共享的：两个对话在同一台服务器上并行工作时，面板都显示同一个终端，Agent 的 `ssh_write` 会广播进两边的终端，`ssh_read` 读到的是别人的屏幕，`ssh_exec` 的回显也出现在别人的窗口里；两条对话还会争夺同一个「当前连接」。0.3.0 把归属修正为「每个对话在每台服务器上各有一个终端」。
+
+- **归属模型**（新模块 `src/host/terminal-owner.js`）：每个 PTY 记录所属对话；子 Agent 默认归根对话（`terminalScope: "conversation"`），被委派的 Agent 仍在你眼前的终端里工作。索引缺失的记录按会话自身归属派生，不会被误判成「没有终端」。
+- **面板**：服务器条的圆点与「Agent」徽标只报告**本对话**；面板只渲染本对话的终端，空态会说明「这台服务器上还有 N 个终端正被其他会话使用」。领取队列按对话投递、30 秒过期，避免把标签塞进别的对话或事后劫持。
+- **Agent 工具**：`ssh_exec`/`ssh_read`/`ssh_write`/`ssh_disconnect` 按调用方对话解析目标连接；读取游标、exec 回显、网络 CLI 串行锁、`ssh_terminal_context` 的默认目标都收到本对话。`ssh_read` 在没有本对话终端时如实返回 `hasSession: false`，不再回落到别人的 shell。
+- **exec 的 cwd 继承在多终端下重新精确**：新增 `src/host/terminal-census.js`，终端打开后在后台 census 本 transport 上的交互 shell，记住本 PTY 的 tty；`buildCwdAwareCommand` 支持按 tty 精确定位。此前一条连接上只要有两个 shell，`ssh_exec` 就退化为登录目录。
+- **执行策略按对话**：操作者放宽的档位不再外溢到同一服务器上的其他对话；`execPolicyGet/Set` 接受 `sessionId`。
+- **生命周期**：对话结束（`session/disposed`）时关闭它名下的终端；断链/断开仍整体回收。每连接终端数上限 8，超出时错误文案直接点名 sshd `MaxSessions`。
+- **迁移**：升级后旧面板/设置页打开的是「匿名终端」，第一个认领它的对话收养它（一次性、不可再被夺走），人机共用的旧习惯因此继续成立；刷新页面后即享有完整隔离。
+- **契约**：`list`/`openSession`/`selectConnection`/`connect`/`profileConnect`/`execPolicy*`/`listTerminalContexts` 全部接受可选的 `sessionId`；`list` 新增 `terminals[]`（含 `ownerSessionId` 与 `mine`）。新字段全部可选，旧调用方保持可用。
+- **回归测试**：新增 `test/terminal-owner.mjs`、`test/terminal-census.mjs`、`test/per-session-terminals.mjs`、`test/session-terminals.mjs`；并更新 `active-connection`、`ssh-write`、`agent-connect`、`exec-policy`、`network-cli`、`pane-selection`、`manual-terminal-context`、`exec-cwd`/`exec-cwd-rules`、`shell-integration` 等受影响的断言。
+
 ## 0.2.2 — 2026-11-21
 
 - **超长会话日志的预览区可以滚动**：预览区取的是面板剩下的高度，却没有把自己变成滚动容器，正文从底部边框溢出后被外壳裁掉，「继续加载」页脚还压在文字上；超过一屏的记录后半段完全看不到。现在预览区内部滚动，长记录可以上下翻阅，页脚也不再被遮挡。按内容高度收缩的搜索命中条（`max-height: 140px`）同样改为内部滚动。

@@ -31,6 +31,7 @@ import {
   paneOpenRequestsRevision, reconcileViews, resolvePaneActiveConnection, selectInView,
   subscribePaneSessions, visiblePaneConnections, viewSession
 } from "./pane-selection.js";
+import { closeTabAction, hasOwnTerminal, resolvePaneTerminal } from "./session-terminals.js";
 import { t } from "../i18n/core.js";
 import { useLanguage } from "./locale.js";
 
@@ -56,10 +57,10 @@ class PaneBoundary extends React.Component {
   }
 }
 
-/** Mirror the host's connection list and its agent binding into the UI store. */
-async function refreshConnections(api) {
+/** Mirror the host's connection list and this conversation's agent binding. */
+async function refreshConnections(api, sessionId) {
   try {
-    const { connections, activeConnectionId } = await api.list();
+    const { connections, activeConnectionId } = await api.list(sessionId);
     harborUiSetConnections(connections);
     harborUiSetActiveConnection(activeConnectionId ?? null);
     harborUiAnnounceAgentConnections(connections);
@@ -79,7 +80,7 @@ const VIEWS = [
   { value: "logs", icon: "archive-outline", label: () => t("日志"), feature: "showLogs" }
 ];
 
-export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSignal }) {
+export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW_ID, viewSignal }) {
   useLanguage();
   const ui = useHarborUi();
   const [view, setView] = useState("terminal");
@@ -104,14 +105,14 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
   }, [api]);
 
   useEffect(() => {
-    refreshConnections(api);
+    refreshConnections(api, sessionId);
     // A hidden window does not need a connection poll every five seconds; the
     // next visible tick catches up, and the host keeps sessions alive anyway.
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void refreshConnections(api);
+      if (document.visibilityState === "visible") void refreshConnections(api, sessionId);
     }, 5000);
     return () => clearInterval(timer);
-  }, [api]);
+  }, [api, sessionId]);
 
   useEffect(() => {
     Promise.all([api.profileList(), api.groupList()])
@@ -181,8 +182,18 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
   // the first pane to render claims it.
   const pendingOpenRevision = useSyncExternalStore(subscribePaneSessions, paneOpenRequestsRevision);
   useEffect(() => {
-    for (const connectionId of claimPendingOpens()) openInView(viewId, connectionId);
-  }, [pendingOpenRevision, viewId]);
+    for (const claim of claimPendingOpens(sessionId)) {
+      openInView(viewId, claim.connectionId);
+      // A surface that owns no pane (the settings page) queued a connect whose
+      // terminal is unclaimed: adopt it for this conversation so the pane shows
+      // a shell instead of "no terminal".
+      if (claim.adopt && typeof sessionId === "string") {
+        void api.openSession(claim.connectionId, 100, 30, { sessionId, adopt: true, openedBy: "panel" })
+          .then(() => refreshConnections(api, sessionId))
+          .catch(() => {});
+      }
+    }
+  }, [pendingOpenRevision, viewId, sessionId, api]);
 
   useEffect(() => {
     if (viewSignal === undefined) return undefined;
@@ -200,8 +211,8 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
   const bindAgent = (connectionId) => {
     if (connectionId === null || connectionId === ui.activeConnectionId) return;
     if (ui.connections.find((connection) => connection.connectionId === connectionId)?.connected === false) return;
-    api.selectConnection(connectionId)
- .then(() => refreshConnections(api))
+    api.selectConnection(connectionId, sessionId)
+ .then(() => refreshConnections(api, sessionId))
  .catch((error) => {
         const message = error?.message ?? String(error);
         harborUiSetError(/404|not mounted|not-mounted/i.test(message)
@@ -210,13 +221,15 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
       });
   };
 
-  const openSession = async () => {
+  const openTerminal = async () => {
     if (active === null) return;
     harborUiSetBusy(true);
     harborUiSetError(null);
     try {
-      await api.openSession(active.connectionId, 100, 30);
-      await refreshConnections(api);
+      // Ownership makes this idempotent: the host returns this conversation's
+      // live terminal when there is one, so a double click cannot open two.
+      await api.openSession(active.connectionId, 100, 30, { sessionId, openedBy: "panel" });
+      await refreshConnections(api, sessionId);
     } catch (error) {
       harborUiSetError(error?.message ?? String(error));
     } finally {
@@ -230,10 +243,17 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
    * being closed in one of them.
    */
   const closePaneTab = async (connectionId) => {
+    const connection = ui.connections.find((entry) => entry.connectionId === connectionId);
+    // Ending this tab ends THIS conversation's terminal. The transport is
+    // disconnected only when no other conversation still has a terminal on it:
+    // closing your tab must never kill another chat's shell.
+    const action = closeTabAction(connection, sessionId);
+    const terminalId = resolvePaneTerminal(connection, sessionId).sessionId;
     if (!closeInView(viewId, connectionId)) return;
     try {
-      await api.disconnect(connectionId);
-      await refreshConnections(api);
+      if (action === "disconnect") await api.disconnect(connectionId);
+      else if (action === "close-terminal" && terminalId !== null) await api.closeSession(terminalId);
+      await refreshConnections(api, sessionId);
     } catch (error) {
       openInView(viewId, connectionId);
       harborUiSetError(t(`断开服务器失败：${error?.message ?? String(error)}`));
@@ -241,10 +261,10 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
   };
 
   const cdFromFiles = async (dir) => {
-    const sessionId = active?.sessions?.[0];
-    if (!sessionId || !dir) return harborUiSetError(t("请先打开当前服务器的终端，再使用 cd"));
+    const terminalId = resolvePaneTerminal(active, sessionId).sessionId;
+    if (!terminalId || !dir) return harborUiSetError(t("请先打开当前服务器的终端，再使用 cd"));
     try {
-      await api.changeDirectory(sessionId, dir);
+      await api.changeDirectory(terminalId, dir);
       setView("terminal");
     } catch (error) {
       harborUiSetError(t(`cd 失败：${error?.message ?? String(error)}`));
@@ -268,7 +288,9 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
             {paneConnections.map((connection) => {
               const isActive = connection.connectionId === resolvedActiveConnectionId;
               const isAgentTarget = connection.connectionId === ui.activeConnectionId;
-              const alive = connection.connected !== false && (connection.sessions?.length ?? 0) > 0;
+              // The dot reports THIS conversation's terminal: another chat's
+              // live shell on the same server is not "my terminal is up".
+              const alive = connection.connected !== false && hasOwnTerminal(connection, sessionId);
               return (
                 <div
                   key={connection.connectionId}
@@ -295,7 +317,7 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
                     type="button"
                     className="hb-server__close"
                     aria-label={t(`关闭此栏的 ${connection.name || connection.host} 标签`)}
-                    title={t("关闭此栏标签（两栏都关闭后断开服务器）")}
+                    title={t("关闭此栏标签（只结束本对话的终端；没有别的对话在用这台服务器时才断开）")}
                     onClick={(event) => { event.stopPropagation(); void closePaneTab(connection.connectionId); }}
                   >
                     <Icon name="close-outline" size={12} />
@@ -309,7 +331,7 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
         </div>
 
         <div className="hb-views">
-          {active !== null && <PolicyMenu api={api} connectionId={active.connectionId} />}
+          {active !== null && <PolicyMenu api={api} connectionId={active.connectionId} sessionId={sessionId} />}
           <TerminalAppearanceButton className="hb-iconbtn" />
         </div>
       </div>
@@ -375,7 +397,7 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
               />
  ) : (
               paneConnections.map((connection) => {
-                const sessionId = connection.sessions?.[0] ?? null;
+                const terminal = resolvePaneTerminal(connection, sessionId);
                 const isActive = connection.connectionId === resolvedActiveConnectionId;
                 return (
                   <div
@@ -384,14 +406,16 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
                     style={{ display: isActive ? "flex" : "none" }}
                     onMouseDown={() => bindAgent(connection.connectionId)}
                   >
-                    {sessionId !== null ? (
-                      <XtermView api={api} sessionId={sessionId} connectionId={connection.connectionId} />
+                    {terminal.sessionId !== null ? (
+                      <XtermView api={api} sessionId={terminal.sessionId} connectionId={connection.connectionId} />
  ) : (
                       <EmptyState
                         icon="terminal"
-                        title={t("会话已关闭")}
-                        text={t("这台服务器的终端已经结束，可以重新打开。")}
-                        action={<Button variant="secondary" busy={ui.busy} onClick={openSession}>{t("打开终端")}</Button>}
+                        title={terminal.total > 0 ? t("本会话还没有终端") : t("会话已关闭")}
+                        text={terminal.total > 0
+                          ? t(`这台服务器上还有 ${terminal.total} 个终端正被其他会话使用；每个对话只看自己的终端，打开一个即可开始。`)
+                          : t("这台服务器的终端已经结束，可以重新打开。")}
+                        action={<Button variant="secondary" busy={ui.busy} onClick={openTerminal}>{t("打开终端")}</Button>}
                       />
  )}
                   </div>
@@ -427,6 +451,7 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
               <SnippetsView
                 api={api}
                 active={active}
+                sessionId={sessionId}
                 profiles={profiles}
                 groups={groups}
                 onFilled={() => setView("terminal")}
@@ -445,6 +470,7 @@ export function HarborPanel({ api, credentials, viewId = DEFAULT_VIEW_ID, viewSi
       <ConnectDialog
         api={api}
         credentials={credentials}
+        sessionId={sessionId}
         open={connectOpen}
         onClose={() => setConnectOpen(false)}
         onConnected={(connectionId) => openInView(viewId, connectionId)}

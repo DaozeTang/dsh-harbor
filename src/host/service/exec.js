@@ -7,6 +7,7 @@ import { assessShellCommand, CATEGORY_DELETE_FILES } from "../safety.js";
 import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from "../trash.js";
 import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, execEchoWarning, extractExecCwd, posixLoginShell } from "../exec-cwd.js";
 import { processTerminalInput } from "../terminal-input.js";
+import { anonymousSessions, pickOwnerSession } from "../terminal-owner.js";
 import { redactForModel } from "../redact.js";
 import { fail } from "../envelope.js";
 import { POLICY_NOTICE_PREFIX } from "../policy-messages.js";
@@ -118,8 +119,31 @@ export const withExec = (Base) => class extends Base {
    * command line and its output are ALSO appended to the connection's shell
    * session buffers (if any), so the panel shows what the agent did.
    */
-  async execOnConnection(connectionId, command, timeoutMs = 30000, _retried = false, approvalToken) {
-    const policy = this.resolveExecPolicy(connectionId);
+  /**
+   * The one terminal this caller acts on.
+   *
+   * Resolution is: the conversation's own live terminal, else the connection's
+   * single anonymous terminal (claimed here, so "open a terminal in the panel,
+   * then let the agent use it" survives the upgrade), else nothing. Never
+   * "whichever shell happens to be first" — that is the sharing this change
+   * removes.
+   *
+   * @param {string} connectionId - the server.
+   * @param {unknown} ownerSessionId - the calling conversation.
+   * @returns {object|undefined} the terminal record, when one exists.
+   */
+  ownerTerminalFor(connectionId, ownerSessionId) {
+    const conn = this.connections.get(connectionId);
+    if (conn === void 0) return undefined;
+    const existing = pickOwnerSession(this.sessions, conn, ownerSessionId);
+    if (existing !== undefined) return existing;
+    const anonymous = anonymousSessions(this.sessions, conn);
+    if (anonymous.length !== 1) return undefined;
+    return this.claimTerminal(conn, anonymous[0], ownerSessionId);
+  }
+
+  async execOnConnection(connectionId, command, timeoutMs = 30000, _retried = false, approvalToken, ownerSessionId) {
+    const policy = this.resolveExecPolicy(connectionId, ownerSessionId);
     const decision = assessShellCommand(command, policy);
     let trashScript = null;
     if (!decision.ok) {
@@ -143,7 +167,7 @@ export const withExec = (Base) => class extends Base {
       if (trashScript) {
         // Approved simple delete: the reversible trash move is what actually
         // runs on the exec channel; the agent sees its output like any exec.
-        return await this.runPreparedExec(connectionId, trashScript, command, true, timeoutMs);
+        return await this.runPreparedExec(connectionId, trashScript, command, true, timeoutMs, ownerSessionId);
       }
       // Approved non-trash command: fall through and run it as written.
     }
@@ -157,9 +181,9 @@ export const withExec = (Base) => class extends Base {
     // POSIX: a host that answered `echo $SHELL` provably has a working exec
     // channel, so a stale flag must never divert it to the terminal.
     if (conn !== void 0 && conn.execStalled && !posixLoginShell(conn.loginShell)) {
-      return this.cliExecOnConnection(conn, command, timeoutMs);
+      return this.cliExecOnConnection(conn, command, timeoutMs, ownerSessionId);
     }
-    const result = await this.runPreparedExec(connectionId, command, command, false, timeoutMs);
+    const result = await this.runPreparedExec(connectionId, command, command, false, timeoutMs, ownerSessionId);
     if (conn && result.ok && !result.value.timedOut) conn.execStalled = false;
     return result;
   }
@@ -169,14 +193,15 @@ export const withExec = (Base) => class extends Base {
    * PTY session; otherwise surface the plain-language "no terminal" error
    * (#33 P1) instead of a silent empty timeout.
    */
-  async cliExecOnConnection(conn, command, timeoutMs = 30000) {
-    const session = [...conn.sessions]
- .map((id) => this.sessions.get(id))
- .find((candidate) => candidate && candidate.exited === null && candidate.stream !== null);
+  async cliExecOnConnection(conn, command, timeoutMs = 30000, ownerSessionId) {
+    // The command is typed into a terminal, so it must be THIS conversation's:
+    // typing into another chat's shell is exactly the interference this change
+    // removes (and the terminal it lands in would not even be visible here).
+    const session = this.ownerTerminalFor(conn.id, ownerSessionId);
     if (!session) {
       return {
         ok: false,
-        error: fail("cli-no-terminal", t("该设备不支持 exec 通道（网络 CLI 设备，如华为 VRP / 华三 Comware），且当前没有打开的交互终端。请先在右侧 SSH 面板打开该设备的终端，再重试 ssh_exec；或在终端手动执行命令。"))
+        error: fail("cli-no-terminal", t("该设备不支持 exec 通道（网络 CLI 设备，如华为 VRP / 华三 Comware），且本会话在这台设备上还没有交互终端。请先在右侧 SSH 面板为本会话打开终端，再重试 ssh_exec；或在终端手动执行命令。"))
       };
     }
     return this.cliExecOnSession(conn, session, command, timeoutMs);
@@ -192,7 +217,9 @@ export const withExec = (Base) => class extends Base {
    * format gate and its own serialization (one CLI query per connection).
    */
   async cliExecOnSession(conn, session, command, timeoutMs = 30000) {
-    if (conn.cliBusy) {
+    // Serialized per terminal, not per connection: another conversation's query
+    // on the same device must not block or interleave with this one.
+    if (session.cliBusy) {
       return { ok: false, error: fail("cli-busy", t("该网络设备的上一条查询尚未完成，请稍候再试")) };
     }
     const screened = sanitizeCliCommand(command);
@@ -206,7 +233,7 @@ export const withExec = (Base) => class extends Base {
     }
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
-    conn.cliBusy = true;
+    session.cliBusy = true;
     // Bounded collection. The rolling TAIL is what prompt detection needs
     // (the device's prompt is the last line), and it is also the part worth
     // keeping for diagnosis — an unbounded buffer could otherwise pour the
@@ -283,24 +310,25 @@ export const withExec = (Base) => class extends Base {
       };
     } finally {
       session.stream.removeListener("data", onData);
-      conn.cliBusy = false;
+      session.cliBusy = false;
     }
   }
 
-  async runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs = 30000) {
+  async runPreparedExec(connectionId, prepared, displayCommand, trashRun, timeoutMs = 30000, ownerSessionId) {
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
     if (!(await this.ensureAlive(conn))) {
       return { ok: false, error: fail("connection-lost", `connection "${connectionId}" is down and could not be re-established`) };
     }
-    // An exec channel always starts in the login home directory — the panel's
-    // interactive shell may be somewhere else entirely. When the login shell
-    // is POSIX-family, prepend the interactive-cwd prologue (see exec-cwd.js)
-    // so the command runs where the operator's terminal is, and the resolved
-    // directory comes back on a stripped marker line. Reconnect before
-    // dispatch when possible. After dispatch the remote may already have run it.
+    // An exec channel always starts in the login home directory — the caller's
+    // terminal may be somewhere else entirely. When the login shell is
+    // POSIX-family, prepend the interactive-cwd prologue (see exec-cwd.js) so
+    // the command runs where THAT terminal is, and the resolved directory comes
+    // back on a stripped marker line. With several terminals per transport "the
+    // one shell" no longer exists, so the prologue targets the learned tty.
+    const ownerSession = this.ownerTerminalFor(connectionId, ownerSessionId);
     const shell = await this.resolveLoginShell(conn);
-    const sent = posixLoginShell(shell) ? buildCwdAwareCommand(prepared) : prepared;
+    const sent = posixLoginShell(shell) ? buildCwdAwareCommand(prepared, { tty: ownerSession?.tty ?? null }) : prepared;
     const commandId = randomUUID();
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
@@ -330,25 +358,24 @@ export const withExec = (Base) => class extends Base {
     if (state.exitCode === 125 && cwd === null && stderr.startsWith(EXEC_CWD_ERROR_PREFIX)) {
       return { ok: false, error: fail("cwd-unavailable", stderr.trim()) };
     }
-    // Mirror the command and output into every live shell session of this
-    // connection so the panel displays agent-driven commands too. No steady-
-    // state label: the `$ ` prefix is the established agent marker and, with
-    // the cwd inherited, output is consistent with the visible prompt. A dim
-    // warning appears only in the fallback case (cwd undetected — the exec
-    // ran from the home directory, so output may contradict the prompt). A
-    // trash run echoes the plain original command: the rollback margin is
-    // silent, the terminal looks exactly as it always did.
+    // Mirror the command and output into the caller's own terminal only, so the
+    // panel displays agent-driven commands of THIS conversation. Broadcasting
+    // into every shell of the connection was visible cross-talk: another chat's
+    // terminal showed commands it never asked for. No steady-state label: the
+    // `$ ` prefix is the established agent marker and, with the cwd inherited,
+    // output is consistent with the visible prompt. A dim warning appears only
+    // in the fallback case (cwd undetected — the exec ran from the home
+    // directory, so output may contradict the prompt). A trash run echoes the
+    // plain original command: the rollback margin is silent, the terminal looks
+    // exactly as it always did.
     const warning = execEchoWarning(cwd);
     const display = normalizeTerminalEol(`${warning ? `${warning}\n` : ""}$ ${displayCommand}\n${stdout}${stderr.length > 0 ? stderr : ""}`)
  .replace(/(?:\r\n)+$/, "");
-    for (const sessionId of conn.sessions) {
-      const session = this.sessions.get(sessionId);
-      if (session && session.exited === null) {
-        const prompt = session.lastPrompt ?? this.fallbackPrompt(conn);
-        // exec() is a separate non-interactive SSH channel. It never makes
-        // the PTY shell emit a prompt, so restore the last real prompt here.
-        this.appendSessionOutput(session, `${display}\r\n${prompt}`, { capture: false, observePrompt: false });
-      }
+    if (ownerSession !== void 0 && ownerSession.exited === null && ownerSession.stream !== null) {
+      const prompt = ownerSession.lastPrompt ?? this.fallbackPrompt(conn);
+      // exec() is a separate non-interactive SSH channel. It never makes
+      // the PTY shell emit a prompt, so restore the last real prompt here.
+      this.appendSessionOutput(ownerSession, `${display}\r\n${prompt}`, { capture: false, observePrompt: false });
     }
     const value = {
       exitCode: state.exitCode,
@@ -406,28 +433,32 @@ export const withExec = (Base) => class extends Base {
     };
   }
 
-  /** Send raw input into every live shell session of a connection. */
-  writeToConnection(connectionId, input) {
+  /**
+   * Send raw input into ONE terminal: the caller's own.
+   *
+   * This used to fan out to every shell of the connection (`for (const
+   * sessionId of conn.sessions)`), which is how two chats' agents typed into
+   * each other's terminal. Input lands in exactly one shell now, and a caller
+   * with no terminal gets an honest error instead of a silent 0-byte success.
+   */
+  writeToConnection(connectionId, input, ownerSessionId) {
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
-    // The tier resolves per connection, not per session: every shell of this
-    // server shares the same gate.
-    const policy = this.resolveExecPolicy(connectionId);
-    let written = 0;
-    let blockedReason = null;
-    for (const sessionId of conn.sessions) {
-      const session = this.sessions.get(sessionId);
-      if (session && session.exited === null && session.stream !== null) {
-        try {
-          const guarded = this.prepareTerminalInput(session, input, policy);
-          if (guarded.forwarded) session.stream.write(guarded.forwarded);
-          written += guarded.forwarded.length;
-          blockedReason ??= guarded.blockedReason;
-        } catch {}
-      }
+    const target = this.ownerTerminalFor(connectionId, ownerSessionId);
+    if (target === undefined) {
+      return { ok: false, error: fail("no-terminal", t("这个会话在这台服务器上还没有交互终端。请先在右侧面板为本会话打开终端，再重试。")) };
     }
-    if (blockedReason) return { ok: false, error: fail("unsafe-command", blockedReason) };
-    return { ok: true, value: { written } };
+    // The tier resolves per connection and conversation: the operator's switch
+    // and the conversation that set it both travel with the caller.
+    const policy = this.resolveExecPolicy(connectionId, ownerSessionId);
+    try {
+      const guarded = this.prepareTerminalInput(target, input, policy);
+      if (guarded.forwarded) target.stream.write(guarded.forwarded);
+      if (guarded.blockedReason) return { ok: false, error: fail("unsafe-command", guarded.blockedReason) };
+      return { ok: true, value: { written: guarded.forwarded.length } };
+    } catch (error) {
+      return { ok: false, error: fail("write-failed", error.message) };
+    }
   }
 
   /** Add a local policy notice to the same buffer rendered by the terminal. */
@@ -464,11 +495,20 @@ export const withExec = (Base) => class extends Base {
     processTerminalInput(session, text, null);
   }
 
-  /** Current buffered text of a connection's first live shell session. */
-  readConnectionOutput(connectionId, mode) {
+  /**
+   * Buffered text of the CALLER'S terminal.
+   *
+   * Reading "the first live shell" handed one conversation another's output —
+   * including whatever the other operator had typed or pasted. The reading
+   * cursors (`lastReadRaw`/`lastReadRedacted`) live on the session, so two
+   * conversations also no longer share a "new output" position.
+   */
+  readConnectionOutput(connectionId, mode, ownerSessionId) {
     const conn = this.connections.get(connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
-    const first = [...conn.sessions].map((id) => this.sessions.get(id)).find((s) => s !== void 0 && s.exited === null);
+    // Resolving may adopt the connection's single anonymous terminal, which is
+    // the "open a terminal, then ask the agent to look at it" path.
+    const first = this.ownerTerminalFor(connectionId, ownerSessionId);
     if (first === void 0) {
       return { ok: true, value: { data: "", hasSession: false, truncated: false, redacted: false } };
     }

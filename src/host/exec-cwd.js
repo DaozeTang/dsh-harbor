@@ -8,9 +8,20 @@ export function posixLoginShell(name) {
 }
 function quote(text) { return `'${text.replace(/'/g, `'\\''`)}'`; }
 
-/** procRoot is injectable for filesystem fixtures; production always uses /proc. */
-export function buildCwdResolverPrefix({ procRoot = '/proc' } = {}) {
+/**
+ * procRoot is injectable for filesystem fixtures; production always uses /proc.
+ *
+ * `tty` narrows the resolver to one terminal's shell. Until 0.2.2 a connection
+ * carried exactly one interactive terminal, so "the unique foreground shell on
+ * this transport" was a valid way to find it. Per-conversation terminals make
+ * several shells the normal case, and "several matches" degrades to the login
+ * directory — precisely when the inheritance matters most. The host learns each
+ * terminal's tty (see terminal-census.js) and passes it here, which makes the
+ * match exact again while every idle/foreground rule stays in force.
+ */
+export function buildCwdResolverPrefix({ procRoot = '/proc', tty = null } = {}) {
   return `
+__dsh_tty_filter=${quote(typeof tty === 'string' && tty.startsWith('/') ? tty : '')}
 __dsh_find_shell() {
   __dsh_count=0; __dsh_seen=0; __dsh_busy=0; __dsh_nonint=0; __dsh_pid=''; __dsh_detail=''
   [ -n "$SSH_CONNECTION" ] || return 1
@@ -19,6 +30,7 @@ __dsh_find_shell() {
     case $__dsh_n in ''|*[!0-9]*) continue ;; esac
     __dsh_t=$(readlink "$__dsh_p/fd/0" 2>/dev/null) || continue
     case $__dsh_t in /dev/pts/*|/dev/tty[0-9]*|/dev/ttys[0-9]*) ;; *) continue ;; esac
+    if [ -n "$__dsh_tty_filter" ] && [ "$__dsh_t" != "$__dsh_tty_filter" ]; then continue; fi
     __dsh_c=$(cat "$__dsh_p/comm" 2>/dev/null) || continue
     case $__dsh_c in bash|zsh|sh|dash|ash|ksh|mksh) ;; *) continue ;; esac
     tr '\\0' '\\n' < "$__dsh_p/environ" 2>/dev/null | grep -Fxq "SSH_CONNECTION=$SSH_CONNECTION" || continue

@@ -93,7 +93,7 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
   assert.equal(result.value.cwd, null);
   assert.equal(result.value.timedOut, false);
   assert.deepEqual(stream.writes[0], "\x15display clock\r", "the line is cleared then submitted");
-  assert.equal(conn.cliBusy, false, "the busy flag is released");
+  assert.equal(session.cliBusy, false, "the busy flag is released");
 }
 
 // ── paging: the device stops at ---- More ----, a space advances it ─────────
@@ -165,10 +165,12 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
   const conn = fakeConn([session]);
   service.sessions.set(session.id, session);
 
-  conn.cliBusy = true;
+  // Serialization is per terminal: another conversation's query on the same
+  // device must not block this one.
+  session.cliBusy = true;
   const busy = await service.cliExecOnSession(conn, session, "display clock");
   assert.equal(busy.error.code, "cli-busy");
-  conn.cliBusy = false;
+  session.cliBusy = false;
 
   const bare = makeSession("random scrolling output\r\nnothing prompt-like");
   bare.stream = fakeDeviceStream(() => null);
@@ -178,7 +180,7 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
   const lonely = fakeConn([]);
   const noTerminal = await service.cliExecOnConnection(lonely, "display clock");
   assert.equal(noTerminal.error.code, "cli-no-terminal");
-  assert.match(noTerminal.error.message, /打开该设备的终端/, "the error tells the operator what to do (#33 P1)");
+  assert.match(noTerminal.error.message, /打开终端/, "the error tells the operator what to do (#33 P1)");
 }
 
 // ── routing: execStalled short-circuits exec; first stall falls through ─────

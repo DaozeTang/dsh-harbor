@@ -1246,7 +1246,9 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
       // error instead of a minute of silent retrying; the user can also
       // cancel the pending handshake explicitly.
       const connection = await api.profileConnect({ profileId: profile.profileId, readyTimeout: 15000, retries: 0 });
-      const session = await api.openSession(connection.connectionId, 100, 30);
+      // This page owns no conversation, so the terminal it opens is anonymous;
+      // the first pane that claims the reveal adopts it (see requestPaneOpen).
+      const session = await api.openSession(connection.connectionId, 100, 30, { openedBy: "panel" });
       if (profile.defaultProjectPath) {
         await api.changeDirectory(session.sessionId, profile.defaultProjectPath);
         harborUiSetProjectTarget(connection.connectionId, profile.defaultProjectPath);
@@ -1256,7 +1258,7 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
       // This page owns no pane, so queue the connection for one to pick up and
       // ask the host to reveal the terminal. Without both halves a connect here
       // opened nothing and the new server never appeared in the panel.
-      requestPaneOpen(connection.connectionId);
+      requestPaneOpen(connection.connectionId, { adopt: true });
       // A successful connect must clear any stale panel error (e.g. an earlier
       // host-key mismatch) so the error bar doesn't linger after recovery.
       harborUiSetError(null);

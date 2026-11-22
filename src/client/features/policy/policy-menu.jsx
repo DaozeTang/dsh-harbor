@@ -19,7 +19,7 @@ import { t } from "../../../i18n/core.js";
 
 const TIER_ICON = { standard: "shield-outline", custom: "sliders-two-outline", allowAll: "warning-outline" };
 
-export function PolicyMenu({ api, connectionId }) {
+export function PolicyMenu({ api, connectionId, sessionId }) {
   const [info, setInfo] = useState(null);
   const [open, setOpen] = useState(false);
   const [confirmTier, setConfirmTier] = useState(null);
@@ -29,14 +29,14 @@ export function PolicyMenu({ api, connectionId }) {
   useEffect(() => {
     let alive = true;
     setInfo(null);
-    api.execPolicyGet(connectionId).then((value) => { if (alive) setInfo(value); }).catch(() => {});
+    api.execPolicyGet(connectionId, sessionId).then((value) => { if (alive) setInfo(value); }).catch(() => {});
     return () => { alive = false; };
-  }, [api, connectionId]);
+  }, [api, connectionId, sessionId]);
 
   const applyTier = async (tier) => {
     setBusy(true);
     try {
-      setInfo(await api.execPolicySet(connectionId, tier));
+      setInfo(await api.execPolicySet(connectionId, tier, sessionId));
     } catch (error) {
       harborUiSetError(t(`无法切换执行策略：${error?.message ?? String(error)}`));
     } finally {
@@ -62,7 +62,7 @@ export function PolicyMenu({ api, connectionId }) {
         size="sm"
         icon={TIER_ICON[tier]}
         onClick={() => setOpen((value) => !value)}
-        title={t("AI 命令执行策略（仅操作者可切换，本次会话内生效）")}
+        title={t("AI 命令执行策略（仅操作者可切换，仅对当前对话生效）")}
         style={tier === "allowAll" ? { color: "var(--hb-err)" } : undefined}
       >
         {execPolicyLabel(tier)}{sessionScoped ? t("（会话）") : ""}

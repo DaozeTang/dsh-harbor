@@ -5,6 +5,7 @@ import { fail } from "../envelope.js";
 import { setLanguage, t } from "../../i18n/core.js";
 import { normalizeAllowList, normalizeExactRules, normalizePolicy, ALL_CATEGORY_KEYS, CATEGORY_LABELS } from "../safety.js";
 import { SETTINGS_ROW_ID, loadSettingsRecord, normalizeDefaultUsername, normalizeFeatureSettings } from "./models.js";
+import { ownerKey } from "../terminal-owner.js";
 
 export const withSettings = (Base) => class extends Base {
   // ── agent auto-connect + operator-level switches ───────────────
@@ -132,13 +133,14 @@ export const withSettings = (Base) => class extends Base {
    * it off made the custom tier a silent no-op — the panel said "released",
    * the gate kept blocking.
    */
-  resolveExecPolicy(connectionId) {
+  resolveExecPolicy(connectionId, ownerSessionId) {
     const global = this.globalExecPolicy();
     const exact = normalizeExactRules(this.execPolicyExact);
     const rules = exact.length ? { exact } : {};
     const conn = this.connections.get(connectionId);
-    if (conn !== void 0 && conn.execPolicyOverride !== undefined) {
-      return { mode: conn.execPolicyOverride, source: "session", allow: global.allow, ...rules };
+    const override = this.execPolicyOverrideFor(conn, ownerSessionId);
+    if (override !== undefined) {
+      return { mode: override, source: "session", allow: global.allow, ...rules };
     }
     let profileOverride;
     if (conn !== void 0 && conn.profileId && this.profileTable) {
@@ -160,9 +162,25 @@ export const withSettings = (Base) => class extends Base {
    * Policy snapshot for the panel's pill. Also the single source the UI uses
    * to render where each layer points. Never exposed to the agent as a tool.
    */
+  /**
+   * The in-memory tier switch one conversation set on one connection.
+   *
+   * It used to sit on the connection record, so a chat that relaxed the gate
+   * silently relaxed it for every other chat on that server. It is now keyed by
+   * conversation; a caller with no session id (an older panel, the settings
+   * page) reads and writes the anonymous bucket, which keeps the operator's
+   * "relax it for this connection" gesture working where there is no chat.
+   */
+  execPolicyOverrideFor(conn, ownerSessionId) {
+    const overrides = conn?.execPolicyOverrides;
+    if (!(overrides instanceof Map)) return undefined;
+    const mode = overrides.get(ownerKey(ownerSessionId));
+    return typeof mode === "string" ? mode : undefined;
+  }
+
   execPolicyGet(request) {
-    const connectionId = request?.connectionId ?? this.activeConnectionId;
-    const resolved = this.resolveExecPolicy(connectionId);
+    const connectionId = request?.connectionId ?? this.activeConnectionFor(request?.sessionId);
+    const resolved = this.resolveExecPolicy(connectionId, request?.sessionId);
     const global = this.globalExecPolicy();
     const conn = this.connections.get(connectionId);
     let profileOverride = null;
@@ -198,8 +216,9 @@ export const withSettings = (Base) => class extends Base {
     }
     const conn = this.connections.get(request.connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
-    conn.execPolicyOverride = policy.mode;
-    return this.execPolicyGet({ connectionId: request.connectionId });
+    conn.execPolicyOverrides ??= new Map();
+    conn.execPolicyOverrides.set(ownerKey(request.sessionId), policy.mode);
+    return this.execPolicyGet({ connectionId: request.connectionId, sessionId: request.sessionId });
   }
 
   // ── interface language ─────────────────────────────────────────────────────

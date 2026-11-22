@@ -129,6 +129,16 @@ service.execPolicyAllow = [];
   assert.deepEqual(allowAllWithChecklist.execPolicyAllow, ["reboot-shutdown"], "unknown keys are still dropped");
 }
 
+/**
+ * Install one conversation-scoped tier switch. The default owner key "" is a
+ * caller without a session (older panel, settings page); a conversation id
+ * scopes it to that chat.
+ */
+function withTier(record, mode, owner = "") {
+  record.execPolicyOverrides = mode === undefined ? new Map() : new Map([[owner, mode]]);
+  return record;
+}
+
 // resolveExecPolicy: default chain with no storage.
 {
   assert.deepEqual(service.resolveExecPolicy("conn-a"), { mode: "standard", source: "default", allow: [] });
@@ -153,9 +163,9 @@ const conn = { profileId: "profile-1" };
 // resolveExecPolicy: session override beats profile and global; unknown id and
 // missing connection fall back to the global/default chain.
 {
-  conn.execPolicyOverride = "allowAll";
+  withTier(conn, "allowAll");
   assert.deepEqual(service.resolveExecPolicy("conn-b"), { mode: "allowAll", source: "session", allow: [] });
-  conn.execPolicyOverride = undefined;
+  withTier(conn, undefined);
   assert.deepEqual(service.resolveExecPolicy("unknown-conn"), { mode: "allowAll", source: "global", allow: [] });
 }
 
@@ -179,7 +189,7 @@ const conn = { profileId: "profile-1" };
 
   // Same wire, session layer: the tier comes from the pill, the list still must
   // arrive intact.
-  service.connections.set("conn-c", { profileId: null, execPolicyOverride: "custom" });
+  service.connections.set("conn-c", withTier({ profileId: null }, "custom"));
   const sessionResolved = service.resolveExecPolicy("conn-c");
   assert.equal(sessionResolved.source, "session");
   assert.deepEqual(sessionResolved.allow, ["reboot-shutdown"]);
@@ -190,7 +200,7 @@ const conn = { profileId: "profile-1" };
   // switched to custom must release exactly what the operator ticked instead
   // of an empty set produced by the global tier.
   service.execPolicy = "standard";
-  service.connections.set("conn-s", { profileId: null, execPolicyOverride: "custom" });
+  service.connections.set("conn-s", withTier({ profileId: null }, "custom"));
   const sessionOnly = service.resolveExecPolicy("conn-s");
   assert.deepEqual(sessionOnly, { mode: "custom", source: "session", allow: ["reboot-shutdown"] });
   assert.equal(assessShellCommand("reboot", sessionOnly).ok, true, "a session custom switch releases the stored checklist");
@@ -221,7 +231,7 @@ const conn = { profileId: "profile-1" };
   assert.equal(saved.ok, true);
   assert.equal(saved.value.effective, "allowAll");
   assert.equal(saved.value.source, "session");
-  assert.equal(conn.execPolicyOverride, "allowAll");
+  assert.equal(conn.execPolicyOverrides.get(""), "allowAll");
   assert.equal(service.execPolicy, "custom", "the global setting is untouched");
 
   const invalid = service.execPolicySet({ connectionId: "conn-b", policy: "yolo" });
@@ -241,7 +251,7 @@ const conn = { profileId: "profile-1" };
 // command is still flagged dangerous for operator confirmation.
 {
   service.execPolicy = "allowAll";
-  service.connections.get("conn-b").execPolicyOverride = "allowAll";
+  withTier(service.connections.get("conn-b"), "allowAll");
   const danger = service.batchPlan({ command: "rm -rf /data" });
   assert.equal(danger.ok, true);
   assert.equal(danger.value.task.dangerous, true, "batch marking never relaxes with tiers");
@@ -253,7 +263,7 @@ const conn = { profileId: "profile-1" };
 // under allowAll the command runs (runPreparedExec mocked out).
 {
   service.execPolicy = "standard";
-  service.connections.get("conn-b").execPolicyOverride = "standard";
+  withTier(service.connections.get("conn-b"), "standard");
   service.profileTable = {
     get: (id) => (id === "profile-1" ? { execPolicy: "custom", /* no allow set on profiles by design */ } : undefined)
   };
@@ -262,7 +272,7 @@ const conn = { profileId: "profile-1" };
   assert.equal(blocked.value.policy, "standard", "rejection reports the effective tier");
   assert.equal(blocked.value.policySource, "session");
 
-  service.connections.get("conn-b").execPolicyOverride = "allowAll";
+  withTier(service.connections.get("conn-b"), "allowAll");
   let executed = null;
   service.runPreparedExec = async (connectionId, prepared, original) => {
     executed = { connectionId, prepared, original };
@@ -330,11 +340,11 @@ const conn = { profileId: "profile-1" };
   const session = { id: "sess-1", exited: null, stream: { write: (data) => written.push(data) }, waiters: [], inputRevision: 0, inputKnown: true, inputLine: "" };
   service.sessions = new Map([["sess-1", session]]);
   service.connections.get("conn-b").sessions = new Set(["sess-1"]);
-  service.connections.get("conn-b").execPolicyOverride = "allowAll";
+  withTier(service.connections.get("conn-b"), "allowAll");
   const passed = service.writeToConnection("conn-b", "rm -rf /tmp/x\r");
   assert.equal(passed.ok, true, "allowAll lets agent-written lines through");
   assert.ok(written.join("").includes("rm -rf /tmp/x"), "the line was forwarded");
-  service.connections.get("conn-b").execPolicyOverride = "standard";
+  withTier(service.connections.get("conn-b"), "standard");
   const guarded = service.writeToConnection("conn-b", "rm -rf /tmp/x\r");
   assert.equal(guarded.ok, false, "standard keeps guarding agent-written lines");
   assert.equal(guarded.error.code, "unsafe-command");

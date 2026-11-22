@@ -65,8 +65,13 @@ export class HarborApi {
     throw new HarborApiError(business.error?.code ?? "rpc-failed", business.error?.message ?? "remote call failed");
   }
 
-  list() {
-    return this.call("list", {});
+  /**
+   * Live connections, resolved for one conversation: `activeConnectionId` and
+   * every terminal's `mine` flag are relative to `sessionId`. Omitted (an
+   * older host or a surface without a session) keeps the anonymous view.
+   */
+  list(sessionId) {
+    return this.call("list", sessionId === undefined ? {} : { sessionId });
   }
 
   connect(input) {
@@ -85,9 +90,13 @@ export class HarborApi {
     return this.call("credentialDelete", typeof input === "string" ? { credentialId: input } : input);
   }
 
-  /** Bind the agent's connection-less tool calls to one connection. */
-  selectConnection(input) {
-    return this.call("selectConnection", typeof input === "string" ? { connectionId: input } : input);
+  /**
+   * Bind this conversation's agent to one connection. `sessionId` scopes the
+   * binding: two chats on one server no longer move each other's target.
+   */
+  selectConnection(input, sessionId) {
+    const request = typeof input === "string" ? { connectionId: input } : input;
+    return this.call("selectConnection", sessionId === undefined ? request : { ...request, sessionId });
   }
 
   agentSettingsGet() {
@@ -110,12 +119,13 @@ export class HarborApi {
     return this.call("agentSettingsSave", request);
   }
 
-  execPolicyGet(connectionId) {
-    return this.call("execPolicyGet", connectionId ? { connectionId } : {});
+  execPolicyGet(connectionId, sessionId) {
+    const request = connectionId ? { connectionId } : {};
+    return this.call("execPolicyGet", sessionId === undefined ? request : { ...request, sessionId });
   }
 
-  execPolicySet(connectionId, policy) {
-    return this.call("execPolicySet", { connectionId, policy });
+  execPolicySet(connectionId, policy, sessionId) {
+    return this.call("execPolicySet", sessionId === undefined ? { connectionId, policy } : { connectionId, policy, sessionId });
   }
 
   languageGet() {
@@ -184,8 +194,21 @@ export class HarborApi {
     return this.call("groupDelete", { groupId });
   }
 
-  openSession(connectionId, cols, rows) {
-    return this.call("openSession", { connectionId, cols, rows });
+  /**
+   * Open (or get back) THIS conversation's terminal on a connection.
+   * @param {string} connectionId - the server.
+   * @param {number} [cols] - initial width.
+   * @param {number} [rows] - initial height.
+   * @param {{sessionId?: string, openedBy?: "panel"|"agent", adopt?: boolean}} [options]
+   *   `sessionId` is the owning conversation; `adopt` allows claiming the
+   *   connection's single unclaimed terminal instead of opening a new one.
+   */
+  openSession(connectionId, cols, rows, options = {}) {
+    const request = { connectionId, cols, rows };
+    if (options.sessionId !== undefined) request.sessionId = options.sessionId;
+    if (options.openedBy !== undefined) request.openedBy = options.openedBy;
+    if (options.adopt !== undefined) request.adopt = options.adopt;
+    return this.call("openSession", request);
   }
 
   async write(sessionId, text) {

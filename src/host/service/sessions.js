@@ -2,6 +2,7 @@
  * PTY sessions: buffers, reads, cursor streams and terminal context history.
  */
 import { createTerminalOutput } from "../terminal-output.js";
+import { isOwnedBy, normalizeOwner, unindexOwner } from "../terminal-owner.js";
 import { redactForModel } from "../redact.js";
 import { noteTerminalInput } from "../ssh-upload-scheduling.js";
 import { buildCwdAwareCommand, extractExecCwd, posixLoginShell } from "../exec-cwd.js";
@@ -46,15 +47,15 @@ export const withSessions = (Base) => class extends Base {
     const ready = () => session && conn && this.sessions.get(request.sessionId) === session
       && !conn.dead && !conn.closing && session.exited === null && session.stream
       && session.inputKnown === true && session.inputLine === ""
-      && conn.sessions.size === 1;
-    if (!ready()) return { ok: false, error: fail("terminal-not-ready", t("请先结束前台程序、清空未提交输入，并仅保留一个交互终端")) };
+      && this.cwdProbeReady(conn, session);
+    if (!ready()) return { ok: false, error: fail("terminal-not-ready", t("请先结束前台程序、清空未提交输入，并确认该终端的可定位状态")) };
     const revision = session.inputRevision ?? 0;
     const client = conn.client;
     try {
       if (!posixLoginShell(await this.resolveLoginShell(conn))) {
         return { ok: false, error: fail("unsupported-shell", t("无法确认此 shell 的空闲状态，请在终端手动切换目录")) };
       }
-      const probe = await this.collectExecOutput(client, buildCwdAwareCommand(":"), 5000);
+      const probe = await this.collectExecOutput(client, buildCwdAwareCommand(":", { tty: session.tty ?? null }), 5000);
       if (probe.exitCode !== 0 || extractExecCwd(probe.stdout).cwd === null) {
         return { ok: false, error: fail("terminal-busy", t("未确认空闲交互 shell，请结束前台程序后重试或手动 cd")) };
       }
@@ -127,13 +128,16 @@ export const withSessions = (Base) => class extends Base {
     });
   }
 
-  listTerminalContexts() {
+  listTerminalContexts(request = {}) {
+    // The caller's own terminals are what it usually wants, and the panel needs
+    // to tell "my terminal" from "another conversation's" for the same server.
+    const ownerSessionId = normalizeOwner(request.sessionId);
     const sessions = [];
     for (const session of this.sessions.values()) {
       const connection = this.connections.get(session.connectionId);
       if (!connection) continue;
       const history = this.terminalContextHistory(session);
-      const item = { sessionId: session.id, connectionId: session.connectionId, host: connection.host, port: connection.port, openedAt: session.openedAt, openedBy: session.openedBy ?? "panel", alive: session.exited === null && session.stream !== null, historyStart: history.start, historyEnd: history.end };
+      const item = { sessionId: session.id, connectionId: session.connectionId, host: connection.host, port: connection.port, openedAt: session.openedAt, openedBy: session.openedBy ?? "panel", alive: session.exited === null && session.stream !== null, historyStart: history.start, historyEnd: history.end, ownerSessionId: session.ownerSessionId ?? null, mine: isOwnedBy(session, ownerSessionId) };
       if (connection.name !== undefined) item.name = connection.name;
       sessions.push(item);
     }
@@ -226,7 +230,10 @@ export const withSessions = (Base) => class extends Base {
     if (session === void 0) return { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
     this.sessions.delete(request.sessionId);
     const conn = this.connections.get(session.connectionId);
-    if (conn) conn.sessions.delete(request.sessionId);
+    if (conn) {
+      conn.sessions.delete(request.sessionId);
+      unindexOwner(conn, session.id, session.ownerSessionId);
+    }
     if (session.exited === null && session.stream !== null) {
       this.recordExit(session, { code: 0, reason: "operator-close" });
       try { session.stream.end(); } catch {}
@@ -261,7 +268,10 @@ export const withSessions = (Base) => class extends Base {
       this.rememberExit(sessionId, session.exited);
       this.sessions.delete(sessionId);
       const conn = this.connections.get(session.connectionId);
-      if (conn !== undefined) conn.sessions.delete(sessionId);
+      if (conn !== undefined) {
+        conn.sessions.delete(sessionId);
+        unindexOwner(conn, sessionId, session.ownerSessionId);
+      }
     }
   }
 

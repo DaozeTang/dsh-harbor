@@ -57,12 +57,26 @@ export const authSchema = z.union([passwordAuthSchema, keyAuthSchema]);
 
 export const hostKeyModeSchema = z.enum(["accept-new", "verify", "off"]);
 
+// ── terminal ownership ──────────────────────────────────────────────────────
+
+/**
+ * The DSH session that owns a terminal, or that binds an agent target.
+ *
+ * Optional everywhere: a caller without one (an older panel build, the
+ * settings page, a host that predates the SessionId plumbing) keeps working
+ * through the anonymous path, which is why this never becomes a required
+ * field. Absent means "no conversation to attribute this to", not "any".
+ */
+export const ownerSessionIdSchema = z.string().min(1).max(128);
+
 // ── connect ─────────────────────────────────────────────────────────────────
 
 export const connectRequestSchema = z.object({
   host: z.string().min(1),
   port: z.number().int().min(1).max(65535).default(22),
   username: z.string().min(1),
+  // Binds the new connection's agent target to this conversation only.
+  sessionId: ownerSessionIdSchema.optional(),
   // A temporary connection may reference a saved shared credential.  In that
   // case the secret is resolved only in the service, never returned to React.
   auth: authSchema.optional(),
@@ -112,7 +126,20 @@ export const connectResultSchema = resultSchema(
 
 // ── list ────────────────────────────────────────────────────────────────────
 
-export const listRequestSchema = z.object({});
+export const listRequestSchema = z.object({ sessionId: ownerSessionIdSchema.optional() });
+
+/**
+ * One live terminal on a connection, with the conversation that owns it.
+ * `mine` is resolved against the listing caller's session, which is what lets
+ * the panel show its own terminal instead of "the first one".
+ */
+export const terminalInfoSchema = z.object({
+  sessionId: z.string(),
+  ownerSessionId: z.string().nullable(),
+  openedBy: z.enum(["panel", "agent"]),
+  alive: z.boolean(),
+  mine: z.boolean()
+});
 
 export const connectionInfoSchema = z.object({
   connectionId: z.string(),
@@ -121,11 +148,17 @@ export const connectionInfoSchema = z.object({
   port: z.number(),
   username: z.string(),
   connected: z.boolean(),
+  // Kept for older panels: terminal ids only. New callers read `terminals`.
   sessions: z.array(z.string()),
+  terminals: z.array(terminalInfoSchema),
   // True while the connection has a live session opened by the agent
   // (ssh_connect_profile); the browser auto-reveals the SSH surface for it.
   agentSession: z.boolean().optional(),
-  agentRevealId: z.string().optional()
+  // The same fact, scoped to the listing caller's conversation.
+  agentSessionMine: z.boolean().optional(),
+  agentRevealId: z.string().optional(),
+  // Which conversation the reveal request belongs to; absent = anonymous.
+  agentRevealOwnerSessionId: z.string().optional()
 });
 
 // A saved SSH resource as the agent sees it: coordinates only —
@@ -188,7 +221,7 @@ export const agentSettingsSaveRequestSchema = z.object({
 
 // ── execution policy (session-scoped switching; operator-only RPC) ──────────
 
-export const execPolicyGetRequestSchema = z.object({ connectionId: z.string().optional() });
+export const execPolicyGetRequestSchema = z.object({ connectionId: z.string().optional(), sessionId: ownerSessionIdSchema.optional() });
 export const execPolicyGetResultSchema = resultSchema(z.object({
   // The tier in force for this connection right now.
   effective: execPolicyModeSchema,
@@ -201,7 +234,7 @@ export const execPolicyGetResultSchema = resultSchema(z.object({
   global: z.object({ policy: execPolicyModeSchema, allow: z.array(z.string()) }),
   profileOverride: execPolicyModeSchema.nullable()
 }));
-export const execPolicySetRequestSchema = z.object({ connectionId: z.string(), policy: execPolicyModeSchema });
+export const execPolicySetRequestSchema = z.object({ connectionId: z.string(), policy: execPolicyModeSchema, sessionId: ownerSessionIdSchema.optional() });
 export const execPolicySetResultSchema = execPolicyGetResultSchema;
 
 // ── interface language (operator choice; null = follow DSH's own language) ──
@@ -416,7 +449,9 @@ export const profileConnectRequestSchema = z.object({
   readyTimeout: z.number().int().positive().max(120000).optional(),
   retries: z.number().int().min(0).max(5).optional(),
   /** When supplied, override this saved resource's jump chain for one connect only. */
-  proxyJumpProfileIds: z.array(profileIdSchema).max(8).optional()
+  proxyJumpProfileIds: z.array(profileIdSchema).max(8).optional(),
+  /** Binds the agent target to this conversation instead of the shared pointer. */
+  sessionId: ownerSessionIdSchema.optional()
 });
 export const profileConnectResultSchema = connectResultSchema;
 
@@ -438,7 +473,9 @@ export const groupDeleteResultSchema = resultSchema(z.object({ deleted: z.boolea
 // ── select the connection the agent operates on ─────────────────────────────
 
 export const selectConnectionRequestSchema = z.object({
-  connectionId: z.string().min(1)
+  connectionId: z.string().min(1),
+  // Binds only this conversation; absent keeps the shared compatibility pointer.
+  sessionId: ownerSessionIdSchema.optional()
 });
 
 export const selectConnectionResultSchema = resultSchema(z.object({
@@ -451,7 +488,12 @@ export const openSessionRequestSchema = z.object({
   connectionId: z.string().min(1),
   cols: z.number().int().min(2).max(500).optional(),
   rows: z.number().int().min(1).max(200).optional(),
-  openedBy: z.enum(["panel", "agent"]).optional()
+  openedBy: z.enum(["panel", "agent"]).optional(),
+  // The conversation that will own the terminal. Absent opens an anonymous
+  // terminal, which the first conversation that asks may adopt.
+  sessionId: ownerSessionIdSchema.optional(),
+  // false refuses to adopt this connection's single anonymous terminal.
+  adopt: z.boolean().optional()
 });
 
 export const sessionInfoSchema = z.object({
@@ -459,16 +501,23 @@ export const sessionInfoSchema = z.object({
   connectionId: z.string(),
   cols: z.number(),
   rows: z.number(),
-  alive: z.boolean()
+  alive: z.boolean(),
+  ownerSessionId: z.string().nullable(),
+  // true when an existing terminal was returned rather than created.
+  reused: z.boolean(),
+  // true when an anonymous terminal was claimed instead of created.
+  adopted: z.boolean().optional()
 });
 
 export const openSessionResultSchema = resultSchema(sessionInfoSchema);
 
 export const terminalContextSessionSchema = z.object({
   sessionId: z.string(), connectionId: z.string(), name: z.string().optional(), host: z.string(), port: z.number().int(),
-  openedAt: z.string(), openedBy: z.enum(["panel", "agent"]), alive: z.boolean(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative()
+  openedAt: z.string(), openedBy: z.enum(["panel", "agent"]), alive: z.boolean(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(),
+  // Which conversation owns it (null = anonymous), and whether that is the caller.
+  ownerSessionId: z.string().nullable(), mine: z.boolean()
 });
-export const terminalContextListRequestSchema = z.object({});
+export const terminalContextListRequestSchema = z.object({ sessionId: ownerSessionIdSchema.optional() });
 export const terminalContextListResultSchema = resultSchema(z.object({ sessions: z.array(terminalContextSessionSchema) }));
 export const terminalContextReadRequestSchema = z.object({
   sessionId: z.string().min(1), after: z.number().int().nonnegative().safe().optional(), maxBytes: z.number().int().min(1024).max(98304).optional()
@@ -482,7 +531,7 @@ export const shellIntegrationStateSchema = z.object({
 });
 
 export const terminalContextReadResultSchema = resultSchema(z.object({
-  sessionId: z.string(), data: z.string(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(), offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), wasClamped: z.boolean(), hasMore: z.boolean(), alive: z.boolean(), exit: z.union([z.object({ code: z.number(), signal: z.number().optional(), reason: z.enum(["remote-exit", "remote-signal", "channel-closed", "channel-error", "transport-lost", "operator-close"]).optional() }), z.null()]), redacted: z.boolean(),
+  sessionId: z.string(), data: z.string(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(), offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), wasClamped: z.boolean(), hasMore: z.boolean(), alive: z.boolean(), exit: z.union([z.object({ code: z.number(), signal: z.number().optional(), reason: z.enum(["remote-exit", "remote-signal", "channel-closed", "channel-error", "transport-lost", "operator-close", "session-closed"]).optional() }), z.null()]), redacted: z.boolean(),
   // OSC 133 state when the shell emits it (enableShellIntegration); null before that.
   shell: shellIntegrationStateSchema.nullable()
 }));
@@ -545,7 +594,7 @@ export const readResultSchema = resultSchema(
     data: z.string(),
     startOffset: z.number().int().nonnegative().optional(),
     offset: z.number().int().nonnegative().optional(),
-    exit: z.union([z.object({ code: z.number(), signal: z.number().optional(), reason: z.enum(["remote-exit", "remote-signal", "channel-closed", "channel-error", "transport-lost", "operator-close"]).optional() }), z.null()])
+    exit: z.union([z.object({ code: z.number(), signal: z.number().optional(), reason: z.enum(["remote-exit", "remote-signal", "channel-closed", "channel-error", "transport-lost", "operator-close", "session-closed"]).optional() }), z.null()])
   })
 );
 

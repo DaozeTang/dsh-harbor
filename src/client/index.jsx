@@ -196,7 +196,15 @@ function applySidebarRegistrations(ctx, { api, hostT }) {
 
     own(ctx.slots.inject("sidebar.right.pane.tab", () =>
       ctx.slots.register(
-        { name: "sidebar.right.pane.tab", key: HARBOR_TAB_ID, locale: NS, inject: () => ({ api, credentials: ctx.remote?.credentials }) },
+        {
+          name: "sidebar.right.pane.tab",
+          key: HARBOR_TAB_ID,
+          locale: NS,
+          // Session-scoped seat: the framework hands the pane its DSH session,
+          // which is the key the host uses to give this conversation its own
+          // terminal on every server.
+          inject: (sessionId) => ({ api, credentials: ctx.remote?.credentials, sessionId })
+        },
         HarborSidebarBody
  )
  ));

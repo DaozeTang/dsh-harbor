@@ -18,7 +18,6 @@ export const en = {
   "已打开的服务器": "Open servers",
   "（Agent 正在使用此连接）": " (the agent is using this connection)",
   "关闭此栏的 ${connection.name || connection.host} 标签": "Close the ${connection.name || connection.host} tab in this pane",
-  "关闭此栏标签（两栏都关闭后断开服务器）": "Close this tab (the connection is dropped only when no pane shows it)",
   "还没有连接": "No connection yet",
   "连接服务器": "Connect to a server",
   "连接新服务器": "Connect a new server",
@@ -122,7 +121,7 @@ export const en = {
   "已读取 ${formatBytes(nextOffset)} / ${formatBytes(size)}": "Read ${formatBytes(nextOffset)} of ${formatBytes(size)}",
   "继续加载": "Load more",
   "无法切换执行策略：${error?.message ?? String(error)}": "Could not switch the execution policy: ${error?.message ?? String(error)}",
-  "AI 命令执行策略（仅操作者可切换，本次会话内生效）": "AI command policy (operator-only, effective for this session)",
+
   "（会话）": " (session)",
   "AI 命令执行策略": "AI command policy",
   "正在读取当前策略…": "Reading the current policy…",

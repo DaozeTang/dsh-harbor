@@ -77,6 +77,7 @@ const PROFILES = [
 function makeService({ profiles = PROFILES, connections = [], agentAutoConnect = false, settings = null } = {}) {
   const service = Object.create(HarborService.prototype);
   service.connections = new Map(connections);
+  service.sessions = new Map();
   service.activeConnectionId = null;
   service.agentAutoConnect = agentAutoConnect;
   service.profileTable = {
@@ -118,10 +119,10 @@ function connection(id, overrides = {}) {
   // The surface handshake: a live agent-opened session flags the connection so
   // the browser can auto-reveal the SSH tab; human-opened sessions never do.
   const agentOpened = makeService({ agentAutoConnect: true, connections: [["ca", connection("ca")]] });
-  agentOpened.sessions = new Map([["s1", { openedBy: "agent" }]]);
+  agentOpened.sessions = new Map([["s1", { openedBy: "agent", exited: null, stream: {} }]]);
   assert.equal((await agentOpened.list()).value.connections[0].agentSession, true);
   const humanOpened = makeService({ agentAutoConnect: true, connections: [["ch", connection("ch")]] });
-  humanOpened.sessions = new Map([["s1", { openedBy: "panel" }]]);
+  humanOpened.sessions = new Map([["s1", { openedBy: "panel", exited: null, stream: {} }]]);
   assert.equal((await humanOpened.list()).value.connections[0].agentSession, undefined, "absent, not false — strict codec drops undefined");
 }
 
@@ -288,6 +289,9 @@ function connection(id, overrides = {}) {
   });
   reuseService.activeConnectionId = null;
   reuseService.profileConnect = async () => ({ ok: true, value: { connectionId: "live-1", host: "10.1.0.1", port: 22, username: "root" } });
+  // The connection already carries a human terminal; ownership is read from the
+  // session record, so it must exist for "reused, no second PTY" to hold.
+  reuseService.sessions.set("s1", { id: "s1", connectionId: "live-1", openedBy: "panel", exited: null, stream: {} });
   const reused = await reuseService.agentConnectProfile({ resource: "prod-1" });
   assert.equal(reused.ok, true);
   assert.equal(reused.value.reused, true);
@@ -343,7 +347,7 @@ function connection(id, overrides = {}) {
  );
   assert.deepEqual(validateJsonSchemaValue(listTool.output.schema, { activeConnectionId: null, connections: [] }, "value"), [], "the switch-off shape (no resources key) stays valid");
   const realAgentList = makeService({ agentAutoConnect: true, connections: [["agent-c", connection("agent-c", { sessions: new Set(["s1"]) })]] });
-  realAgentList.sessions = new Map([["s1", { openedBy: "agent" }]]);
+  realAgentList.sessions = new Map([["s1", { openedBy: "agent", exited: null, stream: {} }]]);
   const actualListValue = JSON.parse(JSON.stringify((await realAgentList.list()).value));
   assert.deepEqual(validateJsonSchemaValue(listTool.output.schema, actualListValue, "value"), [], "the actual agent-session list satisfies the strict tool schema");
   realAgentList.connections.get("agent-c").agentRevealId = "request-1";

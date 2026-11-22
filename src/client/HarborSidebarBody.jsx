@@ -18,13 +18,14 @@
 import * as React from "react";
 import { HarborPanel } from "./HarborPanel.jsx";
 
-export function HarborSidebarBody({ api, credentials, useTabInfo }) {
+export function HarborSidebarBody({ api, credentials, sessionId, useTabInfo }) {
   const tab = useTabInfo === undefined ? undefined : useTabInfo();
   return (
     <div className="hb-sidebar-body" data-dsh-harbor-sidebar-body="true">
       <HarborPanel
         api={api}
         credentials={credentials}
+        sessionId={sessionId}
         {...(tab === undefined ? {} : { viewId: tab.tab.id, viewSignal: tab.tab.signal })}
       />
     </div>

@@ -143,14 +143,35 @@ const idleSnapshot = viewSession("tab-left");
 requestPaneOpen("x");
 assert.notEqual(paneOpenRequestsRevision(), revisionBefore, "queuing advances the revision panes subscribe to");
 assert.equal(viewSession("tab-left"), idleSnapshot, "queuing alone does not touch a view snapshot");
-assert.deepEqual(claimPendingOpens(), ["x"], "the first pane to render claims the connection");
+assert.deepEqual(claimPendingOpens(), [{ connectionId: "x", adopt: false }], "the first pane to render claims the connection");
 assert.deepEqual(claimPendingOpens(), [], "the queue is drained, so a second pane gets nothing");
 
 // Two queued connects both land, and the queue is per-request, not per-pane.
 requestPaneOpen("x");
 requestPaneOpen("y");
-assert.deepEqual(claimPendingOpens(), ["x", "y"]);
+assert.deepEqual(claimPendingOpens(), [{ connectionId: "x", adopt: false }, { connectionId: "y", adopt: false }]);
 assert.deepEqual(claimPendingOpens(), []);
+
+// A request that belongs to one conversation must not pop a tab into another
+// chat's pane: terminals are per-conversation, so the wrong pane would only
+// show "no terminal". An unowned request (the settings page) is claimable by
+// any pane, and asks it to adopt the anonymous terminal.
+requestPaneOpen("owned", { ownerSessionId: "conv-a" });
+requestPaneOpen("shared", { adopt: true });
+assert.deepEqual(claimPendingOpens("conv-b"), [{ connectionId: "shared", adopt: true }], "another chat only sees the unowned request");
+assert.deepEqual(claimPendingOpens("conv-b"), []);
+assert.deepEqual(claimPendingOpens("conv-a"), [{ connectionId: "owned", adopt: false }], "the owning conversation still gets its own");
+
+// A request whose session never mounts expires instead of hijacking a later pane.
+const realNow = Date.now;
+try {
+  requestPaneOpen("stale", { ownerSessionId: "conv-gone" });
+  Date.now = () => realNow() + 31000;
+  assert.deepEqual(claimPendingOpens("conv-other"), [], "an expired request is dropped, not claimed by a stranger");
+  assert.deepEqual(claimPendingOpens("conv-gone"), [], "and the owner cannot claim it either");
+} finally {
+  Date.now = realNow;
+}
 
 // Teardown must not leave a stale request that the next pane would adopt.
 requestPaneOpen("z");
@@ -174,14 +195,14 @@ console.log("pane selection: split-pane visibility survives remount, new panes s
     { connectionId: "agent-2", agentSession: true }
   ];
   assert.equal(harborUiAnnounceAgentConnections(listed), true, "fresh agent connections announce");
-  assert.deepEqual(claimPendingOpens(), ["agent-1", "agent-2"], "only agent-opened connections are queued, humans never");
+  assert.deepEqual(claimPendingOpens(), [{ connectionId: "agent-1", adopt: false }, { connectionId: "agent-2", adopt: false }], "only agent-opened connections are queued, humans never");
   assert.equal(harborUiAnnounceAgentConnections(listed), false, "re-announcing the same connections is a no-op");
   assert.deepEqual(claimPendingOpens(), [], "the dedupe did not re-queue anything");
   assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentSession: true }]), false, "per-connection memory survives later polls");
   assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-1" }]), true, "a saved-resource request reopens an existing human session");
-  assert.deepEqual(claimPendingOpens(), ["agent-1"]);
+  assert.deepEqual(claimPendingOpens(), [{ connectionId: "agent-1", adopt: false }]);
   assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-1" }]), false, "the same request is not replayed each poll");
   assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-2" }]), true, "a later request can reopen a closed pane");
-  assert.deepEqual(claimPendingOpens(), ["agent-1"]);
+  assert.deepEqual(claimPendingOpens(), [{ connectionId: "agent-1", adopt: false }]);
   resetPaneSessions();
 }

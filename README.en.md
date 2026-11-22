@@ -25,7 +25,7 @@ Open any session, click the terminal button in the header and connect a server i
 
 Reaching a remote machine usually takes three windows: a terminal, an SFTP client, and a chat where commands get copied in and results pasted back. Harbor puts all of it on one screen:
 
-- **The agent and the terminal share one connection.** Say "check memory"; the command runs in the terminal in front of you, and exit code, output, duration, timeout and truncation state come back to the model unchanged.
+- **One terminal per conversation, with the agent working beside you.** Say "check memory"; the command runs in the terminal in front of you, and exit code, output, duration, timeout and truncation state come back to the model unchanged. Two conversations on the same machine never type over each other.
 - **Credentials never enter the conversation.** Servers are saved as resources; passwords and keys go only to DSH's local credential store. The model sees "the shared credential of prod-web-01", never the secret.
 - **Destructive actions need your approval.** Commands that hit the safety rules suspend the tool call for a native in-session approval. An approved `rm` performs a reversible move into a remote trash directory instead of a delete.
 

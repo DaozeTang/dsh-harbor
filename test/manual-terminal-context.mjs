@@ -42,10 +42,17 @@ function makeService() {
         openedBy: "panel",
         alive: true,
         historyStart: 0,
-        historyEnd: 15
+        historyEnd: 15,
+        ownerSessionId: null,
+        mine: true
       }]
     }
   });
+
+  // Asking as a conversation: the anonymous terminal is not "mine", which is
+  // what stops a chat from reading another one's screen by accident.
+  const asMine = service.listTerminalContexts({ sessionId: "conv-a" });
+  assert.equal(asMine.value.sessions[0].mine, false);
 }
 
 // Incremental context reads use a byte limit, redact secrets, and do not drain

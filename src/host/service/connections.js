@@ -89,6 +89,14 @@ export const withConnections = (Base) => class extends Base {
       name: request.name,
       profileId,
       sessions: new Set(),
+      // sessionId -> the DSH conversation that owns it. Terminal ownership is
+      // what keeps two chats from sharing one shell (see terminal-owner.js).
+      ownerIndex: new Map(),
+      // Serializes "does this conversation already have a terminal?" with
+      // channel creation, so two simultaneous opens cannot both create a PTY.
+      openQueue: Promise.resolve(),
+      // Conversation-keyed tier switches (operator's per-connection pill).
+      execPolicyOverrides: new Map(),
       sftp: null,
       tunnels: new Map(),
       // Transport health / self-healing state: keep the auth config around so
@@ -171,7 +179,7 @@ export const withConnections = (Base) => class extends Base {
     // even if the browser has not rendered its PTY yet. Ephemeral batch
     // connections opt out: they are disconnected right after their command and
     // must not steal (or later clear) the operator's active server.
-    if (activate) this.activeConnectionId = id;
+    if (activate) this.bindActiveConnection(id, request.sessionId);
     return {
       ok: true,
       value
@@ -606,7 +614,7 @@ export const withConnections = (Base) => class extends Base {
     // reuses this very record, so clearing it here is what makes the panel's
     // "断开或重连后恢复资源/全局设置" promise true instead of leaving a
     // forgotten allowAll in force after a network blip.
-    record.execPolicyOverride = undefined;
+    record.execPolicyOverrides = new Map();
     record.sftp = null;
     for (const sessionId of [...record.sessions]) {
       const session = this.sessions.get(sessionId);
@@ -618,6 +626,10 @@ export const withConnections = (Base) => class extends Base {
       this.sessions.delete(sessionId);
     }
     record.sessions.clear();
+    record.ownerIndex = new Map();
+    record.openQueue = Promise.resolve();
+    record.execPolicyOverrides = new Map();
+    this.forgetActiveConnection(record.id);
     this.closeConnectionTunnels(record);
     // The jump chain is rebuilt by the reconnect; keeping the old hop clients
     // would leak one SSH transport per hop on every network blip.
@@ -717,11 +729,10 @@ export const withConnections = (Base) => class extends Base {
       }
     }
     conn.sessions.clear();
+    conn.ownerIndex = new Map();
     this.closeConnectionTunnels(conn);
     this.connections.delete(request.connectionId);
-    if (this.activeConnectionId === request.connectionId) {
-      this.activeConnectionId = null;
-    }
+    this.forgetActiveConnection(request.connectionId);
     try { conn.client.end(); } catch {}
     for (const hop of conn.hops ?? []) { try { hop.end(); } catch {} }
     conn.hops = [];

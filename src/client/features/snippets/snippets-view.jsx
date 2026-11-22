@@ -16,7 +16,7 @@ import {
 import { harborUiSetError } from "../../store.js";
 import { t } from "../../../i18n/core.js";
 
-export function SnippetsView({ api, active, profiles, groups, onFilled }) {
+export function SnippetsView({ api, active, sessionId, profiles, groups, onFilled }) {
   const [items, setItems] = useState(loadCommandSnippets);
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState(null);
@@ -35,21 +35,23 @@ export function SnippetsView({ api, active, profiles, groups, onFilled }) {
     return () => cancelAnimationFrame(frame);
   }, []);
 
-  const sessionId = active?.sessions?.[0] ?? null;
+  // Type into THIS conversation's terminal; an older host has no `terminals`
+  // array, and then its first session is what "the terminal" meant.
+  const targetSessionId = sessionId ?? active?.sessions?.[0] ?? null;
   const visible = useMemo(
     () => searchCommandSnippets(matchingCommandSnippets(availableCommandSnippets(items), active, profiles), query),
     [items, active, profiles, query]
  );
 
   useEffect(() => {
-    if (draft !== null && draft.sessionId !== sessionId) setDraft(null);
-  }, [draft, sessionId]);
+    if (draft !== null && draft.sessionId !== targetSessionId) setDraft(null);
+  }, [draft, targetSessionId]);
 
   const fill = async (command, expectedSessionId) => {
-    if (sessionId === null) return harborUiSetError(t("请先打开当前服务器的终端，再填入快捷命令"));
-    if (expectedSessionId !== undefined && sessionId !== expectedSessionId) return;
+    if (targetSessionId === null) return harborUiSetError(t("请先打开当前服务器的终端，再填入快捷命令"));
+    if (expectedSessionId !== undefined && targetSessionId !== expectedSessionId) return;
     try {
-      await api.write(sessionId, command);
+      await api.write(targetSessionId, command);
       setDraft(null);
       setQuery("");
       onFilled?.();
@@ -59,9 +61,9 @@ export function SnippetsView({ api, active, profiles, groups, onFilled }) {
   };
 
   const choose = (item) => {
-    if (sessionId === null) return harborUiSetError(t("请先打开当前服务器的终端，再填入快捷命令"));
+    if (targetSessionId === null) return harborUiSetError(t("请先打开当前服务器的终端，再填入快捷命令"));
     const parameters = snippetParameters(item.command);
-    if (parameters.length > 0) setDraft({ item, parameters, sessionId });
+    if (parameters.length > 0) setDraft({ item, parameters, sessionId: targetSessionId });
     else void fill(item.command);
   };
 

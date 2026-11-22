@@ -10,6 +10,7 @@ import { KnownHosts } from "../hostkey.js";
 import { RemoteWorkspaceStore, remoteWorkspaceDomainSpec } from "../remote-workspace.js";
 import { TransferTasks } from "../transfer-tasks.js";
 import { setLanguage } from "../../i18n/core.js";
+import { normalizeOwner, resolveTerminalOwner } from "../terminal-owner.js";
 import { registerSshSessionTools } from "../tools/ssh-session.js";
 import { registerSftpTools } from "../tools/sftp.js";
 import { registerTunnelTools } from "../tools/tunnel.js";
@@ -42,8 +43,29 @@ export class HarborServiceBase extends TypertRemoteService {
   batchTasks = new Map();
   transferTasks = new TransferTasks({ journalPath: joinPath(homedir(), ".dsh", "harbor-transfer-journal.json") });
 
-  /** The connection currently represented by the right-side terminal panel. */
+  /**
+   * The connection the agent's connection-less tool calls target, per DSH
+   * conversation. Every chat keeps its own pointer: two chats on the same
+   * server used to fight over one process-global value, so the second click
+   * silently retargeted the first chat's agent.
+   *
+   * DSH session id -> connectionId. A session with no entry falls back to
+   * `activeConnectionId` and then to the single-connection case.
+   */
+  activeConnectionByOwner = new Map();
+  /**
+   * Compatibility pointer for callers that carry no session id: an older
+   * panel build, a settings-page action, or a host that predates the SessionId
+   * plumbing. Also keeps the pre-0.3.0 "last click wins" behaviour for them.
+   */
   activeConnectionId = null;
+  /**
+   * How a subagent's terminal is attributed. "conversation" (default) walks
+   * `header.parentSession` up to the top-level chat, so a delegated agent types
+   * into the conversation's own visible terminal. "agent" gives every subagent
+   * its own private PTY — maximum isolation, invisible in the panel.
+   */
+  terminalScope = "conversation";
   /**
    * Agent auto-connect switch: when true the agent may connect
    * saved SSH resources itself (ssh_connect_profile, and ssh_list shows the
@@ -167,6 +189,78 @@ export class HarborServiceBase extends TypertRemoteService {
         }
       }), "harbor: remote workspace prompt");
     });
+  }
+
+  /**
+   * Resolve the terminal owner for one caller. Tools pass their `exec.agent`;
+   * the service turns it into the conversation that should own the terminal.
+   * @param {object|undefined} agent - the agent on whose behalf the call runs.
+   * @returns {string|null} owner session id, or null for the anonymous path.
+   */
+  terminalOwner(agent) {
+    const session = agent?.session;
+    const sessionId = typeof agent?.id === "string" ? agent.id : session?.header?.id;
+    return resolveTerminalOwner({
+      sessionId,
+      session,
+      scope: this.terminalScope,
+      getAgent: (id) => {
+        try {
+          return this.ctx.get("agents")?.get?.(id);
+        } catch {
+          return undefined;
+        }
+      }
+    });
+  }
+
+  /**
+   * Point one caller at a connection. A call without a session id keeps the
+   * compatibility pointer; a call with one binds only that conversation.
+   * @param {string|null} connectionId - the connection, or null to clear.
+   * @param {unknown} ownerSessionId - the calling conversation.
+   */
+  bindActiveConnection(connectionId, ownerSessionId) {
+    const owner = normalizeOwner(ownerSessionId);
+    if (owner === null) {
+      this.activeConnectionId = connectionId ?? null;
+      return;
+    }
+    // Prototype-stub service instances (tests) never ran the class field
+    // initializer, so the map is created on first use.
+    this.activeConnectionByOwner ??= new Map();
+    if (connectionId === null || connectionId === undefined) this.activeConnectionByOwner.delete(owner);
+    else this.activeConnectionByOwner.set(owner, connectionId);
+  }
+
+  /**
+   * The connection one conversation's agent tools target, when it is still
+   * usable. A binding that points at a closed or dead transport is dropped so
+   * the caller can fall through to the other resolution steps.
+   * @param {unknown} ownerSessionId - the calling conversation.
+   * @returns {string|null} connection id, or null.
+   */
+  activeConnectionFor(ownerSessionId) {
+    const owner = normalizeOwner(ownerSessionId);
+    const byOwner = this.activeConnectionByOwner;
+    if (owner !== null && byOwner instanceof Map) {
+      const bound = byOwner.get(owner);
+      if (bound !== undefined) {
+        const connection = this.connections.get(bound);
+        if (connection !== undefined && !connection.dead && !connection.closing) return bound;
+        byOwner.delete(owner);
+      }
+    }
+    return this.activeConnectionId;
+  }
+
+  /** Drop every selection that points at a connection that is going away. */
+  forgetActiveConnection(connectionId) {
+    if (this.activeConnectionId === connectionId) this.activeConnectionId = null;
+    if (!(this.activeConnectionByOwner instanceof Map)) return;
+    for (const [owner, bound] of [...this.activeConnectionByOwner]) {
+      if (bound === connectionId) this.activeConnectionByOwner.delete(owner);
+    }
   }
 
   registerTools(ctx) {

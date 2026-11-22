@@ -83,14 +83,17 @@ export function harborUiAnnounceAgentConnections(connections) {
   const fresh = [];
   for (const connection of connections) {
     if (connection?.agentRevealId === undefined && connection?.agentSession !== true) continue;
-    const announcementId = connection.agentRevealId ?? "agent-session";
+    const ownerSessionId = connection.agentRevealOwnerSessionId ?? null;
+    // A reveal belongs to the conversation that asked for it: the same server
+    // revealed for chat A must still be able to reveal for chat B later.
+    const announcementId = connection.agentRevealId ?? `agent-session:${ownerSessionId ?? "any"}`;
     const key = `${connection.connectionId}:${announcementId}`;
     if (announcedAgentConnections.has(key)) continue;
     announcedAgentConnections.add(key);
-    fresh.push(connection.connectionId);
+    fresh.push({ connectionId: connection.connectionId, ownerSessionId });
   }
   if (fresh.length === 0) return false;
-  for (const connectionId of fresh) requestPaneOpen(connectionId);
+  for (const entry of fresh) requestPaneOpen(entry.connectionId, { ownerSessionId: entry.ownerSessionId });
   harborUiRequestSurface();
   return true;
 }

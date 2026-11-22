@@ -194,16 +194,37 @@ export function resetPaneSessions() {
 /**
  * Connections an outside surface asked a pane to show. The resources page
  * connects servers without owning a pane, so it cannot put a connection into
- * one itself — it queues the request and the first pane to render claims it.
+ * one itself — it queues the request and the first matching pane claims it.
  * Before this queue existed such a connect stayed invisible: panes only ever
  * showed what they had opened themselves (plus cold-start adoption).
+ *
+ * An entry names the conversation it is for. Terminals are per-conversation
+ * now, so a request that belongs to chat A must not pop a tab into chat B's
+ * pane (where it would show nothing but "no terminal"). An entry with no owner
+ * (the settings page, an older host) may be claimed by any pane, and its
+ * terminal is adopted rather than duplicated.
+ *
+ * Requests expire: a session that never mounts must not leave a stale entry
+ * that hijacks a later pane.
  */
+const PENDING_OPEN_TTL_MS = 30_000;
 const pendingOpens = [];
 let pendingRevision = 0;
 
-/** Queue one connection for whichever pane renders next. */
-export function requestPaneOpen(connectionId) {
-  pendingOpens.push(connectionId);
+/**
+ * Queue one connection for the pane that owns it.
+ * @param {string} connectionId - connection to reveal.
+ * @param {{ownerSessionId?: string|null, adopt?: boolean}} [options] - target
+ *   conversation (null/absent = any pane) and whether the pane should adopt an
+ *   existing unclaimed terminal.
+ */
+export function requestPaneOpen(connectionId, options = {}) {
+  pendingOpens.push({
+    connectionId,
+    ownerSessionId: options.ownerSessionId ?? null,
+    adopt: options.adopt === true,
+    at: Date.now()
+  });
   pendingRevision += 1;
   emit();
 }
@@ -217,7 +238,21 @@ export function paneOpenRequestsRevision() {
   return pendingRevision;
 }
 
-/** Take every queued connection; the first pane to call this owns them. */
-export function claimPendingOpens() {
-  return pendingOpens.splice(0, pendingOpens.length);
+/**
+ * Take every queued connection this pane may show, dropping expired entries.
+ * @param {string|undefined} sessionId - the claiming pane's conversation.
+ * @returns {{connectionId: string, adopt: boolean}[]} claims, oldest first.
+ */
+export function claimPendingOpens(sessionId) {
+  const now = Date.now();
+  const claimed = [];
+  for (let index = pendingOpens.length - 1; index >= 0; index -= 1) {
+    const entry = pendingOpens[index];
+    const stale = now - entry.at > PENDING_OPEN_TTL_MS;
+    const forMe = sessionId === undefined || entry.ownerSessionId === null || entry.ownerSessionId === sessionId;
+    if (!stale && !forMe) continue;
+    pendingOpens.splice(index, 1);
+    if (!stale) claimed.push({ connectionId: entry.connectionId, adopt: entry.adopt });
+  }
+  return claimed.reverse();
 }

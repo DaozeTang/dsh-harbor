@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { findReusableProfileConnection } from "../profile-connection.js";
+import { normalizeOwner, pickOwnerSession } from "../terminal-owner.js";
 import { AUTO_CONNECT_DISABLED_MESSAGE } from "../agent-connect.js";
 import { RemoteWorkspacePathError, remoteWorkspacePromptText, normalizeRemoteRoot, resolveRemotePath, isRemotePathInside, workspaceRelativePart, REMOTE_WORKSPACE_OFFLINE, REMOTE_WORKSPACE_OUTSIDE } from "../remote-workspace.js";
 import { fail } from "../envelope.js";
@@ -144,6 +145,10 @@ export const withRemoteWorkspaces = (Base) => class extends Base {
    * @throws {RemoteWorkspacePathError} on an escape or an offline binding.
    */
   async resolveRemoteToolPath(request, exec) {
+    // The calling conversation owns the terminal this binding reveals, exactly
+    // like ssh_connect_profile: a workspace opened by one chat must not take
+    // over another chat's terminal on the same server.
+    const sessionId = typeof exec?.agent?.id === "string" ? exec.agent.id : undefined;
     const sessionDirectory = this.sessionDirectoryOf(exec);
     const binding = this.remoteBindingFor(sessionDirectory);
     if (binding === undefined) return { connectionId: request.connectionId, path: request.path, bound: false };
@@ -158,7 +163,7 @@ export const withRemoteWorkspaces = (Base) => class extends Base {
     }
     let connection;
     if (request.connectionId === undefined) {
-      connection = await this.requireRemoteWorkspaceConnection(record);
+      connection = await this.requireRemoteWorkspaceConnection(record, sessionId);
     } else {
       const selected = this.connections.get(request.connectionId);
       const reusable = selected === undefined ? null
@@ -171,7 +176,8 @@ export const withRemoteWorkspaces = (Base) => class extends Base {
       }
       connection = await this.revealRemoteWorkspaceConnection(reusable, {
         reused: true,
-        previousActiveConnectionId: this.activeConnectionId
+        sessionId,
+        previousActiveConnectionId: this.activeConnectionFor(sessionId)
       });
     }
     await this.assertRemoteWorkspaceTarget(connection, record.remotePath, resolvedPath);
@@ -189,24 +195,24 @@ export const withRemoteWorkspaces = (Base) => class extends Base {
   async revealRemoteWorkspaceConnection(connection, state) {
     const connectionId = connection.id ?? connection.connectionId;
     let openedSessionId = null;
-    const liveSession = [...connection.sessions].some((sessionId) => {
-      const session = this.sessions.get(sessionId);
-      return session !== undefined && session.exited === null && session.stream !== null;
-    });
+    const ownerSessionId = normalizeOwner(state.sessionId);
+    const liveSession = pickOwnerSession(this.sessions, connection, ownerSessionId) !== undefined;
     const rollback = async (error) => {
       if (!state.reused) await this.disconnect({ connectionId }).catch(() => {});
       else if (openedSessionId !== null) await this.closeSession({ sessionId: openedSessionId }).catch(() => {});
-      this.activeConnectionId = state.previousActiveConnectionId;
+      this.bindActiveConnection(state.previousActiveConnectionId, ownerSessionId);
       throw new RemoteWorkspacePathError(error.message, REMOTE_WORKSPACE_OFFLINE);
     };
     if (!liveSession) {
-      const opened = await this.openSession({ connectionId, openedBy: "agent" });
+      const opened = await this.openSession({ connectionId, openedBy: "agent", sessionId: ownerSessionId ?? undefined });
       if (!opened.ok) return rollback(opened.error);
-      openedSessionId = opened.value.sessionId;
+      if (opened.value.reused !== true) openedSessionId = opened.value.sessionId;
     }
-    const selected = await this.selectConnection({ connectionId });
+    const selected = await this.selectConnection({ connectionId, sessionId: ownerSessionId ?? undefined });
     if (!selected.ok) return rollback(selected.error);
     connection.agentRevealId = randomUUID();
+    if (ownerSessionId !== null) connection.agentRevealOwnerSessionId = ownerSessionId;
+    else delete connection.agentRevealOwnerSessionId;
     return connection;
   }
 
@@ -220,11 +226,11 @@ export const withRemoteWorkspaces = (Base) => class extends Base {
    * @returns {Promise<object>} live connection record.
    * @throws {RemoteWorkspacePathError} when it cannot be brought up.
    */
-  async requireRemoteWorkspaceConnection(record) {
-    const previousActiveConnectionId = this.activeConnectionId;
+  async requireRemoteWorkspaceConnection(record, sessionId) {
+    const previousActiveConnectionId = this.activeConnectionFor(sessionId);
     const reusable = findReusableProfileConnection([...this.connections.values()], record.profileId, { reuseExisting: true });
     if (reusable !== null) {
-      return this.revealRemoteWorkspaceConnection(reusable, { reused: true, previousActiveConnectionId });
+      return this.revealRemoteWorkspaceConnection(reusable, { reused: true, sessionId, previousActiveConnectionId });
     }
     const profile = this.requireProfileTable().get(record.profileId);
     if (profile === undefined) {
@@ -237,7 +243,7 @@ export const withRemoteWorkspaces = (Base) => class extends Base {
       throw new RemoteWorkspacePathError(t(AUTO_CONNECT_DISABLED_MESSAGE), REMOTE_WORKSPACE_OFFLINE);
     }
     const knownConnectionIds = new Set(this.connections.keys());
-    const connected = await this.profileConnect({ profileId: record.profileId, reuseExisting: true });
+    const connected = await this.profileConnect({ profileId: record.profileId, reuseExisting: true, sessionId });
     if (!connected.ok) {
       throw new RemoteWorkspacePathError(`remote workspace is offline: ${connected.error.message}`, REMOTE_WORKSPACE_OFFLINE);
     }
@@ -247,6 +253,7 @@ export const withRemoteWorkspaces = (Base) => class extends Base {
     }
     return this.revealRemoteWorkspaceConnection(connection, {
       reused: knownConnectionIds.has(connection.connectionId),
+      sessionId,
       previousActiveConnectionId
     });
   }

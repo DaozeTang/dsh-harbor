@@ -6,6 +6,14 @@ const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
 const MAX_CAPTURE_BYTES = 128 * 1024;
 const READ_TIMEOUT_MS = 300;
 const MAX_SESSIONS = 64;
+// One interactive terminal per conversation per connection is the ownership
+// rule; the per-connection cap bounds the PTY channels one sshd transport must
+// carry (sshd's own MaxSessions defaults to 10, shared with SFTP and exec).
+const MAX_SESSIONS_PER_CONNECTION = 8;
+// Learning which remote tty a PTY runs on costs one exec round trip, run off
+// the open path. Bounded so an unreachable exec channel cannot keep probing.
+const TTY_PROBE_MS = 4000;
+const TTY_PROBE_RETRY_DELAYS_MS = [0, 150, 500, 1200];
 const OPERATOR_APPROVAL_TTL_MS = 5 * 60 * 1000;
 const SFTP_DIR_FILE_IDLE_TIMEOUT_MS = 60 * 1000;
 // ssh2 disables keepalives by default; without them NATs and cloud firewalls
@@ -82,6 +90,9 @@ export {
   MAX_CAPTURE_BYTES,
   READ_TIMEOUT_MS,
   MAX_SESSIONS,
+  MAX_SESSIONS_PER_CONNECTION,
+  TTY_PROBE_MS,
+  TTY_PROBE_RETRY_DELAYS_MS,
   OPERATOR_APPROVAL_TTL_MS,
   SFTP_DIR_FILE_IDLE_TIMEOUT_MS,
   KEEPALIVE_INTERVAL_MS,
