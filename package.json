@@ -1,6 +1,6 @@
 {
   "name": "dsh-harbor",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Harbor — remote operations workbench for DeepSeek Harness: SSH terminals, remote files, port forwarding, batch runs, and session logs, side by side with the conversation.",
   "icon": "./icon.svg",
   "license": "MIT",

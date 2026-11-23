@@ -48,7 +48,9 @@ export function Sparkline({ values, max = null, height = 20, label, className })
 export function CoreBars({ values }) {
   if (!Array.isArray(values) || values.length === 0) return null;
   return (
-    <div className="hb-cores" role="list" aria-label={t("每核占用")}>
+    // The count is what lets the stylesheet keep the gap-to-bar ratio bounded;
+    // without it a 128-core row overflows the card (see .hb-cores).
+    <div className="hb-cores" role="list" aria-label={t("每核占用")} style={{ "--hb-core-count": String(values.length) }}>
       {values.map((value, index) => {
         const percent = typeof value === "number" ? Math.max(0, Math.min(100, value)) : 0;
         return (

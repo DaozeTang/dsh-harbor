@@ -58,12 +58,23 @@
 .hb-spark__line { stroke: currentColor; }
 
 /* Per-core bars: a quiet track with the used share filled from the bottom, so
-   an idle machine still reads as sixteen tiny gauges, not a dashed line. */
-.hb-cores { display: flex; align-items: stretch; gap: 3px; height: 26px; }
+   an idle machine still reads as sixteen tiny gauges, not a dashed line.
+   One bar per core, and a high-core host has to stay inside the card: 128 cores
+   at a flat 3px gap plus a 2px bar floor need ~637px, i.e. twice the card, and
+   the row painted itself (and the card's scrollWidth) past the right border. So
+   the gap is capped at the designed 3px but shrinks with the core count — never
+   more than a third of the row — and the bars may go below 2px, so the row
+   always sums to its container instead of its min-content width. */
+.hb-cores {
+  display: flex;
+  align-items: stretch;
+  gap: min(3px, calc(33% / var(--hb-core-count, 8)));
+  height: 26px;
+}
 .hb-core {
   position: relative;
   flex: 1 1 0;
-  min-width: 2px;
+  min-width: 0;
   overflow: hidden;
   border-radius: var(--hb-radius-xs);
   background: var(--hb-hover);

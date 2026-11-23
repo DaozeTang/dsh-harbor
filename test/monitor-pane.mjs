@@ -81,6 +81,27 @@ const harborservice = await readFile(new URL("../src/host/service/harbor-service
   assert.doesNotMatch(css, /var\(--(?!hb-|dsw-)/, "only host tokens and hb tokens are referenced");
 }
 
+// ── the per-core row stays inside the card ─────────────────────────────────
+// A 128-core host painted its bar row past the CPU card's right border: one bar
+// per core, a flat 3px gap and a 2px bar floor came to ~637px inside a ~324px
+// card, and flex kept the row at that min-content width. It has to shrink.
+{
+  const charts = await readFile(new URL("../src/client/features/monitor/monitor-charts.jsx", import.meta.url), "utf8");
+  const row = css.match(/\.hb-cores \{[^}]*\}/)?.[0] ?? "";
+  const bar = css.match(/\.hb-core \{[^}]*\}/)?.[0] ?? "";
+  assert.notEqual(row, "", "the per-core row has a rule of its own");
+  assert.notEqual(bar, "", "each core bar has a rule of its own");
+  assert.doesNotMatch(row, /gap: \d+px;/, "a flat gap cannot fit 128 cores into a sidebar card");
+  assert.match(row, /gap: min\(3px, calc\(\d+% \/ var\(--hb-core-count, \d+\)\)\)/,
+    "the gap is capped at the designed 3px and shrinks with the core count");
+  const budget = Number(row.match(/calc\((\d+)% \/ var\(--hb-core-count/)?.at(1));
+  assert.ok(budget > 0 && budget <= 40, "gaps may never take more than a third of the row, so the bars keep the rest");
+  assert.match(bar, /min-width: 0;/, "a bar shrinks below 2px instead of pushing the row out of the card");
+  assert.doesNotMatch(bar, /min-width: [1-9]/, "a pixel floor on the bars is what made the row wider than the card");
+  assert.match(charts, /style=\{\{ "--hb-core-count": String\(values\.length\) \}\}/,
+    "the row is handed its own count, which is what the shrink math divides by");
+}
+
 // ── formatters ─────────────────────────────────────────────────────────────
 {
   const language = getLanguage();
@@ -152,4 +173,4 @@ const harborservice = await readFile(new URL("../src/host/service/harbor-service
   assert.match(api, /systemStats\(connectionId, refresh\)/, "the endpoint still carries the refresh flag");
 }
 
-console.log("monitor pane: tab wiring, visibility gating, four states, token-only CSS and formatters: passed");
+console.log("monitor pane: tab wiring, visibility gating, four states, contained core row, token-only CSS and formatters: passed");
