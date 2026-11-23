@@ -35,7 +35,8 @@ export const withSettings = (Base) => class extends Base {
  ...toolGroups,
           showTunnels: this.featureSettings?.showTunnels !== false,
           showSnippets: this.featureSettings?.showSnippets !== false,
-          showLogs: this.featureSettings?.showLogs !== false
+          showLogs: this.featureSettings?.showLogs !== false,
+          showMonitor: this.featureSettings?.showMonitor !== false
         },
         toolRestartRequired: Object.keys(toolGroups).some((key) => registered[key] !== toolGroups[key]),
         execPolicy: policy.mode,
@@ -277,7 +278,8 @@ export const withSettings = (Base) => class extends Base {
   configuredToolGroups() {
     return {
       tunnelTools: this.featureSettings?.tunnelTools !== false,
-      logTools: this.featureSettings?.logTools !== false
+      logTools: this.featureSettings?.logTools !== false,
+      statusTools: this.featureSettings?.statusTools !== false
     };
   }
 };

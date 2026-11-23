@@ -1725,7 +1725,8 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
               <div className="hb-quiet">{t("AI 在对话里可调用的插件工具。")}</div>
               {[
                 ["tunnelTools", t("端口转发工具"), t("建立与查看端口转发")],
-                ["logTools", t("会话日志工具"), t("读取与检索终端会话日志")]
+                ["logTools", t("会话日志工具"), t("读取与检索终端会话日志")],
+                ["statusTools", t("系统状态工具"), t("读取 CPU、内存、磁盘、网络与 GPU 状态")]
               ].map(([key, label, hint]) => (
                 <Row
                   key={key}
@@ -1750,9 +1751,10 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
               </div>
             </Section>
             <hr className="hb-hr" />
-            <Section title={t("右侧终端面板标签")}>
+            <Section title={t("右侧面板标签")}>
               <div className="hb-quiet">{t("勾选要显示的标签，保存后立即生效。")}</div>
               {[
+                ["showMonitor", t("状态")],
                 ["showTunnels", t("转发")],
                 ["showSnippets", t("快捷命令")],
                 ["showLogs", t("日志")]

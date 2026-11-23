@@ -1,6 +1,6 @@
 # Harbor · 远程运维工作台
 
-DeepSeek Harness 的 SSH 工作台：**在主对话里驱动服务器，同时在右侧保留一个真正的交互式终端**——文件、端口转发、快捷命令与会话日志同在这块面板里，与对话并排。
+DeepSeek Harness 的 SSH 工作台：**在主对话里驱动服务器，同时在右侧保留一个真正的交互式终端**——服务器状态、文件、端口转发、快捷命令与会话日志同在这块面板里，与对话并排。
 
 ![MIT](https://img.shields.io/badge/license-MIT-green)
 ![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
@@ -19,7 +19,7 @@ dsh plugin --profile web add "$PWD"
 dsh web
 ```
 
-打开任意会话，点右上角的终端按钮，在「远程终端」里连接服务器。安装细节见 [INSTALL.md](./INSTALL.md)，各面板用法见[产品指南](./docs/product-guide.md)。
+打开任意会话，点右上角的终端按钮，在「远程主机」里连接服务器。安装细节见 [INSTALL.md](./INSTALL.md)，各面板用法见[产品指南](./docs/product-guide.md)。
 
 ## 它解决什么问题
 
@@ -33,13 +33,19 @@ dsh web
 
 | | |
 | --- | --- |
+| 状态总览 | ![状态](docs/assets/status-light.png) |
 | 终端与文件 | ![文件](docs/assets/files-light.png) |
 | 服务器与策略 | ![设置](docs/assets/settings-light.png) |
 
 ## 功能
 
+### 状态
+- 一眼看完一台机器：CPU（总量、负载、每核）、内存与 swap、磁盘用量与读写、网络吞吐、GPU（NVIDIA）、进程 Top，以及本连接的服务器、地址与采样耗时。
+- 读数来自宿主侧的一条固定只读脚本（`/proc`、`df`、`ps`、`nvidia-smi`），默认 2 秒一次；切走标签、收起侧栏或窗口隐藏即停，可以暂停，也可以改成 2 / 5 / 10 秒。
+- 取不到就如实说明：非 Linux 远端、没有 exec 通道的网络设备、sshd 不允许额外会话时都会给出原因，绝不用 0 冒充读数。「复制快照」把当前读数整理成一段文本，直接贴进对话。
+
 ### 终端
-- DSH 右侧边栏的一等标签：分栏、缩放、全屏与收起都交给 DSH；切换标签、收起侧栏或切换对话都**不会断开连接**——终端实例常驻内存池，回来即恢复完整回看。
+- DSH 右侧边栏的一等标签「远程主机」：分栏、缩放、全屏与收起都交给 DSH；切换标签、收起侧栏或切换对话都**不会断开连接**——终端实例常驻内存池，回来即恢复完整回看。
 - 无人观看时宿主继续缓冲输出，重新打开时补齐。
 - 查找（`Ctrl/⌘+F`，`Shift+Enter` 反向）、选中即复制、`Ctrl+滚轮` 缩放、滚到底部浮标；字号与配色保存在当前浏览器。
 - 每个分栏独立维护自己显示的服务器与选中项；同一台服务器两边各开一次，得到两条互不影响的通道。
@@ -82,7 +88,7 @@ dsh web
 
 ## Agent 工具
 
-默认注册 26 个工具，省略 `connection_id` 时作用于当前活动连接。**设置 → 远程主机 → 功能**可分别关闭转发与日志工具（需重启 DSH）。
+默认注册 27 个工具，省略 `connection_id` 时作用于当前活动连接。**设置 → 远程主机 → 功能**可分别关闭转发、日志与状态工具（需重启 DSH）。
 
 | 组 | 工具 |
 | --- | --- |
@@ -93,6 +99,7 @@ dsh web
 | 转发（3） | `tunnel_start` `tunnel_stop` `tunnel_list` |
 | 批量（1） | `ssh_batch` |
 | 日志（3） | `ssh_session_log_list` `ssh_session_log_read` `ssh_session_log_search` |
+| 状态（1） | `ssh_status` |
 
 多机执行只能走 `ssh_batch`：Agent 提出命令，**目标由你在面板里勾选**，不存在「点名一台、全量执行」的路径。
 
@@ -110,7 +117,8 @@ src/
     index.jsx            浏览器入口：侧栏标签 + 设置页 + 会话头按钮
     HarborPanel.jsx      工作台外壳（服务器条、视图切换、面板）
     ui/                  设计系统：kit、图标、样式表
-    features/            终端、文件、转发、日志、快捷命令、策略
+    features/            状态、终端、文件、转发、日志、快捷命令、策略
+  host/monitor/          状态采样：固定探测脚本、/proc 解析、速率差分
     terminal-display/    终端配色、语义高亮、外观设置
   i18n/                  中英文消息层（中文为源语言）
 ```
@@ -134,6 +142,7 @@ npx eslint .
 
 - 宿主：DSH `>= 0.2.0`（`engines.dsh`），已在 `0.2.2-rc.5` 验证。
 - 必需能力：右侧边栏（`sidebarRightTabs` + `sidebarRight`）。缺这两个服务的旧宿主仍可运行 Agent 工具，但没有终端界面，也不提供浮动面板兜底。
+- 状态采样需要远端提供 POSIX shell 与 `/proc`（即 Linux）；macOS / BSD 远端与交换机类设备会显示「暂不支持状态采集」，其余功能不受影响。
 - 大文件流式上传 / 下载仅在 Web Profile 同时提供 `webServer` 与请求来源校验时注册，其余宿主继续走 SFTP 操作。
 - 使用 DSH 内置的 Node 运行时，不要求系统另装 `ssh`、`sftp` 或 Node.js。
 - 安装或升级后需完整重启对应 DSH Profile。服务器资源、已知主机与凭据存放在 DSH 本地存储中，不在插件包内，常规升级不会删除。

@@ -28,6 +28,6 @@ export const en = {
   "AI 在对话里可调用的插件工具。": "The plugin tools the AI may call in a conversation.",
   "建立与查看端口转发": "Open and inspect port forwards",
   "读取与检索终端会话日志": "Read and search terminal session logs",
-  "右侧终端面板标签": "Remote terminal tabs",
+  "右侧面板标签": "Right-side panel tabs",
   "未知版本": "Unknown version"
 };

@@ -114,4 +114,8 @@ export const DESCRIPTORS = [
   def("batchTaskList", S.batchTaskListRequestSchema, "BatchTaskListRequest", S.batchTaskListResultSchema, "BatchTaskListResult"),
   def("batchRun", S.batchRunRequestSchema, "BatchRunRequest", S.batchRunResultSchema, "BatchRunResult"),
   def("batchCancel", S.batchCancelRequestSchema, "BatchCancelRequest", S.batchCancelResultSchema, "BatchCancelResult"),
+  // Read-only system status: one sample shared by the panel's status tab and
+  // the ssh_status tool. Both paths are read-only and neither prompts, so the
+  // same service method serves them.
+  def("systemStats", S.systemStatsRequestSchema, "SystemStatsRequest", S.systemStatsResultSchema, "SystemStatsResult"),
 ];

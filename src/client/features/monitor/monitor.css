@@ -1,0 +1,113 @@
+
+/*
+ * Status pane.
+ *
+ * A dense single column, because the far more common case is a 360-460px
+ * sidebar rather than a fullscreen split. Every rule is scoped under
+ * .hb-monitor; colours and radii come from the shared --hb-* tokens, so the
+ * pane follows the host theme without a second palette.
+ */
+
+.hb-monitor {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 16px;
+}
+
+/* Identity: hostname, distribution, uptime, and the two controls. */
+.hb-monitor__head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.hb-monitor__identity { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+.hb-monitor__host { font-size: 14px; font-weight: 600; line-height: 1.35; }
+.hb-monitor__sub { color: var(--hb-text-tertiary); font-size: 12px; line-height: 1.4; }
+.hb-monitor__actions { display: flex; align-items: center; gap: 4px; flex: none; }
+
+.hb-monitor__cards { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+/* The shared Card is airy for settings; a dashboard card holds 3-4 data rows. */
+.hb-monitor__card .hb-card__head { padding: 10px 12px 0; }
+.hb-monitor__card .hb-card__body { gap: 8px; padding: 8px 12px 12px; }
+.hb-monitor__metric { font-size: 15px; font-weight: 600; line-height: 1.2; }
+.hb-monitor__metricrow { display: inline-flex; align-items: center; gap: 8px; }
+.hb-monitor__spark-sm { display: inline-block; width: 72px; height: 16px; }
+
+/* One data line: label left, numbers right, nothing wraps mid-value. */
+.hb-monitor__row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.hb-monitor__row > * { min-width: 0; }
+.hb-monitor__num { flex: none; width: 44px; text-align: right; }
+
+.hb-monitor__gpu,
+.hb-monitor__disk { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.hb-monitor__gpu + .hb-monitor__gpu,
+.hb-monitor__disk + .hb-monitor__disk {
+  padding-top: 8px;
+  border-top: 1px solid var(--hb-border-faint);
+}
+
+/* Trend line: the accent is the data colour; the placeholder keeps layout. */
+.hb-monitor { container-type: inline-size; }
+.hb-spark { display: block; width: 100%; height: 20px; color: var(--hb-accent); }
+.hb-spark--empty { height: 20px; }
+.hb-spark--sm { height: 16px; }
+.hb-spark--sm.hb-spark--empty { height: 16px; }
+.hb-spark__area { fill: currentColor; opacity: 0.1; }
+.hb-spark__line { stroke: currentColor; }
+
+/* Per-core bars: a quiet track with the used share filled from the bottom, so
+   an idle machine still reads as sixteen tiny gauges, not a dashed line. */
+.hb-cores { display: flex; align-items: stretch; gap: 3px; height: 26px; }
+.hb-core {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 2px;
+  overflow: hidden;
+  border-radius: var(--hb-radius-xs);
+  background: var(--hb-hover);
+}
+.hb-core__fill {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  min-height: 2px;
+  border-radius: inherit;
+  background: var(--hb-accent);
+  transition: height var(--hb-dur) var(--hb-ease);
+}
+.hb-core__fill.hb-core--warn { background: var(--hb-warn); }
+.hb-core__fill.hb-core--err { background: var(--hb-err); }
+
+/* A wide pane (fullscreen or split) can carry two columns instead of one very
+   long list. Container queries keep this honest: it follows the pane, not the
+   window. Browsers without support simply stay single-column. */
+@container (min-width: 680px) {
+  .hb-monitor__cards {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+}
+
+/* Label/value rows shared by the connection card. */
+.hb-stat { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.hb-stat__label { flex: none; color: var(--hb-text-tertiary); font-size: 12px; }
+.hb-stat__value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Footer: sampling state on the left, cadence and copy on the right. */
+.hb-monitor__foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 2px 0; }
+.hb-monitor__dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--hb-ok); }
+.hb-monitor__dot[data-paused="true"] { background: var(--hb-warn); }
+
+/* The three cadence choices are a dense toolbar control, not a form field. */
+.hb-monitor__interval .hb-seg__item { padding: 2px 7px; font-size: 11px; min-height: 22px; }

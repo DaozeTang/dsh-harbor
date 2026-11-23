@@ -15,7 +15,7 @@ Harbor lives inside DeepSeek Harness. It shares the document, the theme, the fon
 
 ## Layout
 
-- Workbench shell: toolbar (server strip + actions) → view tabs → pane.
+- Workbench shell: toolbar (server strip + actions) → view tabs → pane. Six tabs fit at ~420px because the strip tightens its padding below 540px and drops inactive labels below 400px.
 - Panes are keep-alive: hidden with `display:none`, never unmounted, so the terminal pool and scroll positions survive a view switch.
 - Settings pages are single-column, max 860px, grouped in `Card`s with the section title above the controls it governs.
 
@@ -35,7 +35,7 @@ Harbor lives inside DeepSeek Harness. It shares the document, the theme, the fon
 | Data grid | `.hb-tablewrap` + `.hb-table` |
 | Nothing yet | `EmptyState icon title text action` |
 | Failure | `ErrorNote`; informational → `Notice` |
-| Progress | `ProgressBar` / `Spinner` |
+| Progress | `ProgressBar`（`tone="warn"` / `"err"` 表示读数越线）/ `Spinner` |
 | Confirmation | `toast(message, { tone: "error" })` for outcomes, `confirmAction({ message, danger })` for decisions — never `window.confirm` |
 
 ## Icons

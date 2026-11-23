@@ -22,6 +22,7 @@ import { PolicyMenu } from "./features/policy/policy-menu.jsx";
 import { HarborFiles } from "./HarborFiles.jsx";
 import { TunnelsPane } from "./features/tunnels/tunnels-pane.jsx";
 import { LogsPane } from "./features/logs/logs-pane.jsx";
+import { MonitorPane } from "./features/monitor/monitor-pane.jsx";
 import {
   getHarborUiSnapshot, useHarborUi, harborUiSetActiveConnection, harborUiSetBusy, harborUiSetConnections,
   harborUiSetError, harborUiSetFeatures, harborUiAnnounceAgentConnections
@@ -74,16 +75,19 @@ async function refreshConnections(api, sessionId) {
 // render time, which is what makes a language switch repaint the strip.
 const VIEWS = [
   { value: "terminal", icon: "terminal", label: () => t("终端") },
+  { value: "monitor", icon: "gauge-outline", label: () => t("状态"), needsConnection: true, feature: "showMonitor" },
   { value: "files", icon: "folder-open-outline", label: () => t("文件"), needsConnection: true },
   { value: "tunnels", icon: "tunnel", label: () => t("转发"), needsConnection: true, feature: "showTunnels" },
   { value: "snippets", icon: "checklist-outline", label: () => t("快捷命令"), feature: "showSnippets" },
   { value: "logs", icon: "archive-outline", label: () => t("日志"), feature: "showLogs" }
 ];
 
-export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW_ID, viewSignal }) {
+export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW_ID, viewSignal, initialView = "terminal" }) {
   useLanguage();
   const ui = useHarborUi();
-  const [view, setView] = useState("terminal");
+  // The panel owns its view state; initialView exists for the offline preview
+  // harness and for tests, which need to render a specific surface.
+  const [view, setView] = useState(initialView);
   const [connectOpen, setConnectOpen] = useState(false);
   const [batchTask, setBatchTask] = useState(null);
   const [pendingBatchCount, setPendingBatchCount] = useState(0);
@@ -91,6 +95,10 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
   const [groups, setGroups] = useState([]);
   const seenBatchIdsRef = useRef(new Set());
   const adoptedRef = useRef(false);
+  // True once this pane has adopted the host's connections at least once. Before
+  // that, "no active connection" only means "the first paint has not finished",
+  // and a fallback there would stomp the view the panel was mounted with.
+  const [paneReady, setPaneReady] = useState(false);
 
   const features = ui.features ?? {};
   const visibleViews = VIEWS.filter((entry) => entry.feature === undefined || features[entry.feature] !== false);
@@ -165,8 +173,9 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
   // while one of them is selected used to leave a blank body under a disabled
   // tab; fall back to the terminal, whose empty state explains what to do.
   useEffect(() => {
-    if (active === null && (view === "files" || view === "tunnels")) setView("terminal");
-  }, [active, view]);
+    if (!paneReady) return;
+    if (active === null && (view === "monitor" || view === "files" || view === "tunnels")) setView("terminal");
+  }, [paneReady, active, view]);
 
   useEffect(() => { reconcileViews(ui.connections); }, [ui.connections]);
 
@@ -176,6 +185,7 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
     if (adoptedRef.current || ui.connections.length === 0) return;
     adoptedRef.current = true;
     adoptIntoView(viewId, ui.connections);
+    setPaneReady(true);
   }, [ui.connections, viewId]);
 
   // A surface that owns no pane (the settings page) queues what it connected;
@@ -427,6 +437,17 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
 
         {active !== null && (
           <>
+            <div className="hb-pane" style={{ display: view === "monitor" ? "flex" : "none" }}>
+              <PaneBoundary>
+                <MonitorPane
+                  api={api}
+                  connection={active}
+                  sessionId={sessionId}
+                  active={view === "monitor"}
+                  onOpenTerminal={() => setView("terminal")}
+                />
+              </PaneBoundary>
+            </div>
             <div className="hb-pane" style={{ display: view === "files" ? "flex" : "none" }}>
               <PaneBoundary>
                 <HarborFiles

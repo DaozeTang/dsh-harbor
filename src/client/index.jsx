@@ -77,17 +77,17 @@ export async function apply(ctx) {
     own(ctx.locale.register(NS, {
       zh: {
         settingsSectionLabel: "远程主机", // i18n-ignore: host locale entry
-        sidebarTabTitle: "远程终端", // i18n-ignore: host locale entry
-        openSidebarTab: "打开或聚焦远程终端标签", // i18n-ignore: host locale entry
-        guideTitle: "远程终端", // i18n-ignore: host locale entry
-        guideDescription: "连接服务器，使用终端、远程文件、端口转发与快捷命令" // i18n-ignore: host locale entry
+        sidebarTabTitle: "远程主机", // i18n-ignore: host locale entry
+        openSidebarTab: "打开或聚焦远程主机标签", // i18n-ignore: host locale entry
+        guideTitle: "远程主机", // i18n-ignore: host locale entry
+        guideDescription: "连接服务器：看状态，用终端、远程文件、端口转发与快捷命令" // i18n-ignore: host locale entry
       },
       en: {
         settingsSectionLabel: "Remote hosts",
-        sidebarTabTitle: "Remote terminal",
-        openSidebarTab: "Open or focus the remote terminal tab",
-        guideTitle: "Remote terminal",
-        guideDescription: "Connect to servers with a terminal, remote files, tunnels, and snippets"
+        sidebarTabTitle: "Remote Machine",
+        openSidebarTab: "Open or focus the Remote Machine tab",
+        guideTitle: "Remote Machine",
+        guideDescription: "Connect to servers: live status, a terminal, remote files, tunnels, and snippets"
       }
     }));
 

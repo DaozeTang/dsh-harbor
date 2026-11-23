@@ -456,9 +456,16 @@
   transition: color var(--hb-fast) var(--hb-ease), background var(--hb-fast) var(--hb-ease);
 }
 
-/* A 280px sidebar cannot spell five labels; icons carry inactive views and
+/* Six views make the strip denser than five, so a mid-width pane first trades
+   padding for labels. */
+@container (max-width: 540px) {
+  .hb-tabs { padding: 0 4px; gap: 0; }
+  .hb-tab { padding: 0 7px; gap: 4px; }
+}
+
+/* A narrow sidebar cannot spell every label; icons carry inactive views and
    the selected tab keeps its word. The accessible name is unaffected. */
-@container (max-width: 360px) {
+@container (max-width: 400px) {
   .hb-tab:not([aria-selected="true"]) .hb-tab__label { display: none; }
   .hb-tab { padding: 0 9px; }
 }
@@ -854,6 +861,11 @@
   background: var(--hb-accent);
   transition: width var(--hb-dur) var(--hb-ease);
 }
+
+/* A meter that reports a level, not progress: the status pane tints it once
+   the value passes its warn/error line. */
+.hb-progress--warn .hb-progress__bar { background: var(--hb-warn); }
+.hb-progress--err .hb-progress__bar { background: var(--hb-err); }
 
 /* ── workspace shell ────────────────────────────────────────────────────── */
 

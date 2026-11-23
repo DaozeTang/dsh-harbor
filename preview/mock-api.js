@@ -94,12 +94,14 @@ const SESSION_LOGS = [
 ];
 
 
-export function createMockApi() {
+let statsCalls = 0;
+
+export function createMockApi(options = {}) {
   const handlers = {
     list: async () => ({ connections: CONNECTIONS, activeConnectionId: "c1" }),
     agentSettingsGet: async () => ({
       agentAutoConnect: true,
-      features: { tunnelTools: true, logTools: true, showTunnels: true, showSnippets: true, showLogs: true }
+      features: { tunnelTools: true, logTools: true, statusTools: true, showTunnels: true, showSnippets: true, showLogs: true, showMonitor: true }
     }),
     agentSettingsSave: async () => ({ agentAutoConnect: true, features: {} }),
     profileList: async () => ({ profiles: PROFILES }),
@@ -191,6 +193,100 @@ export function createMockApi() {
       return { sessionId, hits, scannedBytes: SESSION_LOG_TEXT.length, stoppedEarly: false };
     },
     sessionLogDelete: async () => ({ deleted: 1, remaining: SESSION_LOGS.length - 1 }),
+
+    // The status pane reads one normalized sample. Numbers are plausible and
+    // slightly alive (a sine wobble per call) so a screenshot shows a trend
+    // line after a few polling ticks instead of an empty box.
+    systemStats: async () => {
+      // "?unsupported" in the preview URL renders the honest empty state, so
+      // that screen can be reviewed without a non-Linux host at hand.
+      if (options.unsupported === true) {
+        return {
+          sampledAt: new Date(nowMs).toISOString(),
+          sampleMs: 11,
+          platform: "other",
+          platformName: "Darwin",
+          supported: false,
+          reason: "no-procfs",
+          capabilities: { processes: false, gpu: false, disks: false, io: false },
+          gpu: [],
+          disks: [],
+          diskIo: null,
+          network: [],
+          processes: null,
+          warnings: []
+        };
+      }
+      statsCalls += 1;
+      const wobble = Math.sin(statsCalls / 2.4) * 3.5;
+      const k = 1024;
+      return {
+        sampledAt: new Date(nowMs + statsCalls * 2000).toISOString(),
+        sampleMs: 38,
+        platform: "linux",
+        platformName: "Linux",
+        supported: true,
+        host: {
+          hostname: "prod-web-01",
+          os: "Ubuntu 24.04.1 LTS",
+          kernel: "6.8.0-45-generic",
+          arch: "x86_64",
+          cores: 16,
+          cpuModel: "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz",
+          uptimeSeconds: 3648123
+        },
+        cpu: {
+          usagePercent: Math.max(1, 12.4 + wobble),
+          perCore: [8, 14, 22, 6, 31, 12, 9, 17, 5, 44, 11, 7, 19, 26, 3, 15],
+          iowaitPercent: 0.4,
+          stealPercent: 0,
+          load: [0.08, 0.12, 0.09],
+          cores: 16,
+          model: "Intel(R) Xeon(R) Gold 6248 CPU @ 2.50GHz"
+        },
+        memory: {
+          totalBytes: 16316332 * k,
+          freeBytes: 1234567 * k,
+          availableBytes: 7654321 * k,
+          buffersBytes: 123456 * k,
+          cachedBytes: 3580245 * k,
+          swapTotalBytes: 2097148 * k,
+          swapFreeBytes: 1048574 * k
+        },
+        gpu: [{
+          index: 0,
+          name: "NVIDIA GeForce RTX 4090",
+          utilizationPercent: 78,
+          memoryUsedBytes: 19661 * k * k,
+          memoryTotalBytes: 24564 * k * k,
+          temperatureC: 68,
+          powerW: 310.4
+        }],
+        disks: [
+          { mount: "/data", device: "/dev/nvme0n1p4", totalBytes: 1953000000 * k, usedBytes: 1800000000 * k, availableBytes: 153000000 * k, usePercent: 92 },
+          { mount: "/", device: "/dev/nvme0n1p2", totalBytes: 81000000 * k, usedBytes: 34000000 * k, availableBytes: 47000000 * k, usePercent: 43 },
+          { mount: "/var", device: "/dev/nvme0n1p3", totalBytes: 358000000 * k, usedBytes: 120000000 * k, availableBytes: 238000000 * k, usePercent: 34 }
+        ],
+        diskIo: { readBytesPerSec: 12 * k * k, writeBytesPerSec: 3.1 * k * k },
+        network: [
+          { name: "eth0", rxBytesPerSec: Math.round(1.2 * k * k + wobble * 8000), txBytesPerSec: 86 * k, rxTotalBytes: 987654321, txTotalBytes: 123456789 },
+          { name: "docker0", rxBytesPerSec: 12400, txBytesPerSec: 9800, rxTotalBytes: 45678901, txTotalBytes: 12345678 }
+        ],
+        processes: {
+          total: 823,
+          running: 2,
+          top: [
+            { pid: 4213, name: "python3", cpuPercent: 84.2, memPercent: 12.1 },
+            { pid: 902, name: "node", cpuPercent: 30.5, memPercent: 0.4 },
+            { pid: 887, name: "nginx", cpuPercent: 3.0, memPercent: 1.2 },
+            { pid: 1210, name: "postgres", cpuPercent: 1.4, memPercent: 6.8 },
+            { pid: 640, name: "systemd-journal", cpuPercent: 0.6, memPercent: 0.3 }
+          ]
+        },
+        capabilities: { processes: true, gpu: true, disks: true, io: true },
+        warnings: []
+      };
+    },
 
     listKnownHosts: async () => ({ hosts: [{ host: "10.0.0.12", port: 22, algorithm: "ssh-ed25519", fingerprint: "SHA256:9f2c7be1c0d9f1a2b8e4d6c3a1f0e9d8c7b6a5", firstSeenAt: now, lastSeenAt: now }] }),
     forgetHostKey: async () => ({ forgotten: true }),

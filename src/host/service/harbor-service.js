@@ -16,6 +16,7 @@ import { registerSftpTools } from "../tools/sftp.js";
 import { registerTunnelTools } from "../tools/tunnel.js";
 import { registerBatchTools } from "../tools/batch.js";
 import { registerSessionLogTools } from "../tools/session-log.js";
+import { registerStatusTools } from "../tools/status.js";
 import { profileDomainSpec, credentialDomainSpec, knownHostDomainSpec, settingsDomainSpec, loadSettingsRecord, normalizeFeatureSettings, SETTINGS_ROW_ID } from "./models.js";
 
 /** Shared instance state and the durable-domain boot sequence. */
@@ -273,6 +274,7 @@ export class HarborServiceBase extends TypertRemoteService {
     if (groups.tunnelTools) registerTunnelTools(ctx, this);
     registerBatchTools(ctx, this);
     if (groups.logTools) registerSessionLogTools(ctx, this);
+    if (groups.statusTools) registerStatusTools(ctx, this);
     this.registeredToolGroups = groups;
   }
 }

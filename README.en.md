@@ -1,6 +1,6 @@
 # Harbor — remote operations workbench
 
-An SSH workbench for DeepSeek Harness: **drive a server from the conversation while a real interactive terminal stays open beside it**. Files, port forwarding, snippets and session logs share the same panel as the chat.
+An SSH workbench for DeepSeek Harness: **drive a server from the conversation while a real interactive terminal stays open beside it**. Live machine status, files, port forwarding, snippets and session logs share the same panel as the chat.
 
 ![MIT](https://img.shields.io/badge/license-MIT-green)
 ![DSH plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-blue)
@@ -19,7 +19,7 @@ dsh plugin --profile web add "$PWD"
 dsh web
 ```
 
-Open any session, click the terminal button in the header and connect a server in the Remote terminal tab. Setup lives in [INSTALL.md](./INSTALL.md); each panel is covered in the [product guide](./docs/product-guide.md).
+Open any session, click the terminal button in the header and connect a server in the Remote Machine tab. Setup lives in [INSTALL.md](./INSTALL.md); each panel is covered in the [product guide](./docs/product-guide.md).
 
 ## What it solves
 
@@ -33,10 +33,13 @@ Reaching a remote machine usually takes three windows: a terminal, an SFTP clien
 
 | | |
 | --- | --- |
+| Status overview | ![Status](docs/assets/status-light.png) |
 | Terminal and files | ![Files](docs/assets/files-light.png) |
 | Servers and policy | ![Settings](docs/assets/settings-light.png) |
 
 ## Features
+
+**Status.** CPU (total, load, per core), memory and swap, disk usage and I/O, network throughput, NVIDIA GPUs, the busiest processes, and this connection's coordinates and sampling cost — on one screen. Readings come from one fixed, read-only probe on the host (`/proc`, `df`, `ps`, `nvidia-smi`), every 2 seconds by default; polling stops when you leave the tab, collapse the sidebar or hide the window, and can be paused or slowed to 5/10 seconds. When a host cannot be sampled it says why — non-Linux remotes, network devices without an exec channel, an exhausted sshd MaxSessions — and never shows 0 as a reading. "Copy snapshot" turns the current readings into text you can paste into the chat.
 
 **Terminal.** A first-class tab in the DSH right sidebar; split, zoom, fullscreen and collapse are DSH's own. Switching tabs, collapsing the sidebar or changing chats never disconnects — terminal instances stay pooled and the host replays buffered output. Find (`Ctrl/⌘+F`, `Shift+Enter` for previous), copy-on-select, `Ctrl+wheel` zoom, jump-to-bottom. Each pane keeps its own server and selection; the same server in both panes gives two independent channels. The connection the agent is bound to carries an "Agent" badge — click the other pane to move it. Host fingerprints are TOFU: recorded on first connect, rejected on change (`accept-new` / `verify` / `off`).
 
@@ -63,7 +66,7 @@ The blacklist can never be complete — any script can hide a delete — so rule
 
 ## Agent tools
 
-26 tools are registered by default; omitting `connection_id` targets the active connection. **Settings → Remote hosts → Features** can disable the tunnel and log tools (requires a DSH restart).
+27 tools are registered by default; omitting `connection_id` targets the active connection. **Settings → Remote hosts → Features** can disable the tunnel, log and status tools (requires a DSH restart).
 
 | Group | Tools |
 | --- | --- |
@@ -74,6 +77,7 @@ The blacklist can never be complete — any script can hide a delete — so rule
 | Tunnels (3) | `tunnel_start` `tunnel_stop` `tunnel_list` |
 | Batch (1) | `ssh_batch` |
 | Logs (3) | `ssh_session_log_list` `ssh_session_log_read` `ssh_session_log_search` |
+| Status (1) | `ssh_status` |
 
 Multi-host execution only goes through `ssh_batch`: the agent proposes the command, **you pick the targets** in the panel.
 

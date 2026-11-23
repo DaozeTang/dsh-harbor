@@ -119,6 +119,16 @@ export class HarborApi {
     return this.call("agentSettingsSave", request);
   }
 
+  /**
+   * One read-only status sample of a server. The status tab polls this; the
+   * ssh_status agent tool reads the same host-side sampler.
+   * @param {string} connectionId
+   * @param {boolean} [refresh] - bypass the host's one-second sample cache.
+   */
+  systemStats(connectionId, refresh) {
+    return this.call("systemStats", refresh === true ? { connectionId, refresh: true } : { connectionId });
+  }
+
   execPolicyGet(connectionId, sessionId) {
     const request = connectionId ? { connectionId } : {};
     return this.call("execPolicyGet", sessionId === undefined ? request : { ...request, sessionId });

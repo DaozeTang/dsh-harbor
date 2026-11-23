@@ -110,6 +110,7 @@ const expected = [
   "cordis.patch.yml",
   "docs/assets/files-light.png",
   "docs/assets/settings-light.png",
+  "docs/assets/status-light.png",
   "docs/assets/workspace-light.png",
   "docs/icon-pipeline.md",
   "docs/product-guide.md",

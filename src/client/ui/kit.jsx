@@ -419,10 +419,10 @@ export function Notice({ icon = "info-outline", children }) {
  );
 }
 
-export function ProgressBar({ value, max = 1, label }) {
+export function ProgressBar({ value, max = 1, label, tone }) {
   const ratio = max > 0 ? Math.min(1, Math.max(0, value / max)) : 0;
   return (
-    <div className="hb-progress" role="progressbar" aria-valuemin={0} aria-valuemax={max} aria-valuenow={value} aria-label={label}>
+    <div className={tone === undefined ? "hb-progress" : "hb-progress hb-progress--" + tone} role="progressbar" aria-valuemin={0} aria-valuemax={max} aria-valuenow={value} aria-label={label}>
       <div className="hb-progress__bar" style={{ width: `${Math.round(ratio * 100)}%` }} />
     </div>
  );
