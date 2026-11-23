@@ -2,6 +2,16 @@
 
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。0.2.0 为首个公开版本，0.1.0 是其内部基线。
 
+## 0.4.2 — 2026-11-23
+
+**插件热更新之后再连接，不再报 “Client is not a constructor”。**
+
+- **根因**：ssh2 是 CommonJS 包，宿主入口在模块加载时用 `import ssh2 from "ssh2"` 一次性取出 `Client`。DSH 的插件热更新会驱逐插件模块再重新导入（0.4.1 里“热更新只替换了宿主类、没重新导入 typert.js”说的就是这套机制），而 ssh2 作为依赖留在 `require` 缓存里跨过这次替换。重新加载时如果读到的 ssh2 导出还没写完（缺少 `Client` 的半成品），这个一次性绑定就永久是 `undefined`，之后每次建连都在 `newClient()` 抛 `TypeError: Client is not a constructor`——面板和 `ssh_*` 工具一起失效，只有重启 DSH 才能恢复。
+- **修复**：新增 `src/host/ssh2-client.js`；`newClient()` 改为**每次建连时**用 `createRequire(import.meta.url)("ssh2")` 读取 `Client`。`require` 返回的永远是加载完成的 `module.exports`，上一次拿到半成品也会在下一次自愈；同时兼容 `{ Client }` 与 `{ default: { Client } }` 两种导出形状。
+- **报错**：ssh2 真的缺失或没有 `Client` 时，给出 `harbor: the installed ssh2 package carries no Client constructor; reinstall dsh-harbor …`，不再让 V8 的笼统 TypeError 冒充连接错误。
+- **回归测试**：新增 `test/ssh2-interop.mjs`：普通 CJS 导出、interop 命名空间、半成品导出“下一次自愈”、缺包文案，以及用子进程复刻现场那条 `Client is not a constructor` 并证明新路径可用；`test/reconnect-recovery.mjs` 的互操作断言改为“建连时才解析”。
+- **升级提示**：已经加载进 DSH 进程的旧代码不会自己变化；更新插件后若仍看到旧报错，请重启 DSH。
+
 ## 0.4.1 — 2026-11-23
 
 **在线编辑不再在远端留备份；插件热更新后状态页不再 404。**

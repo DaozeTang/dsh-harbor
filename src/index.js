@@ -5,10 +5,10 @@
  * ...) so the main conversation can drive the same sessions the panel shows.
  *
  * The service body is composed from src/host/service/*; this entry keeps the
- * constructor, the ssh2 CommonJS interop and the session wiring that the
- * service crosses with recording/shell integration.
+ * constructor and the session wiring that the service crosses with
+ * recording/shell integration, and delegates the ssh2 CommonJS interop to
+ * host/ssh2-client.js.
  */
-import ssh2 from "ssh2";
 import { randomUUID } from "node:crypto";
 import { fail } from "./host/envelope.js";
 import { noConnectionGuidance } from "./host/agent-connect.js";
@@ -21,12 +21,11 @@ import { anonymousSessions, indexOwner, normalizeOwner, ownerKey, ownerSessionId
 import { buildCensusScript, newestUnclaimedTty, parseCensus, pickNewTty } from "./host/terminal-census.js";
 import { encodeData, promptFromTerminalData, tailCapped } from "./host/service/text.js";
 import { markSourceRemote } from "./host/service/source-remote.js";
+import { createSsh2Client } from "./host/ssh2-client.js";
 
 export { LEGACY_VRP_ALGORITHMS, isKexMismatchError } from "./host/service/constants.js";
 export { profileDomainSpec, credentialDomainSpec, knownHostDomainSpec, settingsDomainSpec, normalizeDefaultUsername, loadSettingsRecord } from "./host/service/models.js";
 export { normalizeTerminalEol } from "./host/service/text.js";
-
-const { Client } = ssh2;
 
 /**
  * HarborService: one cordis service (and Typert Remote) that owns all SSH
@@ -111,12 +110,14 @@ export default class HarborService extends HarborServiceCore {
   }
 
   /**
-   * ssh2 is CommonJS: its default export is the only interop shape that
-   * exposes Client. Connections construct through this hook so the interop
-   * stays in the entry that owns the import.
+   * Connections construct through this hook so the ssh2 CommonJS interop lives
+   * in one place. It resolves Client through require() at call time — a stale
+   * or partial capture from a plugin reload must not break this host until the
+   * next restart (see host/ssh2-client.js), and tests override this hook to
+   * exercise the connect paths without a transport.
    */
   newClient() {
-    return new Client();
+    return createSsh2Client();
   }
 
   /**

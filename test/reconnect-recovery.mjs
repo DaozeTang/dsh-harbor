@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import ssh2 from "ssh2";
 import HarborService from "../src/index.js";
 
 function fixture(connectClient) {
@@ -68,11 +67,12 @@ test("successful reconnect wakes waiters; timed-out waiters are removed", async 
   assert.equal(conn.reconnectWaiters.length, 0);
 });
 
-test("SSH client is read from the CommonJS default export", () => {
-  assert.equal(typeof ssh2.Client, "function");
+test("SSH client is resolved when a connection is built, not at module load", () => {
+  // ssh2 is CommonJS; capturing Client from a static import left the host
+  // permanently broken after a plugin reload (see test/ssh2-interop.mjs).
   const source = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
-  assert.match(source, /import ssh2 from ["']ssh2["']/);
-  assert.doesNotMatch(source, /import\s*\{\s*Client\s*\}\s*from\s*["']ssh2["']/);
+  assert.match(source, /newClient\(\) \{\n {4}return createSsh2Client\(\);/);
+  assert.doesNotMatch(source, /import\s+ssh2\s+from\s+["']ssh2["']/);
 });
 
 test("transport loss finalizes the terminal log and delivers the reason to reattached streams", async () => {
