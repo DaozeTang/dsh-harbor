@@ -151,7 +151,7 @@ export function createMockApi(options = {}) {
     },
     sftpEditorSave: async (connectionId, path) => ({
       path,
-      backup: path + ".dsh-backup-4f1c2b8a-9d3e-4a6b-8c2d-1e5f7a9b0c3d"
+      bytes: 0
     }),
     sftpWriteFile: async () => ({ written: true }),
     sftpUploadFile: async (connectionId, path, file, onProgress) => {

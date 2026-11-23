@@ -682,7 +682,7 @@ export const sftpEditorSaveRequestSchema = z.object({
   connectionId: z.string().optional(), path: z.string().min(1),
   expected: z.string().max(14 * 1024 * 1024), data: z.string().max(14 * 1024 * 1024)
 });
-export const sftpEditorSaveResultSchema = resultSchema(z.object({ backup: z.string(), bytes: z.number() }));
+export const sftpEditorSaveResultSchema = resultSchema(z.object({ bytes: z.number() }));
 
 // ── SCP fallback (single-file upload/download only) ─────────────────────────
 

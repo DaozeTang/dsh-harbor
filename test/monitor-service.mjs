@@ -11,6 +11,7 @@
  */
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { remoteMethods } from "@deepseek-ai/dsh-typert-protocol";
 import HarborService from "../src/index.js";
 import { renderStatusText } from "../src/host/tools/status.js";
 
@@ -246,6 +247,40 @@ function fakeClock() {
   const unsupported = renderStatusText({ supported: false, reason: "no-procfs" });
   assert.match(unsupported, /no \/proc/, "an unsupported host is explained in words");
   assert.equal(renderStatusText({ supported: false, reason: "no-posix-shell" }).includes("POSIX shell"), true);
+}
+
+// ── a live plugin reload keeps the new endpoint claimable ───────────────────
+{
+  const markers = remoteMethods(Object.create(HarborService.prototype));
+  assert.ok(
+    markers.some((marker) => marker.method === "systemStats"),
+    "systemStats carries a source-mode Remote marker for the Gateway's stale-manifest fallback"
+  );
+  const source = Function.prototype.toString.call(HarborService.prototype.systemStats);
+  const header = source.slice(0, source.indexOf("{"));
+  assert.match(header, /^async systemStats\(request\)\s*$/, "the marked method keeps a plain parameter list");
+  assert.doesNotMatch(header, /[=[\]{}]/, "DSH's source-mode parser rejects defaults, destructuring and rest parameters");
+}
+
+// ── a reconnect mid-probe is retried immediately, not backed off ───────────
+{
+  const oldClient = fakeClient(probeText, { delay: 40 });
+  const service = serviceWith(oldClient);
+  const live = service.connections.get("c1");
+  setTimeout(() => { live.client = fakeClient(probeText); }, 10);
+  const result = await service.systemStats({ connectionId: "c1" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "connection-lost");
+  assert.equal(service.monitorState("c1").retryAt, 0, "a transport replacement does not arm the failure backoff");
+}
+
+// ── an omitted request object still samples the single connection ──────────
+{
+  const client = fakeClient(probeText);
+  const service = serviceWith(client);
+  const result = await service.systemStats();
+  assert.equal(result.ok, true, "the source-mode signature accepts an omitted request");
+  assert.equal(client.calls.length, 1);
 }
 
 console.log("monitor service: cadence, cache, single-flight, backoff, unsupported memo and dead links: passed");

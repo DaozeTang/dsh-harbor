@@ -20,6 +20,7 @@ import { MAX_BUFFER_BYTES, MAX_COMMAND_OUTPUT_BYTES, MAX_CAPTURE_BYTES, MAX_SESS
 import { anonymousSessions, indexOwner, normalizeOwner, ownerKey, ownerSessionIds, pickOwnerSession, unindexOwner } from "./host/terminal-owner.js";
 import { buildCensusScript, newestUnclaimedTty, parseCensus, pickNewTty } from "./host/terminal-census.js";
 import { encodeData, promptFromTerminalData, tailCapped } from "./host/service/text.js";
+import { markSourceRemote } from "./host/service/source-remote.js";
 
 export { LEGACY_VRP_ALGORITHMS, isKexMismatchError } from "./host/service/constants.js";
 export { profileDomainSpec, credentialDomainSpec, knownHostDomainSpec, settingsDomainSpec, normalizeDefaultUsername, loadSettingsRecord } from "./host/service/models.js";
@@ -47,6 +48,10 @@ export default class HarborService extends HarborServiceCore {
       // ~/.dsh/harbor-logs and is resolved lazily on first use.
       sessionLogEnabled: true,
       sessionLogDir: undefined,
+      // One status probe may spend most of its life on a slow or flapping
+      // link; keep the bound configurable so a tailnet/latency outlier can be
+      // sampled without changing the default cadence for everyone else.
+      monitorProbeTimeoutMs: 4000,
       ...config
     };
     // Tear down all connections when the plugin fiber unloads.
@@ -559,3 +564,12 @@ export default class HarborService extends HarborServiceCore {
     this.pruneExitedSessions?.();
   }
 }
+
+// DSH's typert loader imports `./typert` once per process and caches it by
+// package name. A live plugin update (HMR) can therefore replace this class
+// while the Gateway still holds the previous manifest, which made the status
+// endpoint added in 0.4.0 answer HTTP 404 until DSH restarted. The source-mode
+// Remote marker keeps that endpoint claimable through the Gateway's documented
+// fallback; a fresh boot still dispatches through the generated strict
+// manifest, so this only widens compatibility.
+markSourceRemote(HarborService.prototype, "systemStats");

@@ -83,10 +83,7 @@
 .hb .hb-files__favorite { display: inline-flex; align-items: center; gap: 1px; flex: none; }
 .hb .hb-files__favorite .hb-pill { max-width: 176px; }
 
-/* Notices and task sections sit above the listing and keep their own height. */
-.hb .hb-files__notice { display: flex; align-items: center; gap: 6px; flex: none; min-width: 0; }
-.hb .hb-files__notice .hb-notice { flex: 1 1 auto; min-width: 0; }
-
+/* Task sections sit above the listing and keep their own height. */
 .hb .hb-files__section { flex: none; }
 .hb .hb-files__tasks {
   display: flex;

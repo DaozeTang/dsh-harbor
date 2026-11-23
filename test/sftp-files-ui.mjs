@@ -124,8 +124,7 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
     [/openEditor\(entry\)/, "file rows offer the editor"],
     [/api\.sftpReadFile\(connectionId, path, MAX_EDITABLE_BYTES \+ 1\)/, "the editor reads with the size cap as its bound"],
     [/encodeEditableText\(editing\.text\)/, "saving writes the editor text as UTF-8 bytes"],
-    [/sftpEditorSave\(connectionId, editing\.path, editing\.originalBytes, replacement\)/, "saving checks the original bytes and makes a backup"],
-    [/restoreBackup\(entry\)/, "a backup remains restorable after reopening the panel"],
+    [/sftpEditorSave\(connectionId, editing\.path, editing\.originalBytes, replacement\)/, "saving checks the original bytes"],
     [/toggleFavorite\(favorites, cwd\)/, "the star pins the current directory"],
     [/writeFavorites\(globalThis\.localStorage, favoritesStorageKey, next\)/, "favorites persist per server key"],
     [/readFavorites\(globalThis\.localStorage, key\)/, "favorites load from storage on connect"],
@@ -134,6 +133,8 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
   for (const [pattern, label] of checks) {
     assert.match(files, pattern, `HarborFiles.jsx: ${label}`);
   }
+  assert.doesNotMatch(files, /lastSave|restoreBackup|dsh-backup|恢复备份|恢复上一个版本/,
+    "HarborFiles.jsx: online editing never creates or offers a backup/version of the remote file");
 }
 
 console.log("sftp files ui: editor policy, favorites store, filter and JSX wiring all passed");

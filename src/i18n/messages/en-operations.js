@@ -78,7 +78,8 @@ export const en = {
   // ── host-side sampling messages ──────────────────────────────────────────
   "连接已断开，正在等待重连；链路恢复后状态会自动继续。": "The connection is down and reconnecting; sampling resumes automatically once the link is back.",
   "采样过程中连接断开，请稍后重试。": "The connection dropped during sampling; try again shortly.",
-  "状态采样超时（4 秒），这台服务器可能没有响应；稍后会自动重试。": "Status sampling timed out after 4 seconds; the server may not be responding. It will retry automatically.",
+  "状态采样超时（${seconds} 秒），这台服务器可能没有响应；稍后会自动重试。": "Status sampling timed out after ${seconds} seconds; the server may not be responding. It will retry automatically.",
+  "宿主端没有加载状态采样接口（HTTP 404）。插件更新后需要重启 DSH 才能加载新的宿主端代码；重启后点「重试」。": "The host half has not loaded the status endpoint (HTTP 404). Restart DSH after a plugin update so it can load the new host code, then choose Retry.",
   "采样暂停，${seconds} 秒后自动重试": "Sampling paused, retrying automatically in ${seconds}s",
   "状态采样失败：${error?.message ?? String(error)}": "Status sampling failed: ${error?.message ?? String(error)}",
   "状态采样结果无法解析：${error?.message ?? String(error)}": "The status sample could not be parsed: ${error?.message ?? String(error)}"

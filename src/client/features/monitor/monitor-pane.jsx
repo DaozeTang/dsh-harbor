@@ -21,6 +21,7 @@ import { t } from "../../../i18n/core.js";
 import CSS from "./monitor.css";
 import { formatBytePair, formatBytes, formatClock, formatPercent, formatRate, formatUptime, usageTone } from "./format.js";
 import { CoreBars, Sparkline, Stat } from "./monitor-charts.jsx";
+import { hostMethodMissing } from "./errors.js";
 
 installSurfaceStyles("monitor", CSS);
 
@@ -33,6 +34,8 @@ const INTERVAL_ITEMS = [
 const INTERVAL_KEY = "dsh-harbor.monitor.v1";
 const HISTORY_POINTS = 60;
 const DASH = "—";
+/** A host that lacks the endpoint is retried on a slow beat, not twice a second. */
+const HOST_MISMATCH_RETRY_MS = 30000;
 
 /** Sampling interval, remembered per browser like the terminal appearance. */
 function readInterval() {
@@ -74,6 +77,15 @@ function warningText(code) {
   if (code === "incomplete-output") return t("远端输出不完整，部分指标可能缺失。");
   if (code === "truncated-output") return t("采样输出被截断，指标可能缺失。");
   return null;
+}
+
+/**
+ * The browser half is newer than the host half: the endpoint exists in this
+ * bundle but not in the running host process. Only a DSH restart (or a host
+ * half reload) can fix it, so the pane says so instead of repeating 404s.
+ */
+function hostMismatchText() {
+  return t("宿主端没有加载状态采样接口（HTTP 404）。插件更新后需要重启 DSH 才能加载新的宿主端代码；重启后点「重试」。");
 }
 
 /** The plain-text snapshot the copy button puts on the clipboard. */
@@ -127,8 +139,12 @@ export function MonitorPane({ api, connection, sessionId, active = true, onOpenT
   const [sample, setSample] = useState(null);
   const [error, setError] = useState(null);
   const [paused, setPaused] = useState(false);
+  const [hostMismatch, setHostMismatch] = useState(false);
   const [intervalMs, setIntervalMs] = useState(readInterval);
   const historyRef = useRef(new Map());
+  // One request at a time: a 4-s probe on a slow tailnet link must not stack
+  // another request every two seconds, and a manual retry must not race one.
+  const inFlightRef = useRef(false);
   const copy = useCopy();
   const connectionId = connection?.connectionId ?? null;
 
@@ -137,6 +153,7 @@ export function MonitorPane({ api, connection, sessionId, active = true, onOpenT
   useEffect(() => {
     setSample(null);
     setError(null);
+    setHostMismatch(false);
   }, [connectionId]);
 
   const remember = useCallback((id, value) => {
@@ -160,23 +177,43 @@ export function MonitorPane({ api, connection, sessionId, active = true, onOpenT
     if (!active || paused || connectionId === null) return undefined;
     let cancelled = false;
     let timer = null;
+    const apply = (value) => {
+      remember(connectionId, value);
+      setSample(value);
+      setError(null);
+      setHostMismatch(false);
+    };
+    const fail = (cause) => {
+      if (hostMethodMissing(cause)) {
+        setHostMismatch(true);
+        setError({ code: "host-method-missing", message: hostMismatchText() });
+        return;
+      }
+      setError({ code: cause?.code ?? "monitor-failed", message: cause?.message ?? String(cause) });
+    };
     const tick = async () => {
       // An occluded window does not need a probe every two seconds; the next
       // visible tick catches up and the host keeps the sampler warm anyway.
+      if (inFlightRef.current) return;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      inFlightRef.current = true;
       try {
         const value = await api.systemStats(connectionId);
         if (cancelled) return;
-        remember(connectionId, value);
-        setSample(value);
-        setError(null);
+        apply(value);
       } catch (cause) {
         if (cancelled) return;
-        setError({ code: cause?.code ?? "monitor-failed", message: cause?.message ?? String(cause) });
+        fail(cause);
+      } finally {
+        inFlightRef.current = false;
       }
     };
-    void tick();
-    timer = setInterval(() => { void tick(); }, intervalMs);
+    // A stale host is not asked again until the slow retry beat: the first
+    // failure already proved the endpoint is absent.
+    if (!hostMismatch) void tick();
+    // A 404 is deterministic until the host half is reloaded; retry on a slow
+    // beat so a later DSH restart or hot reload heals without a page refresh.
+    timer = setInterval(() => { void tick(); }, hostMismatch ? HOST_MISMATCH_RETRY_MS : intervalMs);
     const onVisibility = () => { if (document.visibilityState === "visible") void tick(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
@@ -184,17 +221,27 @@ export function MonitorPane({ api, connection, sessionId, active = true, onOpenT
       if (timer !== null) clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [api, connectionId, active, paused, intervalMs, remember]);
+  }, [api, connectionId, active, paused, intervalMs, hostMismatch, remember]);
 
   const refreshNow = useCallback(async () => {
     if (connectionId === null) return;
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     try {
       const value = await api.systemStats(connectionId, true);
       remember(connectionId, value);
       setSample(value);
       setError(null);
+      setHostMismatch(false);
     } catch (cause) {
-      setError({ code: cause?.code ?? "monitor-failed", message: cause?.message ?? String(cause) });
+      if (hostMethodMissing(cause)) {
+        setHostMismatch(true);
+        setError({ code: "host-method-missing", message: hostMismatchText() });
+      } else {
+        setError({ code: cause?.code ?? "monitor-failed", message: cause?.message ?? String(cause) });
+      }
+    } finally {
+      inFlightRef.current = false;
     }
   }, [api, connectionId, remember]);
 

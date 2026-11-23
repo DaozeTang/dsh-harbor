@@ -187,7 +187,7 @@ export const TYPERT = {
           { name: "SftpWriteRequest", declaration: "export interface SftpWriteRequest { readonly connectionId?: string; readonly path: string; readonly data: string; }" },
           { name: "SftpWriteResult", declaration: "export type SftpWriteResult = SshResult<{ path: string; bytes: number }>;" },
           { name: "SftpEditorSaveRequest", declaration: "export interface SftpEditorSaveRequest { readonly connectionId?: string; readonly path: string; readonly expected: string; readonly data: string; }" },
-          { name: "SftpEditorSaveResult", declaration: "export type SftpEditorSaveResult = SshResult<{ backup: string; bytes: number }>;" },
+          { name: "SftpEditorSaveResult", declaration: "export type SftpEditorSaveResult = SshResult<{ bytes: number }>;" },
           { name: "ScpReadRequest", declaration: "export interface ScpReadRequest { readonly connectionId?: string; readonly path: string; readonly maxBytes?: number; }" },
           { name: "ScpReadResult", declaration: "export type ScpReadResult = SshResult<{ path: string; data: string; truncated: boolean; bytes: number }>;" },
           { name: "ScpWriteRequest", declaration: "export interface ScpWriteRequest { readonly connectionId?: string; readonly path: string; readonly data: string; }" },

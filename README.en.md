@@ -43,7 +43,7 @@ Reaching a remote machine usually takes three windows: a terminal, an SFTP clien
 
 **Terminal.** A first-class tab in the DSH right sidebar; split, zoom, fullscreen and collapse are DSH's own. Switching tabs, collapsing the sidebar or changing chats never disconnects — terminal instances stay pooled and the host replays buffered output. Find (`Ctrl/⌘+F`, `Shift+Enter` for previous), copy-on-select, `Ctrl+wheel` zoom, jump-to-bottom. Each pane keeps its own server and selection; the same server in both panes gives two independent channels. The connection the agent is bound to carries an "Agent" badge — click the other pane to move it. Host fingerprints are TOFU: recorded on first connect, rejected on change (`accept-new` / `verify` / `off`).
 
-**Files.** SFTP browsing, uploads (drag and drop, directory merge), streamed downloads, rename, deletion confirmed in the panel (agent deletes go through recoverable remote trash), and a text editor that verifies the original content before saving and keeps a remote backup. Remote search, favourites, cancellable transfers, and "open this directory in the terminal".
+**Files.** SFTP browsing, uploads (drag and drop, directory merge), streamed downloads, rename, deletion confirmed in the panel (agent deletes go through recoverable remote trash), and a text editor that verifies the original content before saving and never leaves a backup file on the remote host. Remote search, favourites, cancellable transfers, and "open this directory in the terminal".
 
 **Tunnels.** Local, remote and dynamic SOCKS5 forwarding, with live bound ports and connection counts. Tunnels live and die with their connection.
 

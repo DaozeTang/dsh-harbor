@@ -39,9 +39,6 @@ const { Fragment, useEffect, useRef, useState } = React;
 
 installSurfaceStyles("files", CSS);
 
-/** Scheduler-created backups carry their original name plus this suffix. */
-const BACKUP_SUFFIX = /\.dsh-backup-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 function joinPath(base, name) {
   if (base === "/") return `/${name}`;
   return `${base.replace(/\/+$/, "")}/${name}`;
@@ -70,13 +67,6 @@ function crumbsOf(path) {
     steps.push({ label: part, path: current });
   }
   return steps;
-}
-
-/** The original name of a scheduler backup, or null when this is not one. */
-function backupOriginalOf(name) {
-  if (!BACKUP_SUFFIX.test(name)) return null;
-  const original = name.replace(BACKUP_SUFFIX, "");
-  return original === "" ? null : original;
 }
 
 function nextUploadName(name, entries) {
@@ -158,7 +148,6 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
   favoritesKeyRef.current = favoritesStorageKey;
   const [editing, setEditing] = useState(null);
   const [previewChanges, setPreviewChanges] = useState(false);
-  const [lastSave, setLastSave] = useState(null);
   const connectionRef = useRef(connectionId);
   connectionRef.current = connectionId;
   const [editorBusy, setEditorBusy] = useState(false);
@@ -376,7 +365,6 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
 
   useEffect(() => {
     setTransferMode("sftp");
-    setLastSave(null);
     setScpReason("");
     setScpUploadFile(null);
     setScpUploadPath("");
@@ -730,66 +718,14 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
     setError(null);
     try {
       const replacement = encodeEditableText(editing.text);
-      const result = await api.sftpEditorSave(connectionId, editing.path, editing.originalBytes, replacement);
+      await api.sftpEditorSave(connectionId, editing.path, editing.originalBytes, replacement);
       if (connectionRef.current !== connectionId) return;
-      setLastSave({ path: editing.path, backup: result.backup, original: editing.originalBytes, replacement });
       setEditing(null);
       load(cwdRef.current);
     } catch (err) {
       setError(t(`保存失败：${err?.message ?? String(err)}`));
     } finally {
       setEditorBusy(false);
-    }
-  };
-
-  const restoreLastSave = async () => {
-    if (!lastSave) return;
-    const confirmed = await confirmAction({
-      message: t(`恢复 ${lastSave.path} 的上一个版本？当前内容会先备份。`),
-      confirmLabel: t("恢复")
-    });
-    if (!confirmed) return;
-    setEditorBusy(true);
-    try {
-      const result = await api.sftpEditorSave(connectionId, lastSave.path, lastSave.replacement, lastSave.original);
-      if (connectionRef.current !== connectionId) return;
-      setLastSave({ path: lastSave.path, backup: result.backup, original: lastSave.replacement, replacement: lastSave.original });
-      setError(null);
-      load(cwdRef.current);
-    } catch (err) {
-      setError(t(`恢复失败：${err?.message ?? String(err)}`));
-    } finally {
-      setEditorBusy(false);
-    }
-  };
-
-  const restoreBackup = async (entry) => {
-    const original = backupOriginalOf(entry.name);
-    if (original === null) return;
-    const targetPath = joinPath(cwd, original);
-    const confirmed = await confirmAction({
-      message: t(`用 ${entry.name} 恢复 ${targetPath}？当前内容会先备份。`),
-      confirmLabel: t("恢复")
-    });
-    if (!confirmed) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const [backup, current] = await Promise.all([
-        api.sftpReadFile(connectionId, joinPath(cwd, entry.name), MAX_EDITABLE_BYTES + 1),
-        api.sftpReadFile(connectionId, targetPath, MAX_EDITABLE_BYTES + 1)
-      ]);
-      if (backup.truncated || current.truncated || backup.data.length > MAX_EDITABLE_BYTES || current.data.length > MAX_EDITABLE_BYTES) {
-        throw new Error(t("文件超过编辑器大小上限，无法恢复"));
-      }
-      const result = await api.sftpEditorSave(connectionId, targetPath, current.data, backup.data);
-      if (connectionRef.current !== connectionId) return;
-      setLastSave({ path: targetPath, backup: result.backup, original: current.data, replacement: backup.data });
-      load(cwdRef.current);
-    } catch (err) {
-      setError(t(`恢复失败：${err?.message ?? String(err)}`));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -850,11 +786,6 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
         {!entry.isDirectory && (
           <MenuItem icon="edit-outline" disabled={busy} onSelect={() => { closeRowMenu(); void openEditor(entry); }}>
             {t("在文本编辑器中打开（上限 10 MB）")}
-          </MenuItem>
-        )}
-        {!entry.isDirectory && backupOriginalOf(entry.name) !== null && (
-          <MenuItem icon="archive-outline" disabled={busy} onSelect={() => { closeRowMenu(); void restoreBackup(entry); }}>
-            {t("恢复备份")}
           </MenuItem>
         )}
         <MenuSeparator />
@@ -1040,17 +971,6 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
           }}
         />
       </div>
-
-      {lastSave !== null && (
-        <div className="hb-files__notice">
-          <Notice icon="archive-outline">
-            <span className="hb-truncate" title={lastSave.path}>{t(`已保存备份：${lastSave.backup}`)}</span>
-          </Notice>
-          <Button variant="secondary" size="sm" icon="refresh-outline" busy={editorBusy} onClick={restoreLastSave}>
-            {t("恢复上一个版本")}
-          </Button>
-        </div>
-      )}
 
       {error !== null && (
         <ErrorNote action={<IconButton icon="close-outline" size="sm" label={t("关闭")} onClick={() => setError(null)} />}>

@@ -17,6 +17,7 @@ import { getLanguage, setLanguage } from "../src/i18n/core.js";
 import {
   formatBytePair, formatBytes, formatClock, formatPercent, formatRate, formatUptime, niceCeiling, sparklinePoints, truncateMiddle, usageTone
 } from "../src/client/features/monitor/format.js";
+import { hostMethodMissing } from "../src/client/features/monitor/errors.js";
 
 const pane = await readFile(new URL("../src/client/features/monitor/monitor-pane.jsx", import.meta.url), "utf8");
 const css = await readFile(new URL("../src/client/features/monitor/monitor.css", import.meta.url), "utf8");
@@ -47,7 +48,7 @@ const harborservice = await readFile(new URL("../src/host/service/harbor-service
     "coming back to the window refreshes immediately");
   assert.match(pane, /return \(\) => \{[\s\S]{0,200}clearInterval\(timer\)/,
     "leaving the tab releases the timer");
-  assert.match(pane, /useEffect\(\(\) => \{\n\s{4}setSample\(null\);\n\s{4}setError\(null\);\n\s{2}\}, \[connectionId\]\)/,
+  assert.match(pane, /useEffect\(\(\) => \{\n\s{4}setSample\(null\);\n\s{4}setError\(null\);\n\s{4}setHostMismatch\(false\);\n\s{2}\}, \[connectionId\]\)/,
     "switching servers drops the previous dashboard instead of showing it under a new name");
 }
 
@@ -129,6 +130,26 @@ const harborservice = await readFile(new URL("../src/host/service/harbor-service
   } finally {
     setLanguage(language);
   }
+}
+
+// ── a host/client build mismatch is not a sampling failure ─────────────────
+{
+  assert.equal(hostMethodMissing({ code: "gateway/internal", message: "client api: harbor/systemStats failed: transport failure for /api/harbor/systemStats: HTTP 404" }), true,
+    "the DSH transport 404 is recognized");
+  assert.equal(hostMethodMissing({ code: "not-mounted", message: "harbor Remote method \"systemStats\" is not mounted" }), true);
+  assert.equal(hostMethodMissing({ code: "gateway/definition-unavailable", message: "its strict definition was withdrawn" }), true);
+  assert.equal(hostMethodMissing({ code: "probe-backoff", message: "采样暂停，4 秒后自动重试" }), false,
+    "a host backoff is a normal sampling state");
+  assert.equal(hostMethodMissing({ code: "connection-lost", message: "采样过程中连接断开，请稍后重试。" }), false);
+  assert.equal(hostMethodMissing(null), false);
+  assert.equal(hostMethodMissing(undefined), false);
+
+  assert.match(pane, /hostMethodMissing\(cause\)/, "the pane routes the mismatch through the detector");
+  assert.match(pane, /宿主端没有加载状态采样接口（HTTP 404）/, "the pane explains that a restart is required");
+  assert.match(pane, /HOST_MISMATCH_RETRY_MS = 30000/, "a stale host is retried on a slow beat");
+  assert.match(pane, /hostMismatch \? HOST_MISMATCH_RETRY_MS : intervalMs/, "the slow beat replaces the sampling cadence");
+  assert.match(pane, /inFlightRef\.current/, "overlapping polls are suppressed on a slow link");
+  assert.match(api, /systemStats\(connectionId, refresh\)/, "the endpoint still carries the refresh flag");
 }
 
 console.log("monitor pane: tab wiring, visibility gating, four states, token-only CSS and formatters: passed");

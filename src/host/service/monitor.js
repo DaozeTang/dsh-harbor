@@ -72,17 +72,23 @@ export const withMonitor = (Base) => class extends Base {
 
   /**
    * Sample one connection.
+   *
+   * The parameter list is deliberately a single plain identifier: DSH's
+   * source-mode Remote fallback parses it from the method source when a live
+   * plugin reload leaves the generated manifest behind, and rejects defaults,
+   * destructuring and rest parameters.
    * @param {{connectionId?: string, refresh?: boolean}} request
    * @returns {Promise<{ok: true, value: object} | {ok: false, error: {code: string, message: string}}>}
    */
-  async systemStats(request = {}) {
-    const selected = this.resolveConnection(request.connectionId);
+  async systemStats(request) {
+    const input = request ?? {};
+    const selected = this.resolveConnection(input.connectionId);
     if (!selected.ok) return { ok: false, error: selected.error };
     const { connectionId, connection } = selected;
     this.pruneMonitorStates();
     const state = this.monitorState(connectionId);
     const now = Date.now();
-    const refresh = request.refresh === true;
+    const refresh = input.refresh === true;
 
     if (connection.dead === true || connection.closing === true) {
       return { ok: false, error: fail("connection-lost", t("连接已断开，正在等待重连；链路恢复后状态会自动继续。")) };
@@ -122,18 +128,30 @@ export const withMonitor = (Base) => class extends Base {
     const now = Date.now();
     const slow = refresh || state.meta === null || state.df === null || now - state.slowAt >= SLOW_TTL_MS;
     const command = buildProbeCommand({ slow });
+    const timeoutMs = this.config?.monitorProbeTimeoutMs ?? PROBE_TIMEOUT_MS;
+    // Pin the transport for this round trip: a Tailscale flap may reconnect the
+    // server underneath us, and a channel opened on the retired client must be
+    // reported as a reconnect (retry immediately) rather than as a slow host
+    // that deserves the failure backoff.
+    const client = connection.client;
+    if (client === undefined || client === null) {
+      return { ok: false, error: fail("connection-lost", t("连接已断开，正在等待重连；链路恢复后状态会自动继续。")) };
+    }
     const startedAt = Date.now();
     let exec;
     try {
-      exec = await this.collectExecOutput(connection.client, command, this.config?.monitorProbeTimeoutMs ?? PROBE_TIMEOUT_MS);
+      exec = await this.collectExecOutput(client, command, timeoutMs);
     } catch (error) {
+      if (connection.dead === true || connection.closing === true || connection.client !== client) {
+        return { ok: false, error: fail("connection-lost", t("采样过程中连接断开，请稍后重试。")) };
+      }
       return this.monitorFailure(state, t(`状态采样失败：${error?.message ?? String(error)}`));
     }
-    if (connection.dead === true || connection.closing === true || connection.client === undefined) {
+    if (connection.dead === true || connection.closing === true || connection.client !== client || client === undefined) {
       return { ok: false, error: fail("connection-lost", t("采样过程中连接断开，请稍后重试。")) };
     }
     if (exec.timedOut === true) {
-      return this.monitorFailure(state, t("状态采样超时（4 秒），这台服务器可能没有响应；稍后会自动重试。"));
+      return this.monitorFailure(state, t(`状态采样超时（${Math.max(1, Math.round(timeoutMs / 1000))} 秒），这台服务器可能没有响应；稍后会自动重试。`));
     }
 
     // Parsing is defensive, but a malformed page must still not reject the
