@@ -19,6 +19,7 @@ import { withTunnels } from "./tunnels.js";
 import { withBatch } from "./batch.js";
 import { withSessionLogs } from "./session-logs.js";
 import { withMonitor } from "./monitor.js";
+import { withTerminalBridge } from "./terminal-bridge.js";
 
 const MIXINS = [
   withConnections,
@@ -35,7 +36,8 @@ const MIXINS = [
   withTunnels,
   withBatch,
   withSessionLogs,
-  withMonitor
+  withMonitor,
+  withTerminalBridge
 ];
 
 export const HarborServiceCore = MIXINS.reduce((Base, mixin) => mixin(Base), HarborServiceBase);

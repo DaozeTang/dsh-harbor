@@ -175,6 +175,24 @@ export class HarborServiceBase extends TypertRemoteService {
     // The model must know which of its tools reach which filesystem. Announced
     // only for a bound workspace, so an ordinary local workspace keeps the
     // system prompt it always had.
+    // SSH terminals are registry sessions served by the official terminal
+    // tools; the model has to know the type name and the shared-terminal
+    // rules, because the host's own pty guidance describes local shells.
+    this.ctx.inject(["systemPrompt"], (promptCtx) => {
+      promptCtx.effect(() => promptCtx.systemPrompt.context({
+        name: "harbor:ssh-terminals",
+        order: promptCtx.systemPrompt.getContextOrder("WORKING_DIRECTORY") + 2,
+        required: false,
+        interpolate: false,
+        text: (context) => {
+          try {
+            return this.sshTerminalPromptText(context?.agent?.session);
+          } catch {
+            return "";
+          }
+        }
+      }), "harbor: ssh terminal prompt");
+    });
     this.ctx.inject(["systemPrompt"], (promptCtx) => {
       promptCtx.effect(() => promptCtx.systemPrompt.context({
         name: "harbor:remote-workspace",
@@ -262,6 +280,33 @@ export class HarborServiceBase extends TypertRemoteService {
     for (const [owner, bound] of [...this.activeConnectionByOwner]) {
       if (bound === connectionId) this.activeConnectionByOwner.delete(owner);
     }
+  }
+
+  /**
+   * Guidance for the host's persistent-terminal tools on SSH targets, plus the
+   * live connection list to open one on. Empty while the official terminal
+   * registry does not serve Harbor (the Persistent terminals plugin is off),
+   * so a composition without it keeps a clean prompt.
+   * @param {object|undefined} session - the calling agent's Session.
+   * @returns {string} prompt context, or an empty string.
+   */
+  sshTerminalPromptText(session) {
+    if (typeof this.sshTerminalBackendActive !== "function" || !this.sshTerminalBackendActive()) return "";
+    const lines = [
+      "SSH terminals use the host's persistent-terminal tools. After ssh_connect or ssh_connect_profile, call terminal_open with type \"harbor-ssh\" to open THIS conversation's terminal on the active SSH connection; the optional name is a display label, and cwd is ignored because the shell starts in its login directory. Use terminal_send and terminal_read to work in it, terminal_signal to interrupt a foreground command, terminal_close to remove it, and terminal_list to find sessions you own. The person sees the same shell in Harbor's side panel; after their first keystroke you can only read it. Use ssh_exec for one-shot commands whose exit code and separated output you need. Never type passwords or one-time codes into a terminal; ask the person to type them."
+    ];
+    const live = [...(this.connections ?? new Map()).values()].filter((connection) => !connection.dead && !connection.closing);
+    const owner = normalizeOwner(this.terminalOwner?.({ session }) ?? null);
+    const active = owner === null ? null : this.activeConnectionFor?.(owner);
+    if (live.length === 0) {
+      lines.push("No SSH connection is open yet; connect a saved resource with ssh_connect_profile (or ssh_connect) first.");
+    } else {
+      lines.push("Open SSH connections: " + live.map((connection) => {
+        const name = connection.name ?? connection.host;
+        return `${connection.id === active ? "* " : ""}${name} (${connection.username}@${connection.host}:${connection.port}, id: ${connection.id})`;
+      }).join("; ") + ".");
+    }
+    return lines.join("\n");
   }
 
   registerTools(ctx) {

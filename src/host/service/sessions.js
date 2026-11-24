@@ -26,7 +26,10 @@ export const withSessions = (Base) => class extends Base {
       if (text) {
         // This path is interactive operator input and stays unguarded. The
         // standing boundary is that a human's own keystrokes are never
-        // policed; agent calls use writeToConnection()/execOnConnection().
+        // policed; agent calls go through the persistent-terminal backend.
+        // The first keystroke also hands an agent terminal to the person,
+        // which is what stops terminal_send from typing over them.
+        this.notePanelInput(session.id);
         noteTerminalInput(this.connections?.get(session.connectionId));
         session.stream.write(text);
         this.updateInputMirror(session, text);
@@ -63,7 +66,10 @@ export const withSessions = (Base) => class extends Base {
         return { ok: false, error: fail("terminal-changed", t("终端输入已变化，请检查后重试")) };
       }
       const quoted = "'" + request.path.replace(/'/g, "'\\''") + "'";
-      return this.write({ sessionId: session.id, data: encodeData(`cd -- ${quoted}\r`) });
+      if (!this.writeTerminalSession(session, `cd -- ${quoted}\r`)) {
+        return { ok: false, error: fail("write-failed", t("终端已停止写入")) };
+      }
+      return { ok: true, value: { written: 0 } };
     } catch (error) {
       return { ok: false, error: fail("cd-failed", error.message) };
     }

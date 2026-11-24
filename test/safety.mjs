@@ -290,8 +290,6 @@ const renderFixtures = {
   ssh_list: [{}, { activeConnectionId: "active", connections: [{ connectionId: "active", name: "demo", host: "192.0.2.10", port: 22, username: "root", connected: true, sessions: [] }] }],
   ssh_connect: [{ username: "root", host: "192.0.2.10" }, { connectionId: "active" }],
   ssh_exec: [{}, { connectionId: "active", host: "192.0.2.10", exitCode: 0, stdout: "ok\n", stderr: "", cwd: "/root/KVideo", commandId: "cmd-1", startedAt: "2026-08-15T00:00:00.000Z", finishedAt: "2026-08-15T00:00:01.000Z", durationMs: 1000, truncated: false, timedOut: false, redacted: false }],
-  ssh_read: [{}, { connectionId: "active", host: "192.0.2.10", data: "prompt", hasSession: true, truncated: false, redacted: false }],
-  ssh_write: [{}, { written: 5 }],
   ssh_disconnect: [{}, { disconnected: true }]
 };
 for (const [name, [args, value]] of Object.entries(renderFixtures)) {

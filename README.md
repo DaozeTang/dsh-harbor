@@ -1,4 +1,4 @@
-# Harbor · 远程运维工作台
+# Harbor
 
 DeepSeek Harness 的 SSH 工作台：**在主对话里驱动服务器，同时在右侧保留一个真正的交互式终端**——服务器状态、文件、端口转发、快捷命令与会话日志同在这块面板里，与对话并排。
 
@@ -19,13 +19,15 @@ dsh plugin --profile web add "$PWD"
 dsh web
 ```
 
-打开任意会话，点右上角的终端按钮，在「远程主机」里连接服务器。安装细节见 [INSTALL.md](./INSTALL.md)，各面板用法见[产品指南](./docs/product-guide.md)。
+打开任意会话，点右上角的终端按钮，在「Harbor」里连接服务器。安装细节见 [INSTALL.md](./INSTALL.md)，各面板用法见[产品指南](./docs/product-guide.md)。
+
+> **DSH 0.2.3+**：交互式终端复用官方「持久化终端」插件提供的 `terminal_*` 工具。请保持该插件启用；未启用时 `ssh_exec`、文件、转发、日志、状态仍可用，但 Agent 没有交互式 SSH 终端。
 
 ## 它解决什么问题
 
 接入一台远端机器，通常要开三个窗口：终端、SFTP 客户端，以及在对话里来回复制命令和结果。Harbor 把这些收进同一块屏幕：
 
-- **每个对话一个终端，Agent 与你在同一个终端里并肩。** 说「看下内存」，命令就出现在你面前的终端里；退出码、输出、耗时、超时与截断状态原样回到模型。两个对话同时连着同一台机器也互不干扰。
+- **每个对话一个终端，Agent 与你在同一个终端里并肩。** 说「看下内存」，命令就出现在你面前的终端里；退出码、输出、耗时、超时与截断状态原样回到模型。你第一次敲键后终端归你，Agent 只能读、不能再往里写。两个对话同时连着同一台机器也互不干扰。
 - **凭据不进对话。** 服务器保存为资源，密码与私钥只写入 DSH 本机凭据库；模型看到的是「prod-web-01 的共享凭据」，而不是那串口令。
 - **破坏性操作需要你点头。** 命中规则的命令在会话内挂起等待批准；批准后的 `rm` 执行的是移入远端回收站的可逆动作，而不是删除。
 
@@ -45,7 +47,7 @@ dsh web
 - 取不到就如实说明：非 Linux 远端、没有 exec 通道的网络设备、sshd 不允许额外会话时都会给出原因，绝不用 0 冒充读数。「复制快照」把当前读数整理成一段文本，直接贴进对话。
 
 ### 终端
-- DSH 右侧边栏的一等标签「远程主机」：分栏、缩放、全屏与收起都交给 DSH；切换标签、收起侧栏或切换对话都**不会断开连接**——终端实例常驻内存池，回来即恢复完整回看。
+- DSH 右侧边栏的一等标签「Harbor」：分栏、缩放、全屏与收起都交给 DSH；切换标签、收起侧栏或切换对话都**不会断开连接**——终端实例常驻内存池，回来即恢复完整回看。
 - 无人观看时宿主继续缓冲输出，重新打开时补齐。
 - 查找（`Ctrl/⌘+F`，`Shift+Enter` 反向）、选中即复制、`Ctrl+滚轮` 缩放、滚到底部浮标；字号与配色保存在当前浏览器。
 - 每个分栏独立维护自己显示的服务器与选中项；同一台服务器两边各开一次，得到两条互不影响的通道。
@@ -88,13 +90,14 @@ dsh web
 
 ## Agent 工具
 
-默认注册 27 个工具，省略 `connection_id` 时作用于当前活动连接。**设置 → 远程主机 → 功能**可分别关闭转发、日志与状态工具（需重启 DSH）。
+默认注册 22 个工具，省略 `connection_id` 时作用于当前活动连接。**设置 → Harbor → 功能**可分别关闭转发、日志与状态工具（需重启 DSH）。
+
+交互式终端不再由 Harbor 自己定义工具。连上服务器后，Agent 用 DSH 官方持久终端工具打开一条 SSH 终端（`terminal_open` 的 `type` 为 `harbor-ssh`），再用 `terminal_send` / `terminal_read` / `terminal_signal` / `terminal_close` / `terminal_list` 操作它——函数名、参数、等待原因、profile 与错误码都来自官方实现。你在右侧面板看到的正是同一条 shell；你第一次敲键后，Agent 只能读，不能再写。
 
 | 组 | 工具 |
 | --- | --- |
-| SSH（7） | `ssh_list` `ssh_connect` `ssh_connect_profile` `ssh_exec` `ssh_read` `ssh_write` `ssh_disconnect` |
-| 终端上下文（2） | `ssh_terminal_sessions` `ssh_terminal_context` |
-| Shell 集成（1） | `ssh_shell_integration` |
+| SSH（5） | `ssh_list` `ssh_connect` `ssh_connect_profile` `ssh_exec` `ssh_disconnect` |
+| 终端（官方） | `terminal_open`（type `harbor-ssh`）`terminal_send` `terminal_read` `terminal_signal` `terminal_close` `terminal_list` |
 | 文件（9） | `sftp_list` `sftp_read` `sftp_write` `sftp_mkdir` `sftp_rename` `sftp_delete` `sftp_upload_file` `sftp_upload_dir` `sftp_download_dir` |
 | 转发（3） | `tunnel_start` `tunnel_stop` `tunnel_list` |
 | 批量（1） | `ssh_batch` |
@@ -108,9 +111,11 @@ dsh web
 ```
 src/
   index.js               插件入口：挂载 Remote、注册工具 / 设置页 / 侧栏标签
+  terminal-backend.js    官方持久终端分组内的 SSH 后端入口（孤立的 terminals 注册表）
   rpc/                   Typert 契约：descriptors、schemas、host 清单、client 贡献
   host/
     service/             连接、会话、文件、转发、流式文件路由（按关注点拆分）
+    terminal-backend.js  TerminalBackend/TerminalBackendSession 的 SSH 适配器
     tools/               面向 Agent 的工具注册
     *.js                 纯逻辑：安全判定、回收站、指纹、脱敏、SFTP 管道……
   client/

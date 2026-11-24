@@ -2,6 +2,18 @@
 
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。0.2.0 为首个公开版本，0.1.0 是其内部基线。
 
+## 0.5.0 — 2026-11-24
+
+**交互式终端改用 DSH 官方持久终端工具，插件名统一为 Harbor。**
+
+- **复用官方终端**：新增 `lib/terminal-backend.js`，向 `ctx.terminals` 注册 `harbor-ssh` 后端。Agent 现在用官方 `terminal_open` / `terminal_send` / `terminal_read` / `terminal_signal` / `terminal_close` / `terminal_list` 操作 SSH 终端；Harbor 只负责 SSH 机制（连接、PTY、就绪判定、行分页、信号、清理）。
+- **组合层**：官方终端插件把 `terminals` 隔离在 `optional-persistent-terminals` 组里，同级插件看不到该服务。`cordis.patch.yml` 用 loader 的「按 group id 插入」把后端子行放进该组；该组不存在时只跳过这一行，Harbor 其余功能照常。
+- **删除重复工具（27 → 22）**：移除 `ssh_read`、`ssh_write`、`ssh_terminal_sessions`、`ssh_terminal_context`、`ssh_shell_integration`。保留官方无对应的 `ssh_exec`、连接生命周期、SFTP、转发、批量、日志与状态工具。
+- **安全门保留并扩展**：`terminal_send` 若目标是 Harbor 的 SSH 会话，仍先经过服务器执行策略与操作者审批，危险命令不会因为换用官方工具而绕过。
+- **接管语义**：你在面板里第一次敲键后该终端归你，Agent 的 `terminal_send` / `terminal_signal` 会被拒绝、只能 `terminal_read`；之后的 `terminal_open` 会另开一条 shell，不会抢回你正在用的那条。Agent 自己 `terminal_close` 时才关闭远端 shell。
+- **命名统一**：插件列表、侧栏标签、设置页、会话头提示与文档一律使用英文名 **Harbor**，不再使用「远程运维」「远程主机」等独立中文名；`engines.dsh` 提升到 `>=0.2.3`。
+- **测试**：新增 `test/terminal-backend.mjs`（spawn、行分页、send 等待原因、接管、关闭、信号）；移除已无宿主面的 `ssh-write` 与 `manual-terminal-context` 测试。
+
 ## 0.4.3 — 2026-11-23
 
 **状态页的每核柱条不再画到 CPU 卡片外面。**

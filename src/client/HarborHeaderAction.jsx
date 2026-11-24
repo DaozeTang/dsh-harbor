@@ -35,8 +35,8 @@ export function HarborHeaderAction({ openTab, isActive, label, hint }) {
         className="hb-iconbtn hb-header-action"
         data-active={active ? "true" : "false"}
         aria-pressed={active}
-        aria-label={label ?? t("远程主机")}
-        title={hint ?? t("打开或聚焦远程主机标签")}
+        aria-label={label ?? t("Harbor")}
+        title={hint ?? t("打开或聚焦 Harbor 标签")}
         onClick={() => openTab?.()}
       >
         <Icon name="terminal" size={16} />

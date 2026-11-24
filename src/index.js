@@ -19,9 +19,10 @@ import { HarborServiceCore } from "./host/service/index.js";
 import { MAX_BUFFER_BYTES, MAX_COMMAND_OUTPUT_BYTES, MAX_CAPTURE_BYTES, MAX_SESSIONS, MAX_SESSIONS_PER_CONNECTION, READ_TIMEOUT_MS, STREAM_HEARTBEAT_MS, STREAM_ROUTE_PREFIX, TTY_PROBE_MS, TTY_PROBE_RETRY_DELAYS_MS } from "./host/service/constants.js";
 import { anonymousSessions, indexOwner, normalizeOwner, ownerKey, ownerSessionIds, pickOwnerSession, unindexOwner } from "./host/terminal-owner.js";
 import { buildCensusScript, newestUnclaimedTty, parseCensus, pickNewTty } from "./host/terminal-census.js";
-import { encodeData, promptFromTerminalData, tailCapped } from "./host/service/text.js";
+import { promptFromTerminalData, tailCapped } from "./host/service/text.js";
 import { markSourceRemote } from "./host/service/source-remote.js";
 import { createSsh2Client } from "./host/ssh2-client.js";
+import { publishHarborService, retractHarborService } from "./shared/service-hub.js";
 
 export { LEGACY_VRP_ALGORITHMS, isKexMismatchError } from "./host/service/constants.js";
 export { profileDomainSpec, credentialDomainSpec, knownHostDomainSpec, settingsDomainSpec, normalizeDefaultUsername, loadSettingsRecord } from "./host/service/models.js";
@@ -53,6 +54,10 @@ export default class HarborService extends HarborServiceCore {
       monitorProbeTimeoutMs: 4000,
       ...config
     };
+    // The SSH terminal backend is mounted inside the isolated Persistent
+    // terminals group and reaches this instance through the shared hub.
+    publishHarborService(this);
+    ctx.effect(() => () => retractHarborService(this), "harbor: service hand-off");
     // Tear down all connections when the plugin fiber unloads.
     ctx.effect(() => () => {
       for (const task of this.transferTasks.entries.values()) task.controller.abort(new Error("Plugin unloaded"));
@@ -151,14 +156,16 @@ export default class HarborService extends HarborServiceCore {
    * this owner, so the caller never has to know whether it was created now.
    */
   async openOwnedSession(conn, request, ownerSessionId) {
-    const existing = pickOwnerSession(this.sessions, conn, ownerSessionId);
+    // An agent terminal after a person took the previous one over must not
+    // silently reclaim the PTY the person is now driving.
+    const existing = request.forceNew === true ? undefined : pickOwnerSession(this.sessions, conn, ownerSessionId);
     if (existing !== undefined) {
       this.bindActiveConnection(request.connectionId, ownerSessionId);
       return { ok: true, value: this.sessionValue(existing, { reused: true }) };
     }
     // Adoption: a terminal that no session claims (settings page, old panel
     // build, pre-upgrade terminal) becomes this conversation's, once.
-    if (ownerSessionId !== null && request.adopt !== false) {
+    if (request.forceNew !== true && ownerSessionId !== null && request.adopt !== false) {
       const anonymous = anonymousSessions(this.sessions, conn);
       if (anonymous.length === 1) {
         const claimed = anonymous[0];
@@ -493,8 +500,9 @@ export default class HarborService extends HarborServiceCore {
       const family = await this.collectExecOutput(client, buildCwdAwareCommand(SHELL_FAMILY_PROBE, { tty: session.tty ?? null }), 5000)
  .then((result) => (result.exitCode === 0 ? parseShellFamilyProbe(result.stdout) : ""))
  .catch(() => "");
-      const written = await this.write({ sessionId: session.id, data: encodeData(`${shellIntegrationCommand(family)}\r`) });
-      if (!written.ok) return written;
+      if (!this.writeTerminalSession(session, `${shellIntegrationCommand(family)}\r`)) {
+        return { ok: false, error: fail("write-failed", t("终端已停止写入")) };
+      }
       return { ok: true, value: { sessionId: session.id, enabled: true } };
     } catch (error) {
       return { ok: false, error: fail("shell-integration-failed", error.message) };

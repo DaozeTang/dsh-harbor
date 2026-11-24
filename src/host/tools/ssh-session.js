@@ -1,7 +1,8 @@
 /**
- * Agent tools for the SSH session lifecycle: list, connect, exec, read,
- * write, disconnect. All of them drive the same connections/sessions the
- * right-side panel shows; `service` is the HarborService instance.
+ * Agent tools for the SSH transport lifecycle: list, connect, exec, disconnect.
+ * They drive the same connections the right-side panel shows; interactive
+ * terminals are the host's persistent-terminal tools (backend type
+ * `harbor-ssh`), so this file no longer defines read/write tools.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import { assessShellCommand, CATEGORY_DELETE_FILES } from "../safety.js";
@@ -43,35 +44,49 @@ export async function askOperatorApproval(ctx, execution, reason) {
 }
 
 export function registerSshSessionTools(ctx, service) {
-  // Dangerous-command gate for ssh_exec: the tools/pre-execute waterfall
-  // evaluates the exact policy the exec path will enforce and, when the
-  // command is deny-listed, suspends the whole call on the host's approval
-  // channel — the agent cannot act, retry, or route around while the
-  // operator decides. On "allow" a one-shot voucher (callId -> connection +
-  // command) is recorded for the tool body to consume past the inner gate.
+  // Dangerous-command gate for every agent path that types on a remote host:
+  // ssh_exec, and the host's terminal_send when it targets a Harbor SSH
+  // terminal. The tools/pre-execute waterfall evaluates the exact policy the
+  // exec path enforces and, when the command is deny-listed, suspends the whole
+  // call on the host's approval channel — the agent cannot act, retry, or route
+  // around while the operator decides. ssh_exec on "allow" records a one-shot
+  // voucher (callId -> connection + command) that its body consumes past the
+  // inner gate; terminal_send needs none because the write itself is the call.
   // No approval channel at all degrades to deny, never to execute.
   if (typeof ctx.on === "function") ctx.on("tools/pre-execute", (execution, next) => {
-    if (execution?.name !== "ssh_exec") return typeof next === "function" ? next() : undefined;
+    const name = execution?.name;
+    if (name !== "ssh_exec" && name !== "terminal_send") return typeof next === "function" ? next() : undefined;
     return (async () => {
-      const command = typeof execution.arguments?.command === "string" ? execution.arguments.command : "";
+      const command = typeof execution.arguments?.command === "string"
+        ? execution.arguments.command
+        : typeof execution.arguments?.text === "string" ? execution.arguments.text : "";
       // The gate must evaluate the tier in force for THIS conversation: the
       // operator's per-connection switch is keyed by conversation now, so a
       // relaxed gate in one chat cannot pre-approve another chat's command.
       const ownerSessionId = service.terminalOwner?.(execution.agent);
-      const selected = service.resolveConnection(execution.arguments?.connection_id, ownerSessionId);
-      if (!selected.ok) return typeof next === "function" ? next() : undefined; // no target: let the tool report the honest error
-      const policy = service.resolveExecPolicy(selected.connectionId, ownerSessionId);
+      let target;
+      if (name === "terminal_send") {
+        // Only Harbor's own registry sessions are gated here; local shells and
+        // unknown ids stay with whatever gate the host's terminal plugin has.
+        const binding = service.bindingForTerminal?.(execution.arguments?.sessionId);
+        if (binding === undefined) return typeof next === "function" ? next() : undefined;
+        target = { connectionId: binding.connectionId, connection: service.connections?.get(binding.connectionId) };
+      } else {
+        target = service.resolveConnection(execution.arguments?.connection_id, ownerSessionId);
+        if (!target.ok) return typeof next === "function" ? next() : undefined; // no target: let the tool report the honest error
+      }
+      const policy = service.resolveExecPolicy(target.connectionId, ownerSessionId);
       const decision = assessShellCommand(command, policy);
       if (decision.ok) return typeof next === "function" ? next() : undefined;
       let trashNote = "";
       if (decision.category === CATEGORY_DELETE_FILES && parseSimpleDeleteCommand(command)) {
         trashNote = t("（批准后实际执行的是移入回收站的可逆操作，不会真删）");
       }
-      const host = selected.connection.host ?? "";
+      const host = target.connection?.host ?? "";
       const reason = t(`AI 请求在 ${host} 上执行危险命令，已被执行策略（${execPolicyLabel(policy.mode)}）拦截：\n${command}\n风险类别：${t(decision.category ?? decision.reason)}${trashNote}\n批准=本次执行；拒绝=命令不会运行。`);
       const { outcome } = await askOperatorApproval(ctx, execution, reason);
       if (outcome === "allowed-once") {
-        service.recordOperatorApproval(execution.callId, selected.connectionId, command);
+        if (name === "ssh_exec") service.recordOperatorApproval(execution.callId, target.connectionId, command);
         return typeof next === "function" ? next() : undefined;
       }
       if (outcome === "rejected") {
@@ -84,73 +99,10 @@ export function registerSshSessionTools(ctx, service) {
     })();
   });
 
-  ctx.tools.register(defineTool({
-    name: "ssh_shell_integration",
-    description: "Enable shell integration (OSC 133 markers) in an open SSH terminal's bash/zsh shell. Afterwards ssh_terminal_context reports the shell's current directory, the last command's exit code and whether it sits at a prompt — far more reliable than guessing from output text. Requires an idle, single interactive shell; the session must be one from ssh_terminal_sessions.",
-    parameters: { session_id: { type: "string", required: true, description: "Session id from ssh_terminal_sessions." } },
-    output: {
-      schema: { type: "object", additionalProperties: false, properties: { sessionId: { type: "string", required: true }, enabled: { type: "boolean", required: true } } },
-      render(_args, value) {
-        return [{ type: "text", text: value.enabled ? t(`已在会话 ${value.sessionId} 启用 shell integration；此后 ssh_terminal_context 会带上 cwd/退出码/提示符状态。`) : t("启用失败。") }];
-      }
-    },
-    async execute(args) {
-      const result = await service.enableShellIntegration({ sessionId: args.session_id });
-      if (!result.ok) throw new Error(`ssh_shell_integration failed: ${result.error.message}`);
-      return result.value;
-    }
-  }));
-
-  ctx.tools.register(defineTool({
-    name: "ssh_terminal_sessions",
-    description: "List open SSH terminal sessions so you can identify a terminal the user operated manually. Each entry carries ownerSessionId and a mine flag, so your own conversation's terminal can be told apart from another chat's. Returns metadata and history cursors only; never returns terminal output, saved resources, or credentials.",
-    parameters: {},
-    output: {
-      schema: { type: "object", additionalProperties: false, properties: { sessions: { type: "array", required: true, items: { type: "object", additionalProperties: true } } } },
-      render(_args, value) { return [{ type: "text", text: JSON.stringify(value, null, 2) }]; }
-    },
-    async execute(_args, exec) {
-      const result = service.listTerminalContexts({ sessionId: service.terminalOwner?.(exec?.agent) ?? undefined });
-      if (!result.ok) throw new Error(`ssh_terminal_sessions failed: ${result.error.message}`);
-      return result.value;
-    }
-  }));
-
-  ctx.tools.register(defineTool({
-    name: "ssh_terminal_context",
-    description: "Read a bounded, redacted range from a user-operated SSH terminal after approval. Omit session_id for YOUR conversation's own terminal; pass one from ssh_terminal_sessions to read another conversation's. This does not consume or alter the visible terminal history.",
-    parameters: { session_id: { type: "string", description: "Session id from ssh_terminal_sessions. Omit to read YOUR conversation's own terminal." }, after: { type: "integer", description: "Optional cursor from a previous read." }, max_bytes: { type: "integer", description: "1024..98304 bytes; defaults to 24576." } },
-    output: {
-      schema: { type: "object", additionalProperties: true },
-      render(_args, value) { return [{ type: "text", text: JSON.stringify(value, null, 2) }]; }
-    },
-    async execute(args, exec) {
-      // Default target is the caller's own terminal: every conversation has one,
-      // and "the terminal" used to mean whichever shell happened to be first.
-      let sessionId = args.session_id;
-      if (sessionId === undefined) {
-        const ownerSessionId = service.terminalOwner?.(exec?.agent) ?? undefined;
-        const listed = service.listTerminalContexts({ sessionId: ownerSessionId });
-        if (!listed.ok) throw new Error(`ssh_terminal_context failed: ${listed.error.message}`);
-        const own = listed.value.sessions.filter((entry) => entry.mine && entry.alive);
-        const target = own[own.length - 1] ?? listed.value.sessions.filter((entry) => entry.alive).at(-1);
-        if (target === undefined) throw new Error("ssh_terminal_context failed: this conversation has no open terminal");
-        sessionId = target.sessionId;
-      }
-      const result = service.readTerminalContext({ sessionId, after: args.after, maxBytes: args.max_bytes });
-      if (!result.ok) throw new Error(`ssh_terminal_context failed: ${result.error.message}`);
-      return result.value;
-    }
-  }));
-
-  if (typeof ctx.on === "function") ctx.on("tools/pre-execute", (execution, next) => {
-    if (execution?.name !== "ssh_terminal_context") return typeof next === "function" ? next() : undefined;
-    return { kind: "ask", reason: "Agent requests recent manual SSH terminal activity, which may contain sensitive output." };
-  });
 
   ctx.tools.register(defineTool({
     name: "ssh_list",
-    description: t("List currently open SSH connections and identify the active server. This reports only live connection metadata (name, host, port, username and active state); it never returns credentials. When the operator enabled 「允许 AI 自动连接已保存服务器」 in the SSH settings, the result also lists the operator's saved SSH resources (name, host, username, whether already connected) — connect one with ssh_connect_profile. Use this tool when the user asks which server is connected or which saved servers exist; for normal server work, ssh_exec/ssh_read/ssh_write already target the active connection automatically."),
+    description: "List currently open SSH connections and identify the active server. This reports only live connection metadata (name, host, port, username and active state); it never returns credentials. When the operator enabled AI auto-connect in Harbor's settings, the result also lists the operator's saved SSH resources (name, host, username, whether already connected) — connect one with ssh_connect_profile. Use this tool when the user asks which server is connected or which saved servers exist. For an interactive shell call terminal_open with type \"harbor-ssh\" (and terminal_list for open sessions); for one-shot commands ssh_exec targets the active connection automatically.",
     parameters: {},
     output: {
       schema: {
@@ -241,7 +193,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_connect",
-    description: "Connect to a remote server over SSH, open it in the right-side terminal, and make it the current connection for later SSH tools. Subsequent ssh_exec, ssh_read, ssh_write, and ssh_disconnect calls automatically use this connection unless a connection_id is explicitly supplied.",
+    description: "Connect to a remote server over SSH, open it in Harbor's side panel, and make it the current connection for later SSH tools. Subsequent ssh_exec, ssh_disconnect, and terminal_open({type:'harbor-ssh'}) target this connection unless a connection_id is explicitly supplied.",
     parameters: {
       host: { type: "string", required: true, description: "Remote hostname or IP address." },
       port: { type: "integer", description: "SSH port, defaults to 22." },
@@ -302,7 +254,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_connect_profile",
-    description: t("Connect to one of the operator's saved SSH resources (设置 → SSH 资源) by name and make it the active connection: later ssh_exec/ssh_read/ssh_write without connection_id target it for THIS conversation, and a terminal owned by this conversation opens in the right-side panel so the operator can see which machine you are on. Only works when the operator enabled 「允许 AI 自动连接已保存服务器」; with the switch off the call fails — then ask the operator to connect the server, and NEVER fall back to ssh_connect with credentials you gathered from conversation. Reuses an already-open connection for the same resource instead of connecting twice."),
+    description: "Connect to one of the operator's saved SSH resources by name (Settings → Harbor) and make it the active connection: later ssh_exec and terminal_open({type:'harbor-ssh'}) without connection_id target it for THIS conversation, and a terminal owned by this conversation opens in the right-side panel so the operator can see which machine you are on. Only works when the operator enabled AI auto-connect in Harbor's settings; with the switch off the call fails — then ask the operator to connect the server, and NEVER fall back to ssh_connect with credentials you gathered from conversation. Reuses an already-open connection for the same resource instead of connecting twice.",
     parameters: {
       resource: { type: "string", required: true, description: "The saved resource's name as shown by ssh_list (e.g. 'dev', 'prod'), or its profile id. A unique partial name is accepted; unknown or ambiguous names fail with the list of available resources." }
     },
@@ -336,7 +288,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_exec",
-    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes; command output is mirrored into YOUR conversation's terminal, not into other chats'. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; run those with ssh_write in the interactive terminal instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux/POSIX hosts the dedicated exec channel starts in YOUR conversation's terminal's verified current directory. A busy or ambiguous terminal falls back to the login directory (the result's first line reports the cwd actually used); a terminal whose directory cannot be read rejects the command instead of guessing. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands suspend this call until the operator answers the host's confirmation prompt in the conversation: approving runs the command once, rejecting denies it — never retry or route around a rejection. The command and output are also shown in the terminal panel.",
+    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes; command output is mirrored into YOUR conversation's terminal, not into other chats'. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; open an interactive terminal with terminal_open({type:'harbor-ssh'}) and drive it with terminal_send instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux/POSIX hosts the dedicated exec channel starts in YOUR conversation's terminal's verified current directory. A busy or ambiguous terminal falls back to the login directory (the result's first line reports the cwd actually used); a terminal whose directory cannot be read rejects the command instead of guessing. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands suspend this call until the operator answers the host's confirmation prompt in the conversation: approving runs the command once, rejecting denies it — never retry or route around a rejection. The command and output are also shown in the terminal panel.",
     parameters: {
       connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
       command: { type: "string", required: true, description: "The shell command to execute." },
@@ -418,81 +370,7 @@ export function registerSshSessionTools(ctx, service) {
     }
   }));
 
-  ctx.tools.register(defineTool({
-    name: "ssh_read",
-    description: "Read output from YOUR conversation's terminal on the current SSH connection. Every conversation has its own terminal per server, so this never returns another chat's output. Omit connection_id for the current server; do not call ssh_list first. By default only output that arrived since your previous ssh_read on this terminal is returned — results you already received are not repeated, so read again after ssh_write without re-paying for old output. Pass mode \"tail\" for the full recent terminal capture instead (e.g. output that predates your first read, or something that scrolled past). Also useful when the user typed something in this conversation's panel terminal.",
-    parameters: {
-      connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
-      mode: { type: "string", enum: ["new", "tail"], description: "'new' (default) returns only output that arrived since the previous ssh_read on this connection; 'tail' returns the whole recent terminal capture. Use 'tail' sparingly — it repeats output you likely already have." }
-    },
-    output: {
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          connectionId: { type: "string", required: true },
-          host: { type: "string", required: true },
-          data: { type: "string", required: true },
-          hasSession: { type: "boolean", required: true },
-          truncated: { type: "boolean", required: true },
-          redacted: { type: "boolean", required: true }
-        }
-      },
-      render(args, value) {
-        const body = !value.hasSession
-          ? "(this conversation has no open terminal on that connection)"
- : value.data || (args.mode === "tail" ? "(no output yet)" : "(no new output since the previous read)");
-        const notes = [
-          value.truncated ? "[terminal capture truncated]" : "",
-          value.redacted ? "[sensitive values redacted]" : ""
-        ].filter(Boolean);
-        return [{ type: "text", text: notes.length > 0 ? `${body}\n${notes.join("\n")}` : body }];
-      }
-    },
-    async execute(args, exec) {
-      const result = service.readCurrentConnection({ connectionId: args.connection_id, mode: args.mode, sessionId: service.terminalOwner?.(exec?.agent) ?? undefined });
-      if (!result.ok) throw new Error(`ssh_read failed: ${result.error.message}`);
-      return result.value;
-    }
-  }));
 
-  ctx.tools.register(defineTool({
-    name: "ssh_write",
-    description: "Send input into YOUR conversation's terminal on a server and, by default, press Enter afterwards so the input is submitted like a human typing Enter (a carriage return \\r is appended unless the input already ends with a newline). Omit connection_id to target the current connection; provide connection_id to target a specific server. The input never reaches another conversation's terminal. If the connection has no terminal for this conversation yet, one is opened (or the connection's single unclaimed terminal is adopted) so the input is never silently dropped. Normal operations are permitted through DSH permissions; explicitly destructive or irreversible commands are stopped before agent execution. Ctrl-C remains available to cancel an in-progress command.",
-    parameters: {
-      connection_id: { type: "string", description: "Optional. Omit to target the current/active terminal; specify to target that server's terminal (e.g. from ssh_connect/ssh_list)." },
-      input: { type: "string", required: true, description: "The input to send, e.g. 'y' to answer a prompt, or 'ls -la' to run a command." },
-      press_enter: { type: "boolean", description: "Whether to append a carriage return (Enter) after the input so the command or prompt answer is submitted. Defaults to true; set false to send raw input without submitting." }
-    },
-    output: {
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          written: { type: "integer", required: true }
-        }
-      },
-      render(args, value) {
-        return [{ type: "text", text: `Sent ${value.written} bytes to the terminal session.` }];
-      }
-    },
-    async execute(args, exec) {
-      const ownerSessionId = service.terminalOwner?.(exec?.agent) ?? undefined;
-      let input = typeof args.input === "string" ? args.input : String(args.input ?? "");
-      // The physical Enter key emits a carriage return (\\r). Send that —
-      // not a bare \\n — so the input also submits to programs that put the
-      // terminal in raw mode (password prompts, [Y/n] confirmations).
-      if (args.press_enter !== false && !/[\r\n]$/.test(input)) input += "\r";
-      // The input must land in a live terminal session. If the target
-      // connection has none open, open one first so "write + enter" actually
-      // executes instead of silently writing 0 bytes.
-      const ensure = await service.ensureSessionForWrite(args.connection_id, ownerSessionId);
-      if (!ensure.ok) throw new Error(`ssh_write failed: ${ensure.error.message}`);
-      const result = service.writeCurrentConnection({ connectionId: ensure.connectionId, input, sessionId: ownerSessionId });
-      if (!result.ok) throw new Error(`ssh_write failed: ${result.error.message}`);
-      return result.value;
-    }
-  }));
 
   ctx.tools.register(defineTool({
     name: "ssh_disconnect",

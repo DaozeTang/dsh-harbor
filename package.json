@@ -1,6 +1,6 @@
 {
   "name": "dsh-harbor",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Harbor — remote operations workbench for DeepSeek Harness: SSH terminals, remote files, port forwarding, batch runs, and session logs, side by side with the conversation.",
   "icon": "./icon.svg",
   "license": "MIT",
@@ -29,6 +29,9 @@
     },
     "./client": {
       "default": "./lib/client.js"
+    },
+    "./terminal-backend": {
+      "default": "./lib/terminal-backend.js"
     },
     "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
@@ -59,7 +62,7 @@
     }
   },
   "engines": {
-    "dsh": ">=0.2.0"
+    "dsh": ">=0.2.3-alpha.2"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-credentials": ">=0.1.5-alpha.1",

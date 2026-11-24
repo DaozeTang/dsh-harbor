@@ -136,17 +136,15 @@ const OSC_ST = (payload) => `\x1b]${payload}\x1b\\`;
 // ── wiring contract ─────────────────────────────────────────────────────────
 {
   const index = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-  const tools = await readFile(new URL("../src/host/tools/ssh-session.js", import.meta.url), "utf8");
   const checks = [
     [index, /shellIntegration: new ShellIntegrationTracker\(\)/, "each session owns a tracker"],
     [index, /session\.shellIntegration\?\.feed\(text\)/, "every output chunk feeds the tracker"],
     [index, /shell: session\.shellIntegration\?\.snapshot\(\) \?\? null/, "terminal context reports the shell state"],
     [index, /async enableShellIntegration\(request\)/, "the enabling RPC exists"],
-    [index, /encodeData\(`\$\{shellIntegrationCommand\(family\)\}/, "enabling writes the family-appropriate one-liner"],
+    [index, /writeTerminalSession\(session, `\$\{shellIntegrationCommand\(family\)\}/, "enabling writes the family-appropriate one-liner"],
     [index, /buildCwdAwareCommand\(SHELL_FAMILY_PROBE, \{ tty: session\.tty \?\? null \}\)/, "the family probe is the delimited one, targeted at this terminal's tty"],
     [index, /parseShellFamilyProbe\(result\.stdout\)/, "the answer is parsed out of the delimiter"],
-    [index, /terminal-not-ready[\s\S]{0,120}enableShellIntegration|enableShellIntegration[\s\S]{0,900}terminal-not-ready/, "enabling refuses a busy terminal"],
-    [tools, /name: "ssh_shell_integration"/, "the agent can enable it per session"]
+    [index, /terminal-not-ready[\s\S]{0,120}enableShellIntegration|enableShellIntegration[\s\S]{0,900}terminal-not-ready/, "enabling refuses a busy terminal"]
   ];
   for (const [source, pattern, label] of checks) {
     assert.match(source, pattern, `wiring contract: ${label}`);

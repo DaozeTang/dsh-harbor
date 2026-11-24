@@ -20,7 +20,8 @@ await build({
   entryPoints: {
     index: resolve(rootDir, "src/index.js"),
     typert: resolve(rootDir, "src/rpc/typert.js"),
-    remote: resolve(rootDir, "src/rpc/remote.js")
+    remote: resolve(rootDir, "src/rpc/remote.js"),
+    "terminal-backend": resolve(rootDir, "src/terminal-backend.js")
   },
   outdir: resolve(rootDir, "lib"),
   format: "esm",
@@ -35,8 +36,8 @@ await build({
   logLevel: "info"
 });
 
-for (const file of ["index.js", "typert.js", "remote.js"]) {
+for (const file of ["index.js", "typert.js", "remote.js", "terminal-backend.js"]) {
   const path = resolve(rootDir, "lib", file);
   writeFileSync(path, readFileSync(path, "utf8").replace(/[ \t]+$/gm, ""), "utf8");
 }
-console.log("build-host: wrote lib/index.js, lib/typert.js, lib/remote.js");
+console.log("build-host: wrote lib/index.js, lib/typert.js, lib/remote.js, lib/terminal-backend.js");

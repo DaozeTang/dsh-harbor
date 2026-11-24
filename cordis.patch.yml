@@ -1,5 +1,16 @@
 # Harbor bundle patch — registers the workbench entry in a dsh profile.
 # Install with: dsh plugin --profile web add dsh-harbor
+#
+# The second row mounts Harbor's SSH terminal backend inside the official
+# Persistent terminals group. That group isolates `terminals`, so a sibling
+# profile row cannot see the registry the official terminal_* tools use;
+# inserting here is what lets terminal_open({type:'harbor-ssh'}) reach Harbor's
+# SSH PTY. When the group is absent the row is skipped with a warning and the
+# rest of Harbor keeps working.
 - insert:
     - id: harbor
       name: 'dsh-harbor'
+- id: optional-persistent-terminals
+  insert:
+    - id: harbor-ssh-terminal
+      name: 'dsh-harbor/terminal-backend'

@@ -19,7 +19,9 @@ dsh plugin --profile web add "$PWD"
 dsh web
 ```
 
-Open any session, click the terminal button in the header and connect a server in the Remote Machine tab. Setup lives in [INSTALL.md](./INSTALL.md); each panel is covered in the [product guide](./docs/product-guide.md).
+Open any session, click the terminal button in the header and connect a server in the Harbor tab. Setup lives in [INSTALL.md](./INSTALL.md); each panel is covered in the [product guide](./docs/product-guide.md).
+
+> **DSH 0.2.3+**: interactive terminals reuse the official Persistent terminals plugin and its `terminal_*` tools. Keep that plugin enabled; without it `ssh_exec`, files, tunnels, logs and status still work, but the agent has no interactive SSH terminal.
 
 ## What it solves
 
@@ -66,13 +68,14 @@ The blacklist can never be complete — any script can hide a delete — so rule
 
 ## Agent tools
 
-27 tools are registered by default; omitting `connection_id` targets the active connection. **Settings → Remote hosts → Features** can disable the tunnel, log and status tools (requires a DSH restart).
+22 tools are registered by default; omitting `connection_id` targets the active connection. **Settings → Harbor → Features** can disable the tunnel, log and status tools (requires a DSH restart).
+
+Interactive terminals are not Harbor tools any more. After connecting, the agent opens an SSH terminal through DSH's official persistent-terminal tools (`terminal_open` with type `harbor-ssh`) and drives it with `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close` and `terminal_list` — names, parameters, wait reasons and error codes come from the host. Harbor supplies the SSH backend only; the shell you watch in the side panel is the same session. Once you type into it, the agent can read but no longer write.
 
 | Group | Tools |
 | --- | --- |
-| SSH (7) | `ssh_list` `ssh_connect` `ssh_connect_profile` `ssh_exec` `ssh_read` `ssh_write` `ssh_disconnect` |
-| Terminal context (2) | `ssh_terminal_sessions` `ssh_terminal_context` |
-| Shell integration (1) | `ssh_shell_integration` |
+| SSH (5) | `ssh_list` `ssh_connect` `ssh_connect_profile` `ssh_exec` `ssh_disconnect` |
+| Terminal (host) | `terminal_open` (type `harbor-ssh`) `terminal_send` `terminal_read` `terminal_signal` `terminal_close` `terminal_list` |
 | Files (9) | `sftp_list` `sftp_read` `sftp_write` `sftp_mkdir` `sftp_rename` `sftp_delete` `sftp_upload_file` `sftp_upload_dir` `sftp_download_dir` |
 | Tunnels (3) | `tunnel_start` `tunnel_stop` `tunnel_list` |
 | Batch (1) | `ssh_batch` |

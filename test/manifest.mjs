@@ -55,6 +55,7 @@ assert.equal(manifest.exports?.["."]?.default, "./lib/index.js", 'exports["."] m
 assert.equal(manifest.exports?.["./client"]?.default, "./lib/client.js", 'exports["./client"] maps the browser bundle');
 assert.equal(manifest.exports?.["./typert"]?.default, "./lib/typert.js", 'exports["./typert"] is how the host loader finds RPC codecs');
 assert.equal(manifest.exports?.["./remote"]?.default, "./lib/remote.js", 'exports["./remote"] is the client-side RPC contribution');
+assert.equal(manifest.exports?.["./terminal-backend"]?.default, "./lib/terminal-backend.js", 'exports["./terminal-backend"] mounts the SSH backend inside the terminal group');
 assert.equal(manifest.exports?.["./locale/*.json"], "./locale/*.json", "locale resources must be exported for the Host reader");
 assert.equal(manifest.icon, "./icon.svg", "the plugin manager resolves the manifest icon from the package root");
 assert.match(manifest.scripts?.prepare ?? "", /npm run build/,
@@ -120,6 +121,7 @@ const expected = [
   ...chunkFiles,
   "lib/index.js",
   "lib/remote.js",
+  "lib/terminal-backend.js",
   "lib/typert.js",
   "locale/en.json",
   "locale/zh.json",

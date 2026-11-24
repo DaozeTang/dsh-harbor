@@ -183,7 +183,7 @@ export function XtermView({ api, sessionId, connectionId }) {
     const controller = new AbortController();
     // Escape codes stay outside the translated text: the terminal draws the
     // colour and the dictionary only ever sees the sentence.
-    const noSessionNotice = "\r\n\x1b[31m" + t("[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → 远程主机 重新连接]") + "\x1b[0m\r\n";
+    const noSessionNotice = "\r\n\x1b[31m" + t("[终端会话已失效：DSH 服务已重启或该连接已关闭。请到 设置 → Harbor 重新连接]") + "\x1b[0m\r\n";
     const exitNotice = (exit) => {
       const message = exit.reason === "transport-lost" ? t("SSH 连接中断，原终端已结束。请打开新终端。")
  : exit.reason === "channel-closed" || exit.reason === "channel-error" ? t("终端通道关闭，远端未返回退出状态。")
