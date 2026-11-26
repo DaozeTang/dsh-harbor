@@ -931,6 +931,16 @@
   font-weight: 500;
 }
 .hb-server__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Terminal presence is separate from the transport dot: dim when this
+   conversation has no terminal (ssh_exec/sftp can still be using the server). */
+.hb-server__terminal {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--hb-text-tertiary);
+  opacity: 0.45;
+}
+.hb-server__terminal[data-on="true"] { color: var(--hb-ok); opacity: 1; }
 .hb-server__close {
   display: inline-flex;
   align-items: center;

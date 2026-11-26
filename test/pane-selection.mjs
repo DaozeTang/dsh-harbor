@@ -187,22 +187,57 @@ console.log("pane selection: split-pane visibility survives remount, new panes s
 // pane and reveal the SSH surface. Announcing is idempotent per connection id
 // for the page lifetime — the poll runs every couple of seconds.
 {
-  const { harborUiAnnounceAgentConnections } = await import("../src/client/store.js");
+  const { harborUiAnnounceAgentConnections, harborUiResetAgentAnnouncements } = await import("../src/client/store.js");
   resetPaneSessions();
   const listed = [
     { connectionId: "agent-1", agentSession: true },
     { connectionId: "human-1" },
     { connectionId: "agent-2", agentSession: true }
   ];
-  assert.equal(harborUiAnnounceAgentConnections(listed), true, "fresh agent connections announce");
+  const first = harborUiAnnounceAgentConnections(listed);
+  assert.deepEqual(first.map((entry) => entry.connectionId), ["agent-1", "agent-2"], "fresh agent connections announce");
   assert.deepEqual(claimPendingOpens(), [{ connectionId: "agent-1", adopt: false }, { connectionId: "agent-2", adopt: false }], "only agent-opened connections are queued, humans never");
-  assert.equal(harborUiAnnounceAgentConnections(listed), false, "re-announcing the same connections is a no-op");
+  assert.deepEqual(harborUiAnnounceAgentConnections(listed), [], "re-announcing the same connections is a no-op");
   assert.deepEqual(claimPendingOpens(), [], "the dedupe did not re-queue anything");
-  assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentSession: true }]), false, "per-connection memory survives later polls");
-  assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-1" }]), true, "a saved-resource request reopens an existing human session");
+  assert.deepEqual(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentSession: true }]), [], "per-connection memory survives later polls");
+  assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-1" }]).length, 1, "a saved-resource request reopens an existing human session");
   assert.deepEqual(claimPendingOpens(), [{ connectionId: "agent-1", adopt: false }]);
-  assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-1" }]), false, "the same request is not replayed each poll");
-  assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-2" }]), true, "a later request can reopen a closed pane");
+  assert.deepEqual(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-1" }]), [], "the same request is not replayed each poll");
+  assert.equal(harborUiAnnounceAgentConnections([{ connectionId: "agent-1", agentRevealId: "request-2" }]).length, 1, "a later request can reopen a closed pane");
   assert.deepEqual(claimPendingOpens(), [{ connectionId: "agent-1", adopt: false }]);
+  resetPaneSessions();
+
+  // ── the reveal belongs to one conversation ──────────────────────────────
+  // A reveal for chat A must never be queued into chat B's pane; the session
+  // watcher that sees it first opens A's tab, not the one currently on screen.
+  harborUiResetAgentAnnouncements();
+  const foreign = harborUiAnnounceAgentConnections(
+    [{ connectionId: "agent-a", agentRevealId: "r-a", agentRevealOwnerSessionId: "conv-a" }],
+    { sessionId: "conv-b" }
+  );
+  assert.deepEqual(foreign, [], "another conversation's reveal is ignored");
+  assert.deepEqual(claimPendingOpens(), []);
+  const mine = harborUiAnnounceAgentConnections(
+    [{ connectionId: "agent-a", agentRevealId: "r-a", agentRevealOwnerSessionId: "conv-a" }],
+    { sessionId: "conv-a" }
+  );
+  assert.deepEqual(mine, [{ connectionId: "agent-a", ownerSessionId: "conv-a" }], "the owning conversation claims it");
+  assert.deepEqual(claimPendingOpens(), [{ connectionId: "agent-a", adopt: false }]);
+  harborUiResetAgentAnnouncements();
+
+  // A legacy host publishes agentSession but no owner. Only the conversation
+  // the host marks mine may claim it.
+  const legacyForeign = harborUiAnnounceAgentConnections(
+    [{ connectionId: "legacy", agentSession: true, agentSessionMine: false }],
+    { sessionId: "conv-b" }
+  );
+  assert.deepEqual(legacyForeign, [], "a legacy anonymous agent terminal is not stolen");
+  const legacyMine = harborUiAnnounceAgentConnections(
+    [{ connectionId: "legacy", agentSession: true, agentSessionMine: true }],
+    { sessionId: "conv-b" }
+  );
+  assert.deepEqual(legacyMine, [{ connectionId: "legacy", ownerSessionId: "conv-b" }]);
+  assert.deepEqual(claimPendingOpens(), [{ connectionId: "legacy", adopt: false }]);
+  harborUiResetAgentAnnouncements();
   resetPaneSessions();
 }

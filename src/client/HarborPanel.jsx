@@ -32,7 +32,8 @@ import {
   paneOpenRequestsRevision, reconcileViews, resolvePaneActiveConnection, selectInView,
   subscribePaneSessions, visiblePaneConnections, viewSession
 } from "./pane-selection.js";
-import { closeTabAction, hasOwnTerminal, resolvePaneTerminal } from "./session-terminals.js";
+import { closeTabAction, resolvePaneTerminal } from "./session-terminals.js";
+import { connectionStatusView } from "./connection-status.js";
 import { t } from "../i18n/core.js";
 import { useLanguage } from "./locale.js";
 
@@ -64,7 +65,10 @@ async function refreshConnections(api, sessionId) {
     const { connections, activeConnectionId } = await api.list(sessionId);
     harborUiSetConnections(connections);
     harborUiSetActiveConnection(activeConnectionId ?? null);
-    harborUiAnnounceAgentConnections(connections);
+    // The session watcher opens/focuses the tab; the panel only needs the
+    // connection queued for its own view. Passing the session keeps another
+    // conversation's reveal out of this pane.
+    harborUiAnnounceAgentConnections(connections, { sessionId });
   } catch (error) {
     harborUiSetError(t(`无法刷新 SSH 连接列表：${error?.message ?? String(error)}`));
   }
@@ -298,9 +302,17 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
             {paneConnections.map((connection) => {
               const isActive = connection.connectionId === resolvedActiveConnectionId;
               const isAgentTarget = connection.connectionId === ui.activeConnectionId;
-              // The dot reports THIS conversation's terminal: another chat's
-              // live shell on the same server is not "my terminal is up".
-              const alive = connection.connected !== false && hasOwnTerminal(connection, sessionId);
+              // Transport, terminal and agent activity are independent. The
+              // dot used to mean "this conversation's terminal is alive", so
+              // an agent using ssh_exec on a healthy connection looked idle.
+              const status = connectionStatusView(connection, sessionId);
+              const statusText = !status.connected
+                ? t("连接已断开")
+                : status.agentActive
+                  ? t("Agent 正在操作 · 已连接")
+                  : status.hasTerminal
+                    ? t("已连接 · 本对话终端运行中")
+                    : t("已连接 · 本对话暂无终端");
               return (
                 <div
                   key={connection.connectionId}
@@ -318,11 +330,29 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
                     }
                   }}
                   onClick={() => { selectInView(viewId, connection.connectionId); bindAgent(connection.connectionId); }}
-                  title={`${connection.username}@${connection.host}:${connection.port}${isAgentTarget ? t("（Agent 正在使用此连接）") : ""}`}
+                  title={`${connection.username}@${connection.host}:${connection.port} · ${statusText}${isAgentTarget ? t("（Agent 的作用目标）") : ""}`}
                 >
-                  <Dot tone={alive ? "ok" : "idle"} />
+                  <Dot
+                    tone={!status.connected ? "err" : status.agentActive ? "busy" : "ok"}
+                    title={statusText}
+                  />
                   <span className="hb-server__label">{connection.name || connection.host}</span>
-                  {isAgentTarget && <Badge tone="accent">{t("Agent")}</Badge>}
+                  <span
+                    className="hb-server__terminal"
+                    data-on={status.hasTerminal ? "true" : "false"}
+                    title={status.hasTerminal ? t("本对话的终端运行中") : t("本对话暂无终端")}
+                    aria-hidden="true"
+                  >
+                    <Icon name="terminal" size={11} />
+                  </span>
+                  {isAgentTarget && (
+                    <Badge
+                      tone="accent"
+                      title={status.agentActive ? t("Agent 正在操作此连接") : t("Agent 正在使用此连接")}
+                    >
+                      {t("Agent")}
+                    </Badge>
+                  )}
                   <button
                     type="button"
                     className="hb-server__close"

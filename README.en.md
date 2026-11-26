@@ -70,7 +70,9 @@ The blacklist can never be complete — any script can hide a delete — so rule
 
 22 tools are registered by default; omitting `connection_id` targets the active connection. **Settings → Harbor → Features** can disable the tunnel, log and status tools (requires a DSH restart).
 
-Interactive terminals are not Harbor tools any more. After connecting, the agent opens an SSH terminal through DSH's official persistent-terminal tools (`terminal_open` with type `harbor-ssh`) and drives it with `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close` and `terminal_list` — names, parameters, wait reasons and error codes come from the host. Harbor supplies the SSH backend only; the shell you watch in the side panel is the same session. Once you type into it, the agent can read but no longer write.
+Interactive terminals are not Harbor tools any more. `ssh_connect` and `ssh_connect_profile` open THIS conversation's SSH terminal automatically and reveal the machine in the right-side panel; the agent then uses `terminal_list` to find its session id and drives it with `terminal_send`, `terminal_read`, `terminal_signal` and `terminal_close`. Use the host's `terminal_open` (type `harbor-ssh`) only when a second shell is genuinely needed, for example after the person took the first one over. Names, parameters, wait reasons and error codes come from the host. Harbor supplies the SSH backend only; the shell you watch in the side panel is the same session. Once you type into it, the agent can read but no longer write.
+
+`ssh_exec` also opens that terminal when it is missing and mirrors its command and output into it; SFTP, tunnels and `ssh_status` reveal the target server without forcing a terminal. `list` now carries `agentActive`, `agentLastActivityAt` and `agentActivityKind`; the server dot means transport reachability, the terminal glyph means this conversation has a terminal, and the pulse means the agent recently operated on it.
 
 | Group | Tools |
 | --- | --- |

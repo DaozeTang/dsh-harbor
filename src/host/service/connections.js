@@ -92,6 +92,9 @@ export const withConnections = (Base) => class extends Base {
       // sessionId -> the DSH conversation that owns it. Terminal ownership is
       // what keeps two chats from sharing one shell (see terminal-owner.js).
       ownerIndex: new Map(),
+      // ownerKey -> { at, kind } for the panel's "Agent is working" indicator.
+      // Per conversation, so two chats on one server do not light each other.
+      agentActivityByOwner: new Map(),
       // Serializes "does this conversation already have a terminal?" with
       // channel creation, so two simultaneous opens cannot both create a PTY.
       openQueue: Promise.resolve(),

@@ -4,6 +4,26 @@
 import { defineTool } from "@deepseek-ai/dsh-tools";
 
 export function registerTunnelTools(ctx, service) {
+  /**
+   * Resolve the target for the calling conversation and surface it in the
+   * side panel. Tunnels need no terminal, but the operator must see which
+   * server the agent is opening a listener on.
+   */
+  const connectionFor = (args, exec) => {
+    const selected = service.resolveConnection(args.connection_id, service.terminalOwner?.(exec?.agent) ?? undefined);
+    if (selected.ok) {
+      try {
+        Promise.resolve(service.touchAgentTarget?.({
+          connectionId: selected.connectionId,
+          ownerSessionId: service.terminalOwner?.(exec?.agent) ?? undefined,
+          kind: "tunnel",
+          ensureTerminal: false
+        })).catch(() => {});
+      } catch {}
+    }
+    return selected;
+  };
+
   ctx.tools.register(defineTool({
     name: "tunnel_start",
     description: "Start a port forward through a connected server. kind='local' (default): the DSH host listens on bind_addr:bind_port and forwards to remote_host:remote_port on the server — use to reach services only the server can see. kind='remote': the server listens on remote_host:remote_port and forwards back to target_host:target_port on this machine. kind='dynamic': a SOCKS5 proxy on bind_addr:bind_port (the ssh -D equivalent) — clients pick the destination per connection and every one of them is reached from the server. Returns a tunnel_id for tunnel_stop.",
@@ -41,17 +61,20 @@ export function registerTunnelTools(ctx, service) {
         return [{ type: "text", text }];
       }
     },
-    async execute(args) {
+    async execute(args, exec) {
+      const selected = connectionFor(args, exec);
+      if (!selected.ok) throw new Error(`tunnel_start failed: ${selected.error.message}`);
+      const connectionId = selected.connectionId;
       let result;
       if (args.kind === "dynamic") {
-        result = await service.tunnelStartDynamic({ connectionId: args.connection_id, bindAddr: args.bind_addr, bindPort: args.bind_port });
+        result = await service.tunnelStartDynamic({ connectionId, bindAddr: args.bind_addr, bindPort: args.bind_port });
       } else if (args.kind === "remote") {
-        result = await service.tunnelStartRemote({ connectionId: args.connection_id, bindAddr: args.bind_addr, bindPort: args.bind_port, remoteHost: args.remote_host, remotePort: args.remote_port, targetHost: args.target_host ?? "127.0.0.1", targetPort: args.target_port });
+        result = await service.tunnelStartRemote({ connectionId, bindAddr: args.bind_addr, bindPort: args.bind_port, remoteHost: args.remote_host, remotePort: args.remote_port, targetHost: args.target_host ?? "127.0.0.1", targetPort: args.target_port });
       } else {
         if (args.remote_host === undefined || args.remote_port === undefined) {
           throw new Error("tunnel_start failed: remote_host and remote_port are required for the local kind");
         }
-        result = await service.tunnelStartLocal({ connectionId: args.connection_id, bindAddr: args.bind_addr, bindPort: args.bind_port, remoteHost: args.remote_host, remotePort: args.remote_port });
+        result = await service.tunnelStartLocal({ connectionId, bindAddr: args.bind_addr, bindPort: args.bind_port, remoteHost: args.remote_host, remotePort: args.remote_port });
       }
       if (!result.ok) throw new Error(`tunnel_start failed: ${result.error.message}`);
       return result.value;
@@ -89,8 +112,10 @@ export function registerTunnelTools(ctx, service) {
           : `${t.kind}: ${t.bindAddr}:${t.bindPort} -> ${t.remoteHost}:${t.remotePort} (${t.tunnelId})`).join("\n") }];
       }
     },
-    async execute(args) {
-      const result = await service.tunnelList({ connectionId: args.connection_id });
+    async execute(args, exec) {
+      const selected = connectionFor(args, exec);
+      if (!selected.ok) throw new Error(`tunnel_list failed: ${selected.error.message}`);
+      const result = await service.tunnelList({ connectionId: selected.connectionId });
       if (!result.ok) throw new Error(`tunnel_list failed: ${result.error.message}`);
       return result.value;
     }
@@ -107,8 +132,10 @@ export function registerTunnelTools(ctx, service) {
       schema: { type: "object", additionalProperties: false, properties: { tunnelId: { type: "string", required: true }, stopped: { type: "boolean", required: true } } },
       render(args, value) { return [{ type: "text", text: `Stopped tunnel ${value.tunnelId}` }]; }
     },
-    async execute(args) {
-      const result = await service.tunnelStop({ connectionId: args.connection_id, tunnelId: args.tunnel_id });
+    async execute(args, exec) {
+      const selected = connectionFor(args, exec);
+      if (!selected.ok) throw new Error(`tunnel_stop failed: ${selected.error.message}`);
+      const result = await service.tunnelStop({ connectionId: selected.connectionId, tunnelId: args.tunnel_id });
       if (!result.ok) throw new Error(`tunnel_stop failed: ${result.error.message}`);
       return result.value;
     }

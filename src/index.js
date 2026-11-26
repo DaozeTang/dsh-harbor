@@ -275,14 +275,15 @@ export default class HarborService extends HarborServiceCore {
       // on the same server without making the model discover an opaque
       // connection id first — and without retargeting another chat's agent.
       this.bindActiveConnection(request.connectionId, ownerSessionId);
-      // A terminal an agent opened on its own (ssh_write's lazy open) must
-      // surface in the right-side panel too, for the conversation it belongs
-      // to: the reveal request carries the owner so another chat's pane never
-      // pops a tab it cannot show.
+      // A terminal an agent opened (terminal_open, or the lazy open behind
+      // ssh_exec) must surface in the right-side panel too, for the
+      // conversation it belongs to: the reveal request carries the owner so
+      // another chat's pane never pops a tab it cannot show.
       if (session.openedBy === "agent") {
         conn.agentRevealId = randomUUID();
         if (ownerSessionId !== null) conn.agentRevealOwnerSessionId = ownerSessionId;
         else delete conn.agentRevealOwnerSessionId;
+        this.noteAgentActivity?.(conn, ownerSessionId, "terminal");
       }
       // Learn the terminal's remote tty off the open path: ssh_exec inherits
       // this terminal's directory through it (see exec-cwd.js).
@@ -453,6 +454,9 @@ export default class HarborService extends HarborServiceCore {
     this.activeConnectionByOwner?.delete(owner);
     let closed = 0;
     for (const conn of [...this.connections.values()]) {
+      // The conversation is gone; its activity stamp must not keep the panel
+      // pulsing (and must not grow this map for the connection's lifetime).
+      conn.agentActivityByOwner?.delete?.(ownerKey(owner));
       for (const sessionId of ownerSessionIds(conn, owner)) {
         const session = this.sessions.get(sessionId);
         if (session === undefined) {

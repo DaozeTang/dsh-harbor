@@ -158,7 +158,12 @@ export const connectionInfoSchema = z.object({
   agentSessionMine: z.boolean().optional(),
   agentRevealId: z.string().optional(),
   // Which conversation the reveal request belongs to; absent = anonymous.
-  agentRevealOwnerSessionId: z.string().optional()
+  agentRevealOwnerSessionId: z.string().optional(),
+  // Per-conversation agent activity, independent of terminal liveness. The
+  // panel uses this to pulse the server strip while a tool is operating.
+  agentActive: z.boolean().optional(),
+  agentLastActivityAt: z.string().optional(),
+  agentActivityKind: z.string().optional()
 });
 
 // A saved SSH resource as the agent sees it: coordinates only —

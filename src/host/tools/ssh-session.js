@@ -142,7 +142,10 @@ export function registerSshSessionTools(ctx, service) {
                 agentSession: { type: "boolean" },
                 agentSessionMine: { type: "boolean" },
                 agentRevealId: { type: "string" },
-                agentRevealOwnerSessionId: { type: "string" }
+                agentRevealOwnerSessionId: { type: "string" },
+                agentActive: { type: "boolean" },
+                agentLastActivityAt: { type: "string" },
+                agentActivityKind: { type: "string" }
               }
             }
           },
@@ -168,12 +171,16 @@ export function registerSshSessionTools(ctx, service) {
         // "terminal open" means THIS conversation's terminal: another chat's
         // live shell on the same server is reported separately, because the
         // agent can neither read nor write it.
-        const mineCount = (connection) => (connection.terminals ?? []).filter((terminal) => terminal.mine && terminal.alive).length;
+        const mine = (connection) => (connection.terminals ?? []).filter((terminal) => terminal.mine && terminal.alive);
         const otherCount = (connection) => (connection.terminals ?? []).filter((terminal) => !terminal.mine && terminal.alive).length;
         if (value.connections.length === 0) lines.push("No SSH connection is currently open.");
         else lines.push(...value.connections.map((connection) => {
           const others = otherCount(connection);
-          return `${connection.connectionId === value.activeConnectionId ? "* " : "- "}${connection.name ?? connection.host}: ${connection.username}@${connection.host}:${connection.port}${mineCount(connection) ? " (your terminal open)" : ""}${others ? ` (+${others} terminal${others === 1 ? "" : "s"} in other conversations)` : ""}`;
+          const own = mine(connection);
+          // Naming the session id saves the agent a terminal_list round trip
+          // and makes "the terminal already exists" explicit after ssh_connect.
+          const terminalNote = own.length > 0 ? ` (your terminal open: ${own[0].sessionId}${own.length > 1 ? ` +${own.length - 1}` : ""})` : "";
+          return `${connection.connectionId === value.activeConnectionId ? "* " : "- "}${connection.name ?? connection.host}: ${connection.username}@${connection.host}:${connection.port}${terminalNote}${others ? ` (+${others} terminal${others === 1 ? "" : "s"} in other conversations)` : ""}`;
         }));
         if (value.resources !== undefined) {
           lines.push("");
@@ -193,7 +200,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_connect",
-    description: "Connect to a remote server over SSH, open it in Harbor's side panel, and make it the current connection for later SSH tools. Subsequent ssh_exec, ssh_disconnect, and terminal_open({type:'harbor-ssh'}) target this connection unless a connection_id is explicitly supplied.",
+    description: "Connect to a remote server over SSH, open it in Harbor's side panel, and make it the current connection for later SSH tools. This also opens THIS conversation's terminal on the new connection, so ssh_exec output is visible in the panel; use terminal_list to get its session id and terminal_send/read to type in it. Do not call terminal_open just to regain this terminal unless the user took it over or you need a second shell.",
     parameters: {
       host: { type: "string", required: true, description: "Remote hostname or IP address." },
       port: { type: "integer", description: "SSH port, defaults to 22." },
@@ -225,6 +232,9 @@ export function registerSshSessionTools(ctx, service) {
           username: { type: "string", required: true },
           legacyFallback: { type: "boolean" },
           bannerRepair: { type: "boolean" },
+          terminalOpened: { type: "boolean" },
+          terminalSessionId: { type: "string" },
+          terminalWarning: { type: "string" },
           warning: { type: "string" }
         }
       },
@@ -234,10 +244,17 @@ export function registerSshSessionTools(ctx, service) {
         // Anything unusual about the handshake must be visible in the tool
         // result, not only in the host log — a weakened transport or a rewritten
         // banner is something the operator has to know about to act on it.
-        return [{ type: "text", text: conn.warning ? `${base}\n⚠️ ${conn.warning}` : base }];
+        const terminal = conn.terminalSessionId
+          ? `\nHarbor is showing this conversation's terminal (${conn.terminalSessionId}); use terminal_send/terminal_read with that id.`
+          : conn.terminalOpened === false && conn.terminalWarning
+            ? `\nThe connection is open, but the side-panel terminal could not be opened: ${conn.terminalWarning}`
+            : "";
+        const warning = conn.warning ? `\n⚠️ ${conn.warning}` : "";
+        return [{ type: "text", text: base + terminal + warning }];
       }
     },
     async execute(args, exec) {
+      const ownerSessionId = service.terminalOwner?.(exec?.agent) ?? undefined;
       const result = await service.connect({
         host: args.host,
         port: args.port,
@@ -245,16 +262,34 @@ export function registerSshSessionTools(ctx, service) {
         auth: args.auth,
         legacy: args.legacy,
         name: args.name,
-        sessionId: service.terminalOwner?.(exec?.agent) ?? undefined
+        sessionId: ownerSessionId
       });
       if (!result.ok) throw new Error(`ssh_connect failed: ${result.error.message}`);
-      return result.value;
+      // A raw connect used to leave the sidebar blind: no terminal, no reveal.
+      // Open the conversation's terminal and let the panel show the machine.
+      const visibility = await service.touchAgentTarget?.({
+        connectionId: result.value.connectionId,
+        ownerSessionId,
+        kind: "connect",
+        ensureTerminal: true
+      });
+      const value = { ...result.value };
+      if (visibility?.ok === true) {
+        const sessionId = visibility.value?.terminalSessionId;
+        value.terminalOpened = sessionId !== undefined;
+        if (sessionId !== undefined) value.terminalSessionId = sessionId;
+        if (visibility.value?.warning !== undefined) value.terminalWarning = visibility.value.warning;
+      } else {
+        value.terminalOpened = false;
+        if (visibility?.error?.message !== undefined) value.terminalWarning = visibility.error.message;
+      }
+      return value;
     }
   }));
 
   ctx.tools.register(defineTool({
     name: "ssh_connect_profile",
-    description: "Connect to one of the operator's saved SSH resources by name (Settings → Harbor) and make it the active connection: later ssh_exec and terminal_open({type:'harbor-ssh'}) without connection_id target it for THIS conversation, and a terminal owned by this conversation opens in the right-side panel so the operator can see which machine you are on. Only works when the operator enabled AI auto-connect in Harbor's settings; with the switch off the call fails — then ask the operator to connect the server, and NEVER fall back to ssh_connect with credentials you gathered from conversation. Reuses an already-open connection for the same resource instead of connecting twice.",
+    description: "Connect to one of the operator's saved SSH resources by name (Settings → Harbor) and make it the active connection: later ssh_exec and terminal tools without connection_id target it for THIS conversation, and a terminal owned by this conversation opens in the right-side panel so the operator can see which machine you are on. Use terminal_list to get that terminal's session id and terminal_send/terminal_read to work in it; do not call terminal_open just to regain it. Only works when the operator enabled AI auto-connect in Harbor's settings; with the switch off the call fails — then ask the operator to connect the server, and NEVER fall back to ssh_connect with credentials you gathered from conversation. Reuses an already-open connection for the same resource instead of connecting twice.",
     parameters: {
       resource: { type: "string", required: true, description: "The saved resource's name as shown by ssh_list (e.g. 'dev', 'prod'), or its profile id. A unique partial name is accepted; unknown or ambiguous names fail with the list of available resources." }
     },
@@ -288,7 +323,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_exec",
-    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes; command output is mirrored into YOUR conversation's terminal, not into other chats'. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; open an interactive terminal with terminal_open({type:'harbor-ssh'}) and drive it with terminal_send instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux/POSIX hosts the dedicated exec channel starts in YOUR conversation's terminal's verified current directory. A busy or ambiguous terminal falls back to the login directory (the result's first line reports the cwd actually used); a terminal whose directory cannot be read rejects the command instead of guessing. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands suspend this call until the operator answers the host's confirmation prompt in the conversation: approving runs the command once, rejecting denies it — never retry or route around a rejection. The command and output are also shown in the terminal panel.",
+    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes; command output is mirrored into YOUR conversation's terminal, not into other chats'. If this conversation has no terminal on the target, one is opened automatically so the operator can see the command and its output in Harbor. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; use terminal_send in the conversation's terminal instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux/POSIX hosts the dedicated exec channel starts in YOUR conversation's terminal's verified current directory. A busy or ambiguous terminal falls back to the login directory (the result's first line reports the cwd actually used); a terminal whose directory cannot be read rejects the command instead of guessing. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands suspend this call until the operator answers the host's confirmation prompt in the conversation: approving runs the command once, rejecting denies it — never retry or route around a rejection. The command and output are also shown in the terminal panel.",
     parameters: {
       connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
       command: { type: "string", required: true, description: "The shell command to execute." },
@@ -317,6 +352,9 @@ export function registerSshSessionTools(ctx, service) {
           command: { type: "string" },
           policy: { type: "string" },
           policySource: { type: "string" },
+          // Set when the connection is visible but its terminal could not be
+          // opened; the exec itself still succeeded.
+          warning: { type: "string" },
           // Present when an approved delete ran through the reversible trash
           // rewrite: one entry per target with its outcome.
           trashed: { type: "array", items: { type: "object", additionalProperties: true } }
@@ -341,6 +379,7 @@ export function registerSshSessionTools(ctx, service) {
         if (value.timedOut) body += "\n[command timed out]";
         if (value.truncated) body += "\n[output truncated for safe model context]";
         if (value.redacted) body += "\n[sensitive values redacted]";
+        if (value.warning) body += `\n[side-panel terminal unavailable] ${value.warning}`;
         if (Array.isArray(value.trashed) && value.trashed.length > 0) {
           const lines = value.trashed.map((entry) => entry.status === "moved"
             ? t(`${entry.original} → 回收站 ${entry.trashPath ?? ""}`)
@@ -356,17 +395,33 @@ export function registerSshSessionTools(ctx, service) {
       }
     },
     async execute(args, exec) {
-      const result = await service.executeCommand({
+      const ownerSessionId = service.terminalOwner?.(exec?.agent) ?? undefined;
+      // Visibility first: bind the connection, stamp activity, and open THIS
+      // conversation's terminal if it has none, so runPreparedExec has a place
+      // to mirror the command and output. A refused PTY must not fail the exec.
+      const visibility = await service.touchAgentTarget?.({
         connectionId: args.connection_id,
+        ownerSessionId,
+        kind: "exec",
+        ensureTerminal: true
+      });
+      if (visibility?.ok === false) throw new Error(`ssh_exec failed: ${visibility.error.message}`);
+      const connectionId = visibility?.value?.connectionId ?? args.connection_id;
+      const result = await service.executeCommand({
+        // Use the connection the visibility step resolved, so a second
+        // connection cannot appear between resolution and the exec.
+        connectionId,
         command: args.command,
         timeoutMs: args.timeout_ms ?? 30000,
-        sessionId: service.terminalOwner?.(exec?.agent) ?? undefined,
+        sessionId: ownerSessionId,
         // The pre-execute gate records its voucher under the execution id;
         // the inner gate consumes it so an operator-approved command runs.
         approvalToken: exec?.callId
       });
       if (!result.ok) throw new Error(`ssh_exec failed: ${result.error.message}`);
-      return result.value;
+      const value = result.value;
+      if (visibility?.value?.warning !== undefined) value.warning = visibility.value.warning;
+      return value;
     }
   }));
 

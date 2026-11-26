@@ -117,8 +117,14 @@ export function registerStatusTools(ctx, service) {
       render(_args, value) { return [{ type: "text", text: renderStatusText(value) }]; }
     },
     async execute(args, exec) {
-      const selected = service.resolveConnection(args.connection_id, service.terminalOwner?.(exec?.agent) ?? undefined);
+      const ownerSessionId = service.terminalOwner?.(exec?.agent) ?? undefined;
+      const selected = service.resolveConnection(args.connection_id, ownerSessionId);
       if (!selected.ok) throw new Error("ssh_status failed: " + selected.error.message);
+      // Read-only, but still agent activity: reveal the machine and light the
+      // panel's activity indicator. No terminal is forced for a status read.
+      try {
+        await service.touchAgentTarget?.({ connectionId: selected.connectionId, ownerSessionId, kind: "status", ensureTerminal: false });
+      } catch {}
       const result = await service.systemStats({ connectionId: selected.connectionId, refresh: args.refresh === true });
       if (!result.ok) throw new Error("ssh_status failed: " + result.error.message);
       return result.value;

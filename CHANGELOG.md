@@ -2,6 +2,16 @@
 
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。0.2.0 为首个公开版本，0.1.0 是其内部基线。
 
+## 0.5.1 — 2026-11-27
+
+**Agent 操作与右侧栏看板对齐：连接、终端与命令不再绕过面板。**
+
+- **根因**：0.5.0 把交互式终端交给官方工具后，只有 `terminal_open` 和 `ssh_connect_profile` 会创建终端 / 写入 `agentRevealId`；`ssh_connect`、`ssh_exec`、SFTP、转发与状态工具都不产生终端或 reveal。面板只把 pane view 里的连接画出来，因此这些操作在侧栏不可见；`ssh_exec` 的镜像又只在“本会话已有终端”时执行，于是命令只回到对话。
+- **统一可见性契约**：新增 `HarborService.touchAgentTarget`（绑定会话的 active connection、记录 per-conversation 活动、按会话 mint reveal、按需补开终端）。`ssh_connect` 连接后自动为当前对话开终端并在结果里返回 `terminalOpened` / `terminalSessionId`；`ssh_exec` 先确保终端再执行，命令与输出继续镜像；SFTP、转发与 `ssh_status` 也会揭示目标服务器但不强制开终端。
+- **状态语义**：服务器条圆点改为 transport 连通性；新增终端小图标（本对话是否有终端）与 Agent 活动脉冲（`agentActive` / `agentLastActivityAt` / `agentActivityKind`）。连接活着但本对话没有终端时，圆点不再显示成 idle。
+- **跨会话 reveal**：全局无 sessionId 的轮询与 `openTab(kind)` 改为 `conversation.session.header.actions` 内的会话级 watcher + `openTabIn(sessionId, kind)`；A 会话的 reveal 不再弹到 B 会话，切换回 A 时仍会重新检查。公告去重改为按会话，watcher 卸载时重置。
+- **测试**：新增 `test/agent-visibility.mjs`（connect/exec/sftp/status 的可见性与终端补开）、`test/connection-status.mjs`（三个状态维度独立）；更新 `pane-selection` 的会话归属断言与 `sidebar-integration` 的结构契约。全部 326 个测试通过。
+
 ## 0.5.0 — 2026-11-24
 
 **交互式终端改用 DSH 官方持久终端工具，插件名统一为 Harbor。**

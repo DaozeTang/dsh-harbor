@@ -68,34 +68,62 @@ export function harborUiSetConnections(connections) {
 }
 
 /**
- * Agent-connected servers must surface themselves: `ssh_connect_profile` opens transport + session on the host, but
- * nothing else happens on screen — the user had to hunt for the terminal, and
- * a second server never appeared beside the first one. Connections whose list
- * metadata carries `agentRevealId` (a saved-resource request) or `agentSession`
- * (a live agent-opened session) are queued for
- * the pane (a new server tab beside the current ones) and the SSH surface is
- * revealed. Idempotent per request id for the page lifetime; after a page
- * reload a re-announcement dedupes into a plain selection pane-side.
+ * Agent-connected servers must surface themselves: every agent tool now calls
+ * the host's visibility contract, which stamps a reveal token on the
+ * connection. The token is scoped to the conversation that asked for it: a
+ * reveal for chat A must never pop a tab into chat B's pane, and the same
+ * token must not re-open a tab on every poll.
+ *
+ * The announced set is per conversation. The session watcher resets its own
+ * set when it unmounts, so returning to a conversation re-checks the host and
+ * can reveal a terminal that appeared while the conversation was in the
+ * background. The surface itself is opened by the session watcher with
+ * `openTabIn(sessionId, ...)`; this function only queues the pane membership.
+ *
+ * @param {Array<object>} connections - list() entries for one conversation.
+ * @param {{sessionId?: string|null}} [options] - the listing conversation.
+ * @returns {{connectionId: string, ownerSessionId: string|null}[]} fresh
+ *   reveals, oldest connection first; callers open the surface only when this
+ *   is non-empty.
  */
-const announcedAgentConnections = new Set();
+const announcedAgentConnections = new Map();
 
-export function harborUiAnnounceAgentConnections(connections) {
+function announcedSet(sessionId) {
+  const key = sessionId ?? "";
+  let seen = announcedAgentConnections.get(key);
+  if (seen === undefined) {
+    seen = new Set();
+    announcedAgentConnections.set(key, seen);
+  }
+  return seen;
+}
+
+export function harborUiAnnounceAgentConnections(connections, { sessionId = null } = {}) {
+  const seen = announcedSet(sessionId);
   const fresh = [];
   for (const connection of connections) {
     if (connection?.agentRevealId === undefined && connection?.agentSession !== true) continue;
-    const ownerSessionId = connection.agentRevealOwnerSessionId ?? null;
-    // A reveal belongs to the conversation that asked for it: the same server
-    // revealed for chat A must still be able to reveal for chat B later.
-    const announcementId = connection.agentRevealId ?? `agent-session:${ownerSessionId ?? "any"}`;
+    const owner = connection.agentRevealOwnerSessionId ?? null;
+    // A reveal belongs to the conversation that asked for it. An older host
+    // may publish no owner: accept it only when the host also says this
+    // conversation owns the live agent terminal.
+    if (sessionId !== null) {
+      if (owner !== null && owner !== sessionId) continue;
+      if (owner === null && connection.agentRevealId === undefined && connection.agentSessionMine !== true) continue;
+    }
+    const announcementId = connection.agentRevealId ?? `agent-session:${owner ?? "any"}`;
     const key = `${connection.connectionId}:${announcementId}`;
-    if (announcedAgentConnections.has(key)) continue;
-    announcedAgentConnections.add(key);
-    fresh.push({ connectionId: connection.connectionId, ownerSessionId });
+    if (seen.has(key)) continue;
+    seen.add(key);
+    fresh.push({ connectionId: connection.connectionId, ownerSessionId: owner ?? sessionId });
   }
-  if (fresh.length === 0) return false;
   for (const entry of fresh) requestPaneOpen(entry.connectionId, { ownerSessionId: entry.ownerSessionId });
-  harborUiRequestSurface();
-  return true;
+  return fresh;
+}
+
+/** Forget one conversation's announcements (session watcher unmount/remount). */
+export function harborUiResetAgentAnnouncements(sessionId) {
+  announcedAgentConnections.delete(sessionId ?? "");
 }
 
 /** Select the active connection (the tab whose terminal/files/tunnels show). */

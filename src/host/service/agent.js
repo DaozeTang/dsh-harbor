@@ -13,7 +13,74 @@ import { resolveProfileRef, noConnectionGuidance, AUTO_CONNECT_DISABLED_MESSAGE 
 import { t } from "../../i18n/core.js";
 import { isLiveSession, normalizeOwner, ownerKey, pickOwnerSession } from "../terminal-owner.js";
 
+/** How long an agent tool call keeps a connection's activity indicator lit. */
+const AGENT_ACTIVE_WINDOW_MS = 30_000;
+
 export const withAgentActions = (Base) => class extends Base {
+  /**
+   * Record that one conversation's agent is operating on a connection.
+   *
+   * The panel used to infer "the agent is here" from a live terminal only, so
+   * ssh_connect / ssh_exec / sftp / tunnel / status calls were invisible. The
+   * activity stamp is deliberately per conversation: two chats on one server
+   * must not light each other's indicator.
+   *
+   * @param {object} connection - live connection record.
+   * @param {unknown} ownerSessionId - the calling DSH conversation.
+   * @param {string} kind - short activity label ("connect", "exec", "sftp").
+   */
+  noteAgentActivity(connection, ownerSessionId, kind = "tool") {
+    if (connection === undefined || connection === null) return;
+    connection.agentActivityByOwner ??= new Map();
+    connection.agentActivityByOwner.set(ownerKey(ownerSessionId), { at: Date.now(), kind });
+  }
+
+  /**
+   * Make one agent operation visible in the right-side panel.
+   *
+   * This is the single visibility contract every agent tool goes through:
+   * bind the connection to the calling conversation, stamp activity, mint a
+   * reveal token for that conversation (once — the browser focuses/opens the
+   * Harbor tab), and optionally open this conversation's terminal so exec
+   * output has a surface to mirror into.
+   *
+   * @param {{connectionId?: string, ownerSessionId?: string|null, kind?: string, ensureTerminal?: boolean}} request
+   * @returns {Promise<{ok: true, value: {connectionId: string, terminalSessionId?: string, terminalReused?: boolean, warning?: string}}|{ok: false, error: object}>}
+   */
+  async touchAgentTarget({ connectionId, ownerSessionId, kind = "tool", ensureTerminal = false } = {}) {
+    const owner = normalizeOwner(ownerSessionId);
+    const selected = this.resolveConnection(connectionId, owner);
+    if (!selected.ok) return selected;
+    const id = selected.connectionId;
+    const connection = selected.connection;
+    this.bindActiveConnection(id, owner);
+    this.noteAgentActivity(connection, owner, kind);
+    // A terminal is optional for file/status/tunnel work, but required for
+    // ssh_exec to have somewhere to mirror its command and output.
+    let terminal = null;
+    if (ensureTerminal) terminal = await this.ensureSessionForWrite(id, owner);
+    // The terminal open records its own "terminal" activity; restore the
+    // caller's operation label so the panel can say what the agent is doing.
+    this.noteAgentActivity(connection, owner, kind);
+    // One reveal per (connection, conversation) is enough: the browser only
+    // needs to add/focus the server tab once. A later terminal_open mints a
+    // fresh token itself (see openOwnedSession).
+    if (connection.agentRevealId === undefined || normalizeOwner(connection.agentRevealOwnerSessionId) !== owner) {
+      connection.agentRevealId = randomUUID();
+      if (owner !== null) connection.agentRevealOwnerSessionId = owner;
+      else delete connection.agentRevealOwnerSessionId;
+    }
+    const value = { connectionId: id };
+    if (terminal !== null && terminal.ok) {
+      if (terminal.value?.sessionId !== undefined) value.terminalSessionId = terminal.value.sessionId;
+      if (terminal.value?.reused !== undefined) value.terminalReused = terminal.value.reused;
+    } else if (terminal !== null && terminal.ok === false) {
+      // The connection is visible even when sshd refuses another PTY; the
+      // tool still runs and the operator can open a terminal manually.
+      value.warning = terminal.error?.message ?? "could not open this conversation's terminal";
+    }
+    return { ok: true, value };
+  }
   // ── Remote methods ─────────────────────────────────────────────────────────
 
   /**
@@ -62,6 +129,14 @@ export const withAgentActions = (Base) => class extends Base {
       if (agentOpenedMine) connection.agentSessionMine = true;
       if (c.agentRevealId !== undefined) connection.agentRevealId = c.agentRevealId;
       if (c.agentRevealOwnerSessionId !== undefined) connection.agentRevealOwnerSessionId = c.agentRevealOwnerSessionId;
+      // Agent activity is scoped to the listing conversation: the panel uses
+      // it for the "Agent is working" pulse, independent of terminal liveness.
+      const activity = c.agentActivityByOwner?.get?.(ownerKey(ownerSessionId));
+      if (activity !== undefined) {
+        connection.agentActive = Date.now() - activity.at < AGENT_ACTIVE_WINDOW_MS;
+        connection.agentLastActivityAt = new Date(activity.at).toISOString();
+        if (activity.kind !== undefined) connection.agentActivityKind = activity.kind;
+      }
       connections.push(connection);
     }
     const value = { connections, activeConnectionId: this.activeConnectionFor(ownerSessionId) };
@@ -182,6 +257,7 @@ export const withAgentActions = (Base) => class extends Base {
     }
     const selected = await this.selectConnection({ connectionId, sessionId: ownerSessionId ?? undefined });
     if (!selected.ok) return rollback(selected.error, openedSessionId);
+    this.noteAgentActivity(connection, ownerSessionId, "connect");
     // A new token on every request lets the browser re-open a reused server
     // after its pane was closed, even when its existing PTY was human-opened.
     connection.agentRevealId = randomUUID();
@@ -301,16 +377,21 @@ export const withAgentActions = (Base) => class extends Base {
   }
 
   /**
-   * Make sure the caller has a live terminal so agent input can actually be
-   * submitted: its own, the connection's single adoptable anonymous one, or a
-   * newly opened shell. With no terminal, a plain write would otherwise drop
-   * the input (0 bytes written).
+   * Make sure the caller has a live terminal: its own, the connection's single
+   * adoptable anonymous one, or a newly opened shell.
+   *
+   * Used by ssh_exec before the exec channel opens, so its command and output
+   * have a terminal to mirror into. It is also the lazy-open path agent writes
+   * used before the official terminal tools replaced them.
+   *
+   * @returns {{ok: true, connectionId: string, value: {sessionId: string, reused: boolean}}|{ok: false, error: object}}
    */
   async ensureSessionForWrite(connectionId, ownerSessionId) {
     const selected = this.resolveConnection(connectionId, ownerSessionId);
     if (!selected.ok) return selected;
-    if (this.ownerTerminalFor(selected.connectionId, ownerSessionId) !== undefined) {
-      return { ok: true, connectionId: selected.connectionId };
+    const existing = this.ownerTerminalFor(selected.connectionId, ownerSessionId);
+    if (existing !== undefined) {
+      return { ok: true, connectionId: selected.connectionId, value: { sessionId: existing.id, reused: true } };
     }
     const opened = await this.openSession({
       connectionId: selected.connectionId,
@@ -320,7 +401,7 @@ export const withAgentActions = (Base) => class extends Base {
       sessionId: normalizeOwner(ownerSessionId) ?? undefined
     });
     if (!opened.ok) return opened;
-    return { ok: true, connectionId: selected.connectionId };
+    return { ok: true, connectionId: selected.connectionId, value: { sessionId: opened.value.sessionId, reused: opened.value.reused === true } };
   }
 
   /** Send tool input to the caller's terminal on the explicit or current connection. */

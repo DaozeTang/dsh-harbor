@@ -22,8 +22,8 @@ import { createHarborApi } from "./api.js";
 import { HarborSidebarBody } from "./HarborSidebarBody.jsx";
 import { HarborResources } from "./HarborResources.jsx";
 import { HarborHeaderAction } from "./HarborHeaderAction.jsx";
-import { harborUiAnnounceAgentConnections, harborUiSetSurfaceOpener } from "./store.js";
-import { startAgentConnectionPoll } from "./agent-connection-poll.js";
+import { AgentRevealWatcher } from "./AgentRevealWatcher.jsx";
+import { harborUiSetSurfaceOpener } from "./store.js";
 import { activateSidebarWhenAvailable } from "./sidebar-lifecycle.js";
 import { readHostLanguage, setLanguage } from "./locale.js";
 import { registerSettingsNavIcon } from "./settings-nav-icon.js";
@@ -68,11 +68,9 @@ export async function apply(ctx) {
 
     const api = createHarborApi(ctx);
 
-    // Agent-connected servers must surface even while the tab is closed: the
-    // host opens transport + session, and without a poll nobody reveals the tab
-    // and a second server never appears beside the first. The plugin root is
-    // always mounted, so it owns the slow poll; the panel polls faster while open.
-    own(startAgentConnectionPoll(api, harborUiAnnounceAgentConnections));
+    // Agent reveals are watched per conversation, inside the session header
+    // (see applySidebarRegistrations). A plugin-root poll has no session id,
+    // so it could only target whichever conversation happened to be on screen.
 
     own(ctx.locale.register(NS, {
       zh: {
@@ -174,6 +172,22 @@ function applySidebarRegistrations(ctx, { api, hostT }) {
       console.warn("[dsh-harbor] openTab failed:", error?.message ?? error);
     }
   };
+  /**
+   * Open/focus the Harbor tab for ONE conversation. The official sidebar
+   * exposes openTabIn(sessionId, kind); older hosts only have the on-screen
+   * openTab, which is why this falls back instead of throwing.
+   */
+  const openTabIn = (sessionId) => {
+    try {
+      if (typeof sessionId === "string" && typeof ctx.sidebarRight.openTabIn === "function") {
+        ctx.sidebarRight.openTabIn(sessionId, HARBOR_TAB_KIND);
+      } else {
+        ctx.sidebarRight.openTab(HARBOR_TAB_KIND);
+      }
+    } catch (error) {
+      console.warn("[dsh-harbor] openTabIn failed:", error?.message ?? error);
+    }
+  };
   try {
     // Surfaces that own no pane (the settings page) ask for the terminal
     // through the shared store; cleared on release so a disposed registration
@@ -216,8 +230,8 @@ function applySidebarRegistrations(ctx, { api, hostT }) {
           id: "harbor-terminal",
           order: 90,
           locale: NS,
-          inject: () => ({
-            openTab,
+          inject: (sessionId) => ({
+            openTab: () => openTabIn(sessionId),
             isActive: () => {
               try {
                 if (!ctx.sidebarRight.isExpanded()) return false;
@@ -231,6 +245,26 @@ function applySidebarRegistrations(ctx, { api, hostT }) {
           })
         },
         HarborHeaderAction
+ )
+ ));
+
+    // Agent reveals are session-scoped. The header is mounted for the
+    // displayed conversation, so a reveal for a background chat waits until
+    // that chat is shown instead of hijacking the current one.
+    own(ctx.slots.inject("conversation.session.header.actions", () =>
+      ctx.slots.register(
+        {
+          name: "conversation.session.header.actions",
+          id: "harbor-agent-reveal",
+          order: 91,
+          locale: NS,
+          inject: (sessionId) => ({
+            api,
+            sessionId,
+            openTab: () => openTabIn(sessionId)
+          })
+        },
+        AgentRevealWatcher
  )
  ));
 

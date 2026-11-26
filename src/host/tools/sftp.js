@@ -20,7 +20,21 @@ export function registerSftpTools(ctx, service) {
    * untouched. A path that escapes the bound root is refused here, before any
    * I/O reaches the server.
    */
-  const resolveTarget = (exec, connectionId, path) => service.resolveRemoteToolPath({ connectionId, path }, exec);
+  const resolveTarget = async (exec, connectionId, path) => {
+    const resolved = await service.resolveRemoteToolPath({ connectionId, path }, exec);
+    // Every agent file operation must surface the server in the panel: bind
+    // the connection to the conversation and mint a reveal token. It does not
+    // force a terminal — the Files tab is what the operator usually wants.
+    try {
+      await service.touchAgentTarget?.({
+        connectionId: resolved.connectionId,
+        ownerSessionId: service.terminalOwner?.(exec?.agent) ?? undefined,
+        kind: "sftp",
+        ensureTerminal: false
+      });
+    } catch {}
+    return resolved;
+  };
   /** Second path of a rename must land on the same server as the first. */
   const target = (resolved, connectionId) => (connectionId ?? resolved.connectionId);
 
@@ -214,7 +228,10 @@ export function registerSftpTools(ctx, service) {
         if (!moved.ok) throw new Error(`sftp_delete failed: ${moved.error.message}`);
         return { path: resolved.path, trashPath: moved.value.trashPath };
       }
-      const result = await service.runPreparedExec(connectionId, trashScript ?? command, command, true, 30000, false, false);
+      // Mirror the reversible trash move into THIS conversation's terminal
+      // when one exists; after the change, the operator sees the delete too.
+      const ownerSessionId = service.terminalOwner?.(exec?.agent) ?? undefined;
+      const result = await service.runPreparedExec(connectionId, trashScript ?? command, command, true, 30000, ownerSessionId);
       if (!result.ok) throw new Error(`sftp_delete failed: ${result.error.message}`);
       if (result.value.timedOut || result.value.exitCode !== 0) {
         const detail = result.value.stderr?.trim() || `exit code ${result.value.exitCode ?? "unknown"}`;

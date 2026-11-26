@@ -635,4 +635,13 @@ export const en = {
   "端口需为 1–65535 的整数": "The port must be an integer from 1 to 65535",
   "${entry.original} → 回收站 ${entry.trashPath ?? \"\"}": "${entry.original} → trash ${entry.trashPath ?? \"\"}",
   "${entry.original} → 未处理（${entry.status}）": "${entry.original} → not handled (${entry.status})",
+  "连接已断开": "Disconnected",
+  "Agent 正在操作 · 已连接": "Agent working · connected",
+  "已连接 · 本对话终端运行中": "Connected · this conversation's terminal is running",
+  "已连接 · 本对话暂无终端": "Connected · no terminal in this conversation",
+  "（Agent 的作用目标）": " (Agent's target)",
+  "本对话的终端运行中": "This conversation's terminal is running",
+  "本对话暂无终端": "No terminal in this conversation",
+  "Agent 正在操作此连接": "Agent is working on this connection",
+  "Agent 正在使用此连接": "Agent is using this connection",
 };

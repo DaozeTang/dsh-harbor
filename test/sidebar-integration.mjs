@@ -52,6 +52,15 @@ assert.match(entry, /function applySidebarRegistrations\(ctx, \{ api, hostT \}\)
 assert.doesNotMatch(entry, /\{ api, t \}/, "no unbound t is passed anywhere in the entry");
 assert.doesNotMatch(entry, /ctx\.get\("sidebarRightTabs"\)/,
   "the Sidebar decision is not frozen before the host has finished registering services");
+
+// ── agent reveals are session-scoped, never global ──
+// A plugin-root poll has no session id and openTab() targets whatever chat is
+// on screen. The watcher lives in the session header and uses openTabIn().
+assert.match(entry, /AgentRevealWatcher/, "the session reveal watcher is imported");
+assert.match(entry, /id: "harbor-agent-reveal"/, "the watcher registers as a header action");
+assert.match(entry, /openTabIn\(sessionId, HARBOR_TAB_KIND\)/, "reveals open the tab in their own conversation");
+assert.match(entry, /inject: \(sessionId\) => \(\{\s*api,\s*sessionId/s, "the watcher receives the session id");
+assert.doesNotMatch(entry, /startAgentConnectionPoll\(/, "the plugin root no longer owns a session-less poll");
 for (const src of [entry, panel, body]) {
   assert.doesNotMatch(src, /SshDrawer|shell\.overlay|applyLegacyRegistrations|harborUiSetOpen\b/,
     "no legacy drawer component, slot, registration or visibility toggle remains");
@@ -61,6 +70,9 @@ for (const src of [entry, panel, body]) {
 // The workbench fills whatever box the Sidebar gives it: no fixed position,
 // no side margins, no reserved chat-column space. Placement is the host's.
 assert.match(panel, /className="hb hb-shell"/, "the workspace root is the shell class");
+assert.match(panel, /connectionStatusView\(connection, sessionId\)/, "the strip derives transport/terminal/agent state");
+assert.match(panel, /status\.agentActive \? "busy"/, "agent activity pulses the status dot");
+assert.match(panel, /className="hb-server__terminal"/, "terminal presence has its own indicator");
 assert.doesNotMatch(panel, /position: "fixed"|width: \d|top: \d|right: \d/,
   "the workspace root is position-less; the Sidebar owns placement (dialog modals may be viewport-fixed)");
 assert.doesNotMatch(panel, /margin-right|--dsh-harbor-panel-space|data-dsh-harbor-panel-open/,

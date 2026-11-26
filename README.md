@@ -27,7 +27,7 @@ dsh web
 
 接入一台远端机器，通常要开三个窗口：终端、SFTP 客户端，以及在对话里来回复制命令和结果。Harbor 把这些收进同一块屏幕：
 
-- **每个对话一个终端，Agent 与你在同一个终端里并肩。** 说「看下内存」，命令就出现在你面前的终端里；退出码、输出、耗时、超时与截断状态原样回到模型。你第一次敲键后终端归你，Agent 只能读、不能再往里写。两个对话同时连着同一台机器也互不干扰。
+- **每个对话一个终端，Agent 与你在同一个终端里并肩。** 说「看下内存」，命令就出现在你面前的终端里——即使 Agent 先用 `ssh_exec`，Harbor 也会自动为这个对话补开终端并把命令与输出镜像进去；退出码、输出、耗时、超时与截断状态原样回到模型。你第一次敲键后终端归你，Agent 只能读、不能再往里写。两个对话同时连着同一台机器也互不干扰。
 - **凭据不进对话。** 服务器保存为资源，密码与私钥只写入 DSH 本机凭据库；模型看到的是「prod-web-01 的共享凭据」，而不是那串口令。
 - **破坏性操作需要你点头。** 命中规则的命令在会话内挂起等待批准；批准后的 `rm` 执行的是移入远端回收站的可逆动作，而不是删除。
 
@@ -92,7 +92,9 @@ dsh web
 
 默认注册 22 个工具，省略 `connection_id` 时作用于当前活动连接。**设置 → Harbor → 功能**可分别关闭转发、日志与状态工具（需重启 DSH）。
 
-交互式终端不再由 Harbor 自己定义工具。连上服务器后，Agent 用 DSH 官方持久终端工具打开一条 SSH 终端（`terminal_open` 的 `type` 为 `harbor-ssh`），再用 `terminal_send` / `terminal_read` / `terminal_signal` / `terminal_close` / `terminal_list` 操作它——函数名、参数、等待原因、profile 与错误码都来自官方实现。你在右侧面板看到的正是同一条 shell；你第一次敲键后，Agent 只能读，不能再写。
+交互式终端不再由 Harbor 自己定义工具。`ssh_connect` / `ssh_connect_profile` 连上服务器时会**自动为当前对话打开一条 SSH 终端**并让右侧面板显示这台机器；Agent 之后用 `terminal_list` 找到它的 session id，再用 `terminal_send` / `terminal_read` / `terminal_signal` / `terminal_close` 操作。需要第二条 shell（例如你已经接管了第一条）时，才用官方 `terminal_open`（`type` 为 `harbor-ssh`）。函数名、参数、等待原因、profile 与错误码都来自官方实现。你在右侧面板看到的正是同一条 shell；你第一次敲键后，Agent 只能读，不能再写。
+
+`ssh_exec`、SFTP、端口转发与 `ssh_status` 也都会把目标服务器绑定到当前对话并在面板中揭示；其中 `ssh_exec` 在没有终端时会先补开一条，再把命令与输出镜像进去。协议端（`list`）新增 `agentActive` / `agentLastActivityAt` / `agentActivityKind`，服务器条的圆点表示 transport，终端小图标与 Agent 脉冲分别表示“本对话有终端”和“Agent 最近在操作”。
 
 | 组 | 工具 |
 | --- | --- |
