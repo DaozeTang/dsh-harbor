@@ -21,7 +21,7 @@ dsh web
 
 打开任意会话，点右上角的终端按钮，在「Harbor」里连接服务器。安装细节见 [INSTALL.md](./INSTALL.md)，各面板用法见[产品指南](./docs/product-guide.md)。
 
-> **DSH 0.2.3+**：交互式终端复用官方「持久化终端」插件提供的 `terminal_*` 工具。请保持该插件启用；未启用时 `ssh_exec`、文件、转发、日志、状态仍可用，但 Agent 没有交互式 SSH 终端。
+> **DSH `>=0.2.3-alpha.2`**：交互式终端复用官方「持久化终端」插件提供的 `terminal_*` 工具。请保持该插件启用；未启用时 `ssh_exec`、文件、转发、日志、状态仍可用，但 Agent 没有交互式 SSH 终端。
 
 ## 它解决什么问题
 
@@ -112,29 +112,32 @@ dsh web
 
 ```
 src/
-  index.js               插件入口：挂载 Remote、注册工具 / 设置页 / 侧栏标签
+  index.js               插件入口：组合根 + RPC 服务
   terminal-backend.js    官方持久终端分组内的 SSH 后端入口（孤立的 terminals 注册表）
   rpc/                   Typert 契约：descriptors、schemas、host 清单、client 贡献
   host/
     service/             连接、会话、文件、转发、流式文件路由（按关注点拆分）
     terminal-backend.js  TerminalBackend/TerminalBackendSession 的 SSH 适配器
     tools/               面向 Agent 的工具注册
+    monitor/             状态采样：固定探测脚本、/proc 解析、速率差分
     *.js                 纯逻辑：安全判定、回收站、指纹、脱敏、SFTP 管道……
   client/
     index.jsx            浏览器入口：侧栏标签 + 设置页 + 会话头按钮
     HarborPanel.jsx      工作台外壳（服务器条、视图切换、面板）
+    HarborFiles.jsx      文件面板
+    HarborResources.jsx  设置页：服务器、凭据、策略、功能开关
     ui/                  设计系统：kit、图标、样式表
     features/            状态、终端、文件、转发、日志、快捷命令、策略
-  host/monitor/          状态采样：固定探测脚本、/proc 解析、速率差分
     terminal-display/    终端配色、语义高亮、外观设置
-  i18n/                  中英文消息层（中文为源语言）
+  shared/                两端共用的纯模块（服务枢纽、私钥解析）
+  i18n/                  中英文字典（中文为源语言，messages.en.js 为英文覆盖）
 ```
 
 常用命令：
 
 ```bash
 npm install          # 安装依赖并构建（prepare 钩子会跑 build）
-npm run build        # host + client + xterm 样式
+npm run build        # host + client（xterm 样式随客户端包内联）
 npm test             # 单元 / 集成测试（node --test）
 npm run preview:ui   # 生成离线预览页到 preview/out（浏览器打开；DSH_THEME_CSS_DIR 可指向 DSH 主题目录取实时 token）
 npm run theme:snapshot -- <dsh-ui-theme>/src/styles  # 从宿主主题重生成离线 token 快照
@@ -147,7 +150,7 @@ npx eslint .
 
 ## 兼容性
 
-- 宿主：DSH `>= 0.2.0`（`engines.dsh`），已在 `0.2.2-rc.5` 验证。
+- 宿主：DSH `>= 0.2.3-alpha.2`（`engines.dsh`）；交互式终端还要求启用官方「持久化终端」插件。
 - 必需能力：右侧边栏（`sidebarRightTabs` + `sidebarRight`）。缺这两个服务的旧宿主仍可运行 Agent 工具，但没有终端界面，也不提供浮动面板兜底。
 - 状态采样需要远端提供 POSIX shell 与 `/proc`（即 Linux）；macOS / BSD 远端与交换机类设备会显示「暂不支持状态采集」，其余功能不受影响。
 - 大文件流式上传 / 下载仅在 Web Profile 同时提供 `webServer` 与请求来源校验时注册，其余宿主继续走 SFTP 操作。

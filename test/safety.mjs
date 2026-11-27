@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { assessShellCommand, canonicalCommandText, isPrefillable } from "../src/host/safety.js";
+import { processTerminalInput } from "../src/host/terminal-input.js";
 import { redactForModel } from "../src/host/redact.js";
 import HarborService, { normalizeTerminalEol } from "../src/index.js";
 
@@ -130,21 +131,22 @@ assert.equal(
 }
 
 const service = Object.create(HarborService.prototype);
-service.config = { maxBufferBytes: 1024, maxCaptureBytes: 512, maxCommandOutputBytes: 128 };
+service.config = { maxBufferBytes: 1024, maxCommandOutputBytes: 128 };
 service.wakeWaiters = () => {};
 
+const gate = (state, text) => processTerminalInput(state, text, (line) => assessShellCommand(line));
+
 const safeSession = { inputLine: "", inputKnown: true, buffer: "" };
-const safeInput = service.prepareTerminalInput(safeSession, "free -h\r");
+const safeInput = gate(safeSession, "free -h\r");
 assert.equal(safeInput.forwarded, "free -h\r");
 assert.equal(safeInput.blockedReason, null);
 
 const blockedSession = { inputLine: "", inputKnown: true, buffer: "" };
-const blockedInput = service.prepareTerminalInput(blockedSession, "rm -rf /\r");
+const blockedInput = gate(blockedSession, "rm -rf /\r");
 assert.equal(blockedInput.forwarded, "rm -rf /\x15");
 assert.match(blockedInput.blockedReason, /安全策略已阻止/);
-assert.match(blockedSession.buffer, /DSH SSH 安全策略/);
 
-const captureSession = { buffer: "", captureBuffer: "", lastPrompt: null };
+const captureSession = { buffer: "", lastPrompt: null };
 service.appendSessionOutput(captureSession, "root@iZ2vc27mmzgpr2oszj1kplZ:~# ");
 assert.equal(captureSession.lastPrompt, "root@iZ2vc27mmzgpr2oszj1kplZ:~# ");
 const displayConn = { host: "192.0.2.10", username: "root", sessions: new Set(["capture"]) };
@@ -154,7 +156,7 @@ service.appendSessionOutput(service.sessions.get("capture"), "$ echo old\r\nold 
 const rememberedPrompt = service.sessions.get("capture").lastPrompt;
 service.appendSessionOutput(service.sessions.get("capture"), "root@iZ2vc27mmzgpr2oszj1kplZ:~# ");
 assert.equal(rememberedPrompt, "root@iZ2vc27mmzgpr2oszj1kplZ:~# ");
-assert.match(service.sessions.get("capture").captureBuffer, /old output/);
+assert.match(service.sessions.get("capture").buffer, /old output/);
 
 const redacted = redactForModel("PASSWORD=top-secret\nAuthorization: Bearer abc.def\n");
 assert.equal(redacted.redacted, true);
@@ -221,7 +223,7 @@ assert.equal(service.operatorApprovals.size, 0, "the mismatched voucher is still
 // ── channel; the PTY never sees the rm at all ────────────────────────────────
 {
   const trashService = Object.create(HarborService.prototype);
-  trashService.config = { maxBufferBytes: 1024, maxCaptureBytes: 512, maxCommandOutputBytes: 4096 };
+  trashService.config = { maxBufferBytes: 1024, maxCommandOutputBytes: 4096 };
   trashService.wakeWaiters = () => {};
   let sent = null;
   trashService.collectExecOutput = async (client, command) => {
@@ -270,7 +272,7 @@ assert.equal(service.operatorApprovals.size, 0, "the mismatched voucher is still
   // A dangerous command must not be replayed when the transport dies after
   // dispatch: the first run may already have taken effect.
   const ambiguousService = Object.create(HarborService.prototype);
-  ambiguousService.config = { maxBufferBytes: 1024, maxCaptureBytes: 512, maxCommandOutputBytes: 4096 };
+  ambiguousService.config = { maxBufferBytes: 1024, maxCommandOutputBytes: 4096 };
   ambiguousService.operatorApprovals = new Map();
   ambiguousService.connections = new Map([[
     "live",
@@ -451,7 +453,7 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.equal(service.sessions.get("mirror").inputKnown, true);
   // Agent-driven Enter must be cleared (Ctrl-U), not submitted.
   const mirrorSession = service.sessions.get("mirror");
-  const guarded = service.prepareTerminalInput(mirrorSession, "\r");
+  const guarded = gate(mirrorSession, "\r");
   assert.equal(guarded.forwarded, "\x15");
   assert.match(guarded.blockedReason, /安全策略已阻止/);
   // Operator's own Enter (raw path) still submits and resets the mirror.
@@ -463,7 +465,6 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
 // "rm -rf /" used to look like the harmless line "xrm -rf /" while the shell
 // executed "rm -rf /": the Enter was approved against text nobody typed.
 {
-  const { processTerminalInput } = await import("../src/host/terminal-input.js");
   const editing = ["\x01", "\x02", "\x04", "\x05", "\x06", "\x0b", "\x0e", "\x10", "\x12", "\x14", "\x15", "\x16", "\x17", "\x19", "\x1f"];
   for (const key of editing) {
     const state = { inputLine: "kept", inputKnown: true };
@@ -477,7 +478,7 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
     assert.equal(state.inputKnown, true, "control " + JSON.stringify(key) + " preserves the line");
   }
   // End to end: the hidden line is cleared, never submitted.
-  const typed = service.prepareTerminalInput({ inputLine: "", inputKnown: true, buffer: "" }, "x\x15rm -rf /\r");
+  const typed = gate({ inputLine: "", inputKnown: true, buffer: "" }, "x\x15rm -rf /\r");
   assert.equal(typed.forwarded.includes("\r"), false, "the Enter never reaches the shell");
   assert.equal(typed.forwarded.endsWith("\x15"), true, "the line is cleared with Ctrl-U instead");
   assert.match(typed.blockedReason, /无法验证/);

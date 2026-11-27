@@ -15,7 +15,7 @@
  *   - exec  -> runs the command through the platform shell and streams stdout/stderr
  *              with a real exit code (exercises ssh_exec).
  *   - shell -> runs an interactive platform shell and pipes stdin/stdout
- *              to it (exercises the terminal + ssh_write Enter).
+ *              to it (exercises the terminal + terminal_send Enter).
  *   - sftp  -> a sandboxed SFTP subsystem over one root directory (see
  *              test-sftp-server.mjs), seeded with sample files so the file
  *              manager, editor, export and download paths can run for real.

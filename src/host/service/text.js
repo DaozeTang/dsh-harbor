@@ -22,9 +22,19 @@ export function appendCapped(current, next, maxBytes) {
   return { text: current + incoming.subarray(0, remaining).toString("utf8"), truncated: true };
 }
 
+/** Keep the newest UTF-8 bytes of a string without splitting a code point. */
+export function tailUtf8(text, maxBytes) {
+  const value = String(text ?? "");
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= maxBytes) return { text: value, truncated: false };
+  let start = bytes.length - maxBytes;
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start += 1;
+  return { text: bytes.subarray(start).toString("utf8"), truncated: true };
+}
+
+/** The text half of tailUtf8, for callers that only need the string. */
 export function tailCapped(text, maxBytes) {
-  const bytes = Buffer.from(text, "utf8");
-  return bytes.length <= maxBytes ? text : bytes.subarray(bytes.length - maxBytes).toString("utf8");
+  return tailUtf8(text, maxBytes).text;
 }
 
 export function promptFromTerminalData(text) {

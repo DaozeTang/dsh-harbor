@@ -128,14 +128,16 @@ assert.equal(
   assert.equal(started.ok, true, started.error?.message);
   const live = net.connect(started.value.bindPort, "127.0.0.1");
   await new Promise((resolve, reject) => { live.once("connect", resolve); live.once("error", reject); });
+  let watchdog;
   try {
     const result = await Promise.race([
       service.tunnelStop({ connectionId: "c1", tunnelId: started.value.tunnelId }),
-      new Promise((resolve) => setTimeout(() => resolve("timeout"), 3000))
+      new Promise((resolve) => { watchdog = setTimeout(() => resolve("timeout"), 3000); })
     ]);
     assert.notEqual(result, "timeout", "tunnelStop closes live accepted sockets instead of waiting on them");
     assert.equal(result.ok, true, result.error?.message);
   } finally {
+    clearTimeout(watchdog);
     live.destroy();
   }
 }

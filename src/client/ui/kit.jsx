@@ -20,7 +20,7 @@ import { createPortal } from "react-dom";
 import { ICONS } from "./icons.js";
 import { t } from "../../i18n/core.js";
 
-const { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } = React;
+const { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } = React;
 
 /** Join class names, dropping falsey entries. */
 export function cx(...parts) {
@@ -783,16 +783,6 @@ export function ToastHost() {
 
 // ── small hooks ────────────────────────────────────────────────────────────
 
-/** Debounce a value; used by search fields so typing never floods the host. */
-export function useDebounced(value, delay = 250) {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), delay);
-    return () => clearTimeout(timer);
-  }, [value, delay]);
-  return debounced;
-}
-
 /**
  * Copy text, optionally announcing it. The caller owns the wording — this kit
  * carries no user-facing copy of its own, so every string stays translatable
@@ -810,17 +800,3 @@ export function useCopy() {
   }, []);
 }
 
-/** Escape-to-close for inline popovers that are not full dialogs. */
-export function useEscape(active, onEscape) {
-  useEffect(() => {
-    if (!active) return undefined;
-    const handler = (event) => { if (event.key === "Escape") { event.stopPropagation(); onEscape(); } };
-    document.addEventListener("keydown", handler, true);
-    return () => document.removeEventListener("keydown", handler, true);
-  }, [active, onEscape]);
-}
-
-/** A stable id for aria wiring. */
-export function useDomId(prefix) {
-  return useMemo(() => `${prefix}-${Math.random().toString(36).slice(2, 9)}`, [prefix]);
-}

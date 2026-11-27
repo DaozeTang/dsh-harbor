@@ -17,7 +17,7 @@ import { ShellIntegrationTracker, SHELL_FAMILY_PROBE, parseShellFamilyProbe, she
 import { buildCwdAwareCommand, posixLoginShell } from "./host/exec-cwd.js";
 import { t } from "./i18n/core.js";
 import { HarborServiceCore } from "./host/service/index.js";
-import { MAX_BUFFER_BYTES, MAX_COMMAND_OUTPUT_BYTES, MAX_CAPTURE_BYTES, MAX_SESSIONS, MAX_SESSIONS_PER_CONNECTION, OPERATOR_APPROVAL_TIMEOUT_MS, READ_TIMEOUT_MS, STREAM_HEARTBEAT_MS, TTY_PROBE_MS, TTY_PROBE_RETRY_DELAYS_MS } from "./host/service/constants.js";
+import { MAX_BUFFER_BYTES, MAX_COMMAND_OUTPUT_BYTES, MAX_SESSIONS, MAX_SESSIONS_PER_CONNECTION, OPERATOR_APPROVAL_TIMEOUT_MS, READ_TIMEOUT_MS, STREAM_HEARTBEAT_MS, TTY_PROBE_MS, TTY_PROBE_RETRY_DELAYS_MS } from "./host/service/constants.js";
 import { streamRouteDescriptor } from "./host/service/stream-routes.js";
 import { anonymousSessions, indexOwner, normalizeOwner, ownerKey, ownerSessionIds, pickOwnerSession, unindexOwner } from "./host/terminal-owner.js";
 import { buildCensusScript, isPtyPath, parseCensus, pickNewTty } from "./host/terminal-census.js";
@@ -41,7 +41,6 @@ export default class HarborService extends HarborServiceCore {
       defaultReadTimeoutMs: READ_TIMEOUT_MS,
       maxBufferBytes: MAX_BUFFER_BYTES,
       maxCommandOutputBytes: MAX_COMMAND_OUTPUT_BYTES,
-      maxCaptureBytes: MAX_CAPTURE_BYTES,
       streamHeartbeatMs: STREAM_HEARTBEAT_MS,
       // Learning each terminal's remote tty costs one exec round trip, run off
       // the open path; a host without /proc simply never learns it.
@@ -207,17 +206,6 @@ export default class HarborService extends HarborServiceCore {
       cols,
       rows,
       buffer: "",
-      // Browser reads drain `buffer`. Retain a separate bounded capture for
-      // an explicit ssh_read without coupling it to UI polling.
-      captureBuffer: "",
-      captureHasDropped: false,
-      // ssh_read "new" keeps a bounded raw baseline plus output received since
-      // the last read. Redacting baseline + pending together preserves secrets
-      // that span read boundaries, even while captureBuffer rolls over.
-      lastReadRaw: undefined,
-      lastReadRedacted: undefined,
-      capturePendingBuffer: "",
-      capturePendingTruncated: false,
       lastPrompt: null,
       waiters: [],
       streamListeners: new Set(),
@@ -568,8 +556,8 @@ export default class HarborService extends HarborServiceCore {
     return { ok: true, value: { sessionId: session.id, ...window, historyStart: history.start, historyEnd: history.end, offset: history.start + window.offset, nextOffset: history.start + window.nextOffset, alive: session.exited === null && session.stream !== null, exit: session.exited, redacted: history.redacted, shell: session.shellIntegration?.snapshot() ?? null } };
   }
 
-  /** Append transport data and retain a bounded, explicit-read capture. */
-  appendSessionOutput(session, text, { capture = true, observePrompt = true } = {}) {
+  /** Append transport data to the journal and the poll buffer. */
+  appendSessionOutput(session, text, { observePrompt = true } = {}) {
     this.terminalOutput(session).append(text);
     // Recording must never influence the session: a broken log is swallowed.
     try {
@@ -582,18 +570,6 @@ export default class HarborService extends HarborServiceCore {
     try { session.shellIntegration?.feed(text); } catch { /* tracking is decoration */ }
     // Legacy poll readers retain their independent destructive buffer.
     session.buffer = tailCapped((session.buffer ?? "") + text, this.config.maxBufferBytes);
-    if (capture) {
-      const captured = session.captureBuffer ?? "";
-      if (Buffer.byteLength(captured, "utf8") + Buffer.byteLength(text, "utf8") > this.config.maxCaptureBytes) {
-        session.captureHasDropped = true;
-      }
-      session.captureBuffer = tailCapped(captured + text, this.config.maxCaptureBytes);
-      const pending = session.capturePendingBuffer ?? "";
-      if (Buffer.byteLength(pending, "utf8") + Buffer.byteLength(text, "utf8") > this.config.maxCaptureBytes) {
-        session.capturePendingTruncated = true;
-      }
-      session.capturePendingBuffer = tailCapped(pending + text, this.config.maxCaptureBytes);
-    }
     if (observePrompt) {
       const prompt = promptFromTerminalData(text);
       if (prompt !== null) session.lastPrompt = prompt;

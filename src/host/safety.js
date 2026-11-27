@@ -263,7 +263,7 @@ function blocked(category, categoryKey) {
     ok: false,
     category,
     categoryKey,
-    // Short reason: surfaced on the ssh_write path (Enter was blocked) and as
+    // Short reason: surfaced when an agent-typed line is blocked (Enter held) and as
     // the card title on ssh_exec/sftp_delete. Kept terse so the key advice
     // (don't retry, don't bypass, a human confirms) is visible at a glance.
     reason: policyBlockedReason(category)

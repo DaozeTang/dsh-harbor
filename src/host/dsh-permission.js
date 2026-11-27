@@ -15,9 +15,6 @@
  * - no mounted permission service means the historical Harbor behavior.
  */
 
-/** DSH execution ceiling keys, in the order the policy module understands them. */
-export const DSH_CEILINGS = Object.freeze(["auto", "allowAll", "standard", "readOnly"]);
-
 const SANDBOX_MODES = Object.freeze(["read-only", "workspace-write", "danger-full-access"]);
 const APPROVAL_POLICIES = Object.freeze(["ask", "never"]);
 

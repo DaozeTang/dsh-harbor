@@ -21,7 +21,7 @@ dsh web
 
 Open any session, click the terminal button in the header and connect a server in the Harbor tab. Setup lives in [INSTALL.md](./INSTALL.md); each panel is covered in the [product guide](./docs/product-guide.md).
 
-> **DSH 0.2.3+**: interactive terminals reuse the official Persistent terminals plugin and its `terminal_*` tools. Keep that plugin enabled; without it `ssh_exec`, files, tunnels, logs and status still work, but the agent has no interactive SSH terminal.
+> **DSH `>=0.2.3-alpha.2`**: interactive terminals reuse the official Persistent terminals plugin and its `terminal_*` tools. Keep that plugin enabled; without it `ssh_exec`, files, tunnels, logs and status still work, but the agent has no interactive SSH terminal.
 
 ## What it solves
 
@@ -90,24 +90,30 @@ Multi-host execution only goes through `ssh_batch`: the agent proposes the comma
 
 ```
 src/
-  index.js               plugin entry: mounts Remote, registers tools / settings page / sidebar tab
+  index.js               plugin entry: composition root + RPC service
+  terminal-backend.js    SSH backend row inside the official persistent-terminals group
   rpc/                   Typert contract: descriptors, schemas, host manifest, client contribution
   host/
     service/             connections, sessions, files, tunnels, streamed file routes
+    terminal-backend.js  TerminalBackend/TerminalBackendSession SSH adapter
     tools/               agent-facing tool registration
+    monitor/             status sampling: fixed probe script, /proc parsing, rate deltas
     *.js                 pure logic: safety, trash, host keys, redaction, SFTP pipeline…
   client/
     index.jsx            browser entry: sidebar tab + settings section + header action
     HarborPanel.jsx      workbench shell (server strip, view switcher, panes)
+    HarborFiles.jsx      file pane
+    HarborResources.jsx  settings page: servers, credentials, policy, feature switches
     ui/                  design system: kit, icons, stylesheet
-    features/            terminal, files, tunnels, logs, snippets, policy
+    features/            status, terminal, files, tunnels, logs, snippets, policy
     terminal-display/    terminal palettes, semantic highlighting, appearance settings
-  i18n/                  zh/en message layer (Chinese is the source language)
+  shared/                pure modules both halves may import (service hub, private keys)
+  i18n/                  zh/en dictionary (Chinese source, messages.en.js overlay)
 ```
 
 ```bash
 npm install          # installs dependencies and builds (prepare hook runs build)
-npm run build        # host + client + xterm stylesheet
+npm run build        # host + client (the xterm stylesheet is inlined)
 npm test             # unit and integration tests (node --test)
 npm run preview:ui   # offline preview pages in preview/out (DSH_THEME_CSS_DIR for live tokens)
 npm run theme:snapshot -- <dsh-ui-theme>/src/styles  # refresh the offline token snapshot from DSH
@@ -120,7 +126,7 @@ Design rules are in [docs/ui-guidelines.md](./docs/ui-guidelines.md); icons come
 
 ## Compatibility
 
-- Host: DSH `>= 0.2.0`, verified on `0.2.2-rc.5`.
+- Host: DSH `>= 0.2.3-alpha.2` (`engines.dsh`); interactive terminals also require the official persistent-terminals plugin.
 - Requires the right sidebar (`sidebarRightTabs` + `sidebarRight`). Older hosts still run the agent tools but show no terminal UI, and there is no floating-panel fallback.
 - Streamed uploads and downloads register only when the Web profile provides both `webServer` and request-origin validation; other hosts keep using plain SFTP.
 - Uses DSH's bundled Node runtime; no system `ssh`, `sftp` or Node.js is required.

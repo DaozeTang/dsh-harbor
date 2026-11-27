@@ -4,6 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { fail } from "../envelope.js";
+import { EXEC_POLICY_MODES } from "../safety.js";
 import { t } from "../../i18n/core.js";
 import { DEFAULT_HOST_KEY_MODE } from "../hostkey.js";
 import { findReusableProfileConnection } from "../profile-connection.js";
@@ -79,7 +80,7 @@ export const withResources = (Base) => class extends Base {
       proxyJump: record.proxyJump ?? [],
       defaultProjectPath: record.defaultProjectPath ?? null,
       loginCommand: record.loginCommand ?? null,
-      execPolicy: ["standard", "custom", "allowAll"].includes(record.execPolicy) ? record.execPolicy : null,
+      execPolicy: EXEC_POLICY_MODES.includes(record.execPolicy) ? record.execPolicy : null,
       groupId: group === undefined ? null : record.groupId,
       groupName: group?.name ?? null,
       credentialConfigured: primary.configured,
@@ -289,7 +290,7 @@ export const withResources = (Base) => class extends Base {
         credentialId: Object.hasOwn(request, "credentialId") ? request.credentialId : (previous?.credentialId ?? null),
         defaultProjectPath,
         loginCommand,
-        execPolicy: ["standard", "custom", "allowAll"].includes(execPolicy) ? execPolicy : null,
+        execPolicy: EXEC_POLICY_MODES.includes(execPolicy) ? execPolicy : null,
         proxyJump,
         groupId,
         createdAt: previous?.createdAt ?? now,

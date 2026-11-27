@@ -2,8 +2,8 @@
  * Terminal ownership: which DSH conversation owns one PTY.
  *
  * Until 0.2.2 a connection carried ONE interactive terminal that every
- * conversation shared: `writeToConnection` broadcast to every shell of the
- * connection, `readConnectionOutput` took the first live one, and `ssh_exec`
+ * conversation shared: the legacy write helper fanned input out to every shell
+ * of the connection, the read helper took the first live one, and `ssh_exec`
  * mirrored its output into all of them. Two chats running agents against the
  * same server therefore typed into each other's terminal, read each other's
  * output and fought over the process-global `activeConnectionId`.

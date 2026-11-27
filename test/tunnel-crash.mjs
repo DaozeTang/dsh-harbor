@@ -15,7 +15,7 @@ const services = [];
 
 function makeService() {
   const service = Object.create(HarborService.prototype);
-  service.config = { maxBufferBytes: 65536, maxCaptureBytes: 65536 };
+  service.config = { maxBufferBytes: 65536 };
   service.connections = new Map();
   service.sessions = new Map();
   service.exitedSessions = new Map();

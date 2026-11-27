@@ -28,12 +28,10 @@ function response() {
 }
 
 // An SFTP path is not proof that the same absolute path in an SSH exec channel
-// is safe: chrooted SFTP and shell namespaces may resolve it differently. The
-// emergency mitigation must reject archive requests before any exec path runs.
+// is safe: chrooted SFTP and shell namespaces may resolve it differently, so
+// archive requests are rejected outright — no archive implementation exists.
 {
   const service = Object.create(HarborService.prototype);
-  let archiveCalled = false;
-  service.streamDownloadArchive = async () => { archiveCalled = true; };
   const res = response();
   // The WebServer admits a request before invoking the handler; this harness
   // calls the handler as an already-admitted request.
@@ -42,7 +40,6 @@ function response() {
     res
  );
 
-  assert.equal(archiveCalled, false, "archive must never enter the SSH exec implementation");
   assert.equal(res.status, 501);
   assert.deepEqual(JSON.parse(res.body), {
     ok: false,

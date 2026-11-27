@@ -46,7 +46,6 @@ export const SHELL_INTEGRATION_ZSH_COMMAND = [
 ].join("; ");
 
 /** Back-compat alias for callers that only ever target bash (and the tests). */
-export const SHELL_INTEGRATION_COMMAND = SHELL_INTEGRATION_BASH_COMMAND;
 
 /**
  * The shell-family probe: a delimited answer, so nothing else on the stream can

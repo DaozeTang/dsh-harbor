@@ -2,11 +2,9 @@
  * Plain-HTTP byte routes for streaming downloads and uploads (/harbor/stream).
  */
 import { randomUUID } from "node:crypto";
-import { shellQuote } from "../safety.js";
 import { hashTransferStream } from "../transfer-tasks.js";
 import { hasInteractiveTerminal, INTERACTIVE_UPLOAD_CHUNK_BYTES, scheduleUploadWrite } from "../ssh-upload-scheduling.js";
-import { STREAM_ROUTE_PREFIX, STREAM_HIGH_WATER_MARK, STREAM_IDLE_TIMEOUT_MS, MAX_COMMAND_OUTPUT_BYTES } from "./constants.js";
-import { tailCapped } from "./text.js";
+import { STREAM_ROUTE_PREFIX, STREAM_HIGH_WATER_MARK, STREAM_IDLE_TIMEOUT_MS } from "./constants.js";
 
 /**
  * The WebServer route descriptor for the byte plane.
@@ -190,7 +188,7 @@ export const withStreamRoutes = (Base) => class extends Base {
     const attrs = await this.streamStat(res, prepared.sftp, remotePath);
     if (attrs === null) return;
     if ((attrs.mode & 0o170000) === 0o040000) {
-      this.streamJson(res, 400, "is-directory", `${remotePath}: directories download through ${STREAM_ROUTE_PREFIX}/archive`);
+      this.streamJson(res, 400, "is-directory", `${remotePath}: this route serves files only`);
       return;
     }
     const offsetText = url.searchParams.get("offset") ?? "0";
@@ -453,168 +451,6 @@ export const withStreamRoutes = (Base) => class extends Base {
     req.on("end", () => {
       ended = true;
       if (!discarded && !settled && !pendingWrite) out.end();
-    });
-  }
-
-  /**
-   * GET /harbor/stream/archive?connectionId&path[&format=tar|tar.gz] —
-   * folder download as a remote `tar` pipe over an exec channel. tar stores
-   * symlinks as link entries (never -h): no recursive following, no directory
-   * escape; empty directories and hierarchy are preserved. Non-zero exit or
-   * mid-stream failure truncates the chunked response (fail-closed); the
-   * stderr tail goes to the host log. Client abort closes the exec channel,
-   * and servers kill the tar child on channel close — remote production stops.
-   *
-   * Path namespace: the SFTP view and the exec shell's filesystem view can
-   * differ (chrooted/jailed SFTP servers). A one-shot `[ -d <abs> ]` exec probe
-   * decides deterministically: absolute path when it exists in the shell
-   * namespace (plain OpenSSH: SFTP paths are real paths), shell-cwd-relative
-   * otherwise (jailed servers whose exec cwd is the SFTP root). Note the
-   * inherent ambiguity when BOTH views exist (chrooted SFTP + same-named real
-   * path): the absolute view wins; exec channels are not jailed anyway.
-   * A failed tar with zero stdout still resolves before headers (JSON 502);
-   * mid-stream failure truncates the chunked body (fail-closed).
-   */
-  async streamDownloadArchive(req, res, url, connectionId) {
-    const remotePath = url.searchParams.get("path");
-    if (remotePath === null || remotePath === "") {
-      this.streamJson(res, 400, "bad-path", "path query parameter is required");
-      return;
-    }
-    const format = url.searchParams.get("format") === "tar" ? "tar" : "tar.gz";
-    const prepared = await this.streamPrepareSftp(res, connectionId);
-    if (prepared === null) return;
-    const attrs = await this.streamStat(res, prepared.sftp, remotePath);
-    if (attrs === null) return;
-    if ((attrs.mode & 0o170000) !== 0o040000) {
-      this.streamJson(res, 400, "not-directory", `${remotePath}: archive download requires a directory`);
-      return;
-    }
-    const normalized = remotePath.replace(/\/+$/u, "");
-    const name = normalized.slice(normalized.lastIndexOf("/") + 1);
-    const parent = normalized.slice(0, normalized.length - name.length) || "/";
-    if (name === "" || name === "." || name === "..") {
-      this.streamJson(res, 400, "bad-path", `${remotePath}: cannot archive this path`);
-      return;
-    }
-    const relative = normalized.replace(/^\/+/u, "");
-    const relParent = relative.includes("/") ? relative.slice(0, relative.lastIndexOf("/")) : ".";
-    const relName = relative.slice(relative.lastIndexOf("/") + 1);
-    // COPYFILE_DISABLE=1 keeps macOS bsdtar from adding AppleDouble (._*)
-    // members; a harmless environment prefix on every other platform.
-    const build = (par, nm) => `COPYFILE_DISABLE=1 tar -c${format === "tar.gz" ? "z" : ""}f - -C ${shellQuote(par)} ${shellQuote(nm)}`;
-    const contentType = format === "tar.gz" ? "application/gzip" : "application/x-tar";
-    // Deterministic namespace probe (one-shot exec): does the SFTP-absolute
-    // path exist in the shell's filesystem view?
-    const absoluteExists = await new Promise((resolve) => {
-      prepared.connection.client.exec(`[ -d ${shellQuote(normalized)} ]`, { pty: false }, (error, probe) => {
-        if (error) {
-          resolve(false);
-          return;
-        }
-        let code = null;
-        probe.on("exit", (exitCode) => {
-          code = exitCode;
-        });
-        probe.on("error", () => {});
-        probe.on("close", () => resolve(code === 0));
-        probe.resume();
-      });
-    });
-    const attempt = absoluteExists
-      ? { label: "absolute", command: build(parent, name) }
- : { label: "cwd-relative", command: build(relParent, relName) };
-    const outcome = await this.streamArchiveExec(req, res, prepared.connection, attempt.command, remotePath, contentType);
-    if (outcome.streamed) return; // headers owned by the attempt (finished, truncated, or client gone)
-    this.streamJson(res, 502, "archive-failed", `${remotePath}: remote tar failed (${attempt.label}: exit=${outcome.code === null ? "?" : String(outcome.code)}${outcome.stderr ? ` stderr=${String(outcome.stderr).trim().slice(-300)}` : ""})`);
-  }
-
-  /**
-   * Run one archive exec attempt. Resolves {streamed:true} once the attempt
-   * owned the response (first stdout byte → 200 + manual forwarding), or
-   * {streamed:false, code, stderr} when it failed with zero output (headers
-   * untouched — caller may try the next candidate or reply a JSON error).
-   */
-  streamArchiveExec(req, res, connection, command, remotePath, contentType) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const settle = (result) => {
-        if (!settled) {
-          settled = true;
-          resolve(result);
-        }
-      };
-      connection.client.exec(command, { pty: false }, (error, stream) => {
-        if (error) {
-          settle({ streamed: false, code: null, stderr: error.message });
-          return;
-        }
-        let stderr = "";
-        let exit = null;
-        let started = false;
-        let broken = false;
-        const teardown = () => {
-          if (broken) return;
-          broken = true;
-          try { stream.destroy(); } catch {}
-        };
-        stream.stderr.on("data", (chunk) => {
-          stderr = tailCapped(stderr + Buffer.from(chunk).toString("utf8"), MAX_COMMAND_OUTPUT_BYTES);
-        });
-        stream.on("exit", (code, signal) => {
-          exit = { code, signal: signal ?? null };
-        });
-        res.on("close", () => {
-          if (!res.writableEnded) teardown();
-          settle({ streamed: true }); // client gone — nothing left to reply
-        });
-        stream.on("error", (streamError) => {
-          this.ctx.logger.warn(new Error(`harbor archive stream failed: ${remotePath}: ${streamError.message}`));
-          teardown();
-          if (started && !res.writableEnded) res.destroy();
-          settle(started ? { streamed: true } : { streamed: false, code: null, stderr: stderr || streamError.message });
-        });
-        stream.on("data", (chunk) => {
-          if (broken) return;
-          if (!started) {
-            if (res.destroyed || res.writableEnded) {
-              teardown();
-              settle({ streamed: true });
-              return;
-            }
-            started = true;
-            res.writeHead(200, {
-              "content-type": contentType,
-              "cache-control": "no-store, no-transform"
-            });
-            settle({ streamed: true });
-          }
-          if (!res.write(chunk)) stream.pause();
-        });
-        res.on("drain", () => {
-          if (!broken) stream.resume();
-        });
-        stream.on("close", () => {
-          if (broken) {
-            settle({ streamed: true });
-            return;
-          }
-          const code = exit === null ? 0 : exit.code;
-          if (!started) {
-            settle({ streamed: false, code: exit === null ? null : code, stderr });
-            return;
-          }
-          if (exit !== null && code !== 0) {
-            // Truncated chunked body = fail-closed signal for a broken archive.
-            this.ctx.logger.warn(new Error(`harbor archive exited ${String(code)}${exit.signal ? ` (${exit.signal})` : ""}: ${remotePath}: ${stderr.trim() || "no stderr"}`));
-            broken = true;
-            if (!res.writableEnded) res.destroy();
-          } else if (!res.writableEnded) {
-            res.end();
-          }
-          settle({ streamed: true });
-        });
-      });
     });
   }
 };

@@ -95,12 +95,12 @@
     "react-dom": "^18.3.1"
   },
   "scripts": {
-    "gen:xterm-css": "node scripts/gen-xterm-css.mjs",
     "build:host": "node scripts/build-host.mjs",
     "build:client": "node scripts/build-client.mjs",
-    "build": "npm run gen:xterm-css && npm run build:host && npm run build:client",
+    "build": "npm run build:host && npm run build:client",
     "prepare": "npm run build",
     "lint": "eslint .",
+    "i18n:extract": "node scripts/i18n-extract.mjs",
     "test": "node --test $(node scripts/list-tests.mjs)",
     "preview:ui": "node scripts/build-preview.mjs",
     "theme:snapshot": "node scripts/sync-theme-snapshot.mjs",

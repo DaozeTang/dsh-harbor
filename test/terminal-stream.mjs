@@ -18,7 +18,6 @@ function attachSession(service, sessionId) {
     id: sessionId,
     connectionId: "c1",
     buffer: "",
-    captureBuffer: "",
     waiters: [],
     streamListeners: new Set(),
     exited: null,

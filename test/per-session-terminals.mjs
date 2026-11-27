@@ -16,7 +16,7 @@ const PROFILE_ID = "11111111-1111-1111-1111-111111111111";
 
 function makeService() {
   const service = Object.create(HarborService.prototype);
-  service.config = { maxBufferBytes: 65536, maxCaptureBytes: 65536, maxCommandOutputBytes: 65536, defaultReadTimeoutMs: 20 };
+  service.config = { maxBufferBytes: 65536, maxCommandOutputBytes: 65536, defaultReadTimeoutMs: 20 };
   service.connections = new Map();
   service.sessions = new Map();
   service.exitedSessions = new Map();
@@ -124,67 +124,6 @@ const open = (service, sessionId, extra = {}) => service.openSession({ connectio
   assert.equal(second.value.ownerSessionId, "conv-b");
 }
 
-// ── writes land in exactly one terminal ─────────────────────────────────────
-{
-  const service = makeService();
-  const { streams } = attach(service);
-  const a = await open(service, "conv-a");
-  const b = await open(service, "conv-b");
-
-  const written = service.writeToConnection("c1", "echo mine\r", "conv-a");
-  assert.equal(written.ok, true, written.error?.message);
-  assert.ok(streams[0].writes.join("").includes("echo mine"), "the owner's terminal receives the input");
-  assert.equal(streams[1].writes.join(""), "", "the other conversation's terminal stays untouched");
-
-  const missing = service.writeToConnection("c1", "echo none\r", "conv-c");
-  assert.equal(missing.ok, false);
-  assert.equal(missing.error.code, "no-terminal", "a conversation without a terminal is told, not silently broadcast");
-
-  // A denied line never reaches the PTY, and the confirmation gate still runs.
-  const blocked = service.writeToConnection("c1", "rm -rf /tmp/x\r", "conv-a");
-  assert.equal(blocked.ok, false);
-  assert.equal(blocked.error.code, "unsafe-command");
-  // Keys are forwarded as they arrive (that is what makes typing feel normal),
-  // so the denied line's characters are on the wire — what must never happen is
-  // a submit: the gate clears the line with Ctrl-U instead of sending Enter.
-  const forwarded = streams[0].writes.join("");
-  assert.ok(forwarded.includes("\x15"), "the denied line is cleared with Ctrl-U");
-  assert.equal(forwarded.endsWith("\r"), false, "and it is never submitted");
-  assert.equal(service.sessions.get(a.value.sessionId).ownerSessionId, "conv-a");
-  assert.equal(service.sessions.get(b.value.sessionId).ownerSessionId, "conv-b");
-}
-
-// ── reads are per terminal, including the "new output" cursor ───────────────
-{
-  const service = makeService();
-  const { conn } = attach(service);
-  const a = await open(service, "conv-a");
-  const b = await open(service, "conv-b");
-  const sessionA = service.sessions.get(a.value.sessionId);
-  const sessionB = service.sessions.get(b.value.sessionId);
-  service.appendSessionOutput(sessionA, "alpha output\n");
-  service.appendSessionOutput(sessionB, "beta output\n");
-
-  const readA = service.readConnectionOutput("c1", "tail", "conv-a");
-  assert.match(readA.value.data, /alpha/);
-  assert.doesNotMatch(readA.value.data, /beta/, "a conversation never reads another one's screen");
-
-  const readB = service.readConnectionOutput("c1", "tail", "conv-b");
-  assert.match(readB.value.data, /beta/);
-
-  // Independent cursors: reading A twice does not consume B's pending output.
-  service.readConnectionOutput("c1", "new", "conv-a");
-  service.appendSessionOutput(sessionA, "alpha two\n");
-  const aSecond = service.readConnectionOutput("c1", "new", "conv-a");
-  assert.match(aSecond.value.data, /alpha two/);
-  const bFirst = service.readConnectionOutput("c1", "new", "conv-b");
-  assert.match(bFirst.value.data, /beta/, "B still has its own first read pending");
-  assert.equal(conn.sessions.size, 2);
-
-  const nobody = service.readConnectionOutput("c1", "new", "conv-zzz");
-  assert.equal(nobody.value.hasSession, false);
-}
-
 // ── exec output is mirrored into the caller's terminal only ─────────────────
 {
   const service = makeService();
@@ -233,7 +172,7 @@ const open = (service, sessionId, extra = {}) => service.openSession({ connectio
   assert.ok(second.conn.sessions.size >= 1);
 }
 
-// ── ssh_write's lazy open is per conversation ───────────────────────────────
+// ── ssh_exec's lazy terminal open is per conversation ───────────────────────
 {
   const service = makeService();
   const { streams } = attach(service);

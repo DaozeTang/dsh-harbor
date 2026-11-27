@@ -18,6 +18,8 @@
  * gate or keep the rewritten command inside the prepared-exec path.
  */
 
+import { shellQuote } from "./safety.js";
+
 export const TRASH_DIR = "$HOME/.dsh-trash";
 export const TRASH_MARKER = "__DSH_TRASH_V1__";
 export const TRASH_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -178,9 +180,9 @@ function quoteTarget(target) {
     // quotes would expand it and turn an approved "reversible delete" into
     // arbitrary command execution. Concatenation keeps "$HOME" expanded and
     // the tail verbatim: "$HOME"/'backups/app.$PID.log'.
-    return `"$HOME"/${shellSingleQuote(target.path)}`;
+    return `"$HOME"/${shellQuote(target.path)}`;
   }
-  return shellSingleQuote(target.path);
+  return shellQuote(target.path);
 }
 
 /**
@@ -199,7 +201,7 @@ export function buildTrashCommand(targets, { retentionMs = TRASH_RETENTION_MS } 
   const retentionSec = Math.max(1, Math.floor(retentionMs / 1000));
   const list = targets.map(quoteTarget).join(" ");
   return [
-    '__dsh_t="$HOME/.dsh-trash"',
+    `__dsh_t="${TRASH_DIR}"`,
     'mkdir -p "$__dsh_t" || { printf \'__DSH_TRASH_V1__\\terror\\ttrash-dir\\n\'; exit 0; }',
     "__dsh_n=$(date +%s)",
     '__dsh_m="$__dsh_t/manifest.tsv"',
@@ -289,13 +291,10 @@ export function parseTrashManifest(text) {
   return entries;
 }
 
-function shellSingleQuote(text) {
-  return `'${String(text).replace(/'/g, "'\\''")}'`;
-}
 
 function manifestFilterCommand(entry) {
   // Exact-line removal keeps every other entry byte-for-byte intact.
-  return `grep -v -F -x -- ${shellSingleQuote(entry.raw)}`;
+  return `grep -v -F -x -- ${shellQuote(entry.raw)}`;
 }
 
 /**
@@ -307,12 +306,12 @@ export function buildRestoreCommand(entry) {
   if (!entry || typeof entry.name !== "string" || typeof entry.original !== "string") return null;
   const parent = entry.original.replace(/\/+[^/]*$/, "") || "/";
   return [
-    `__dsh_f="$HOME/.dsh-trash/"${shellSingleQuote(entry.name)}`,
+    `__dsh_f="${TRASH_DIR}/"${shellQuote(entry.name)}`,
     'if [ ! -e "$__dsh_f" ] && [ ! -L "$__dsh_f" ]; then echo "trash entry not found: $__dsh_f" >&2; exit 1; fi',
-    `if [ -e ${shellSingleQuote(entry.original)} ] || [ -L ${shellSingleQuote(entry.original)} ]; then printf '%s\\n' ${shellSingleQuote("restore target already exists: " + entry.original)} >&2; exit 1; fi`,
-    `mkdir -p ${shellSingleQuote(parent)} || exit 1`,
-    `if mv "$__dsh_f" ${shellSingleQuote(entry.original)}; then`,
-    `  __dsh_m="$HOME/.dsh-trash/"${shellSingleQuote(TRASH_MANIFEST)}`,
+    `if [ -e ${shellQuote(entry.original)} ] || [ -L ${shellQuote(entry.original)} ]; then printf '%s\\n' ${shellQuote("restore target already exists: " + entry.original)} >&2; exit 1; fi`,
+    `mkdir -p ${shellQuote(parent)} || exit 1`,
+    `if mv "$__dsh_f" ${shellQuote(entry.original)}; then`,
+    `  __dsh_m="${TRASH_DIR}/"${shellQuote(TRASH_MANIFEST)}`,
     // grep -v exits 1 when it selects nothing (last line removed), so the
     // rewrite must not hang off its exit status — an empty result is valid.
     '  if [ -f "$__dsh_m" ]; then ' + manifestFilterCommand(entry) + ' "$__dsh_m" > "$__dsh_m.r" 2>/dev/null; cat "$__dsh_m.r" > "$__dsh_m" 2>/dev/null; rm -f "$__dsh_m.r"; fi',
@@ -332,11 +331,11 @@ export function buildRestoreCommand(entry) {
 export function buildPurgeCommand(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return null;
   const lines = [
-    `__dsh_m="$HOME/.dsh-trash/"${shellSingleQuote(TRASH_MANIFEST)}`
+    `__dsh_m="${TRASH_DIR}/"${shellQuote(TRASH_MANIFEST)}`
   ];
   for (const entry of entries) {
     if (!entry || typeof entry.name !== "string" || entry.name.includes("/") || entry.name === "." || entry.name === "..") continue;
-    lines.push(`if rm -rf "$HOME/.dsh-trash/"${shellSingleQuote(entry.name)}; then echo purged; fi`);
+    lines.push(`if rm -rf "${TRASH_DIR}/"${shellQuote(entry.name)}; then echo purged; fi`);
     if (typeof entry.raw === "string" && entry.raw.length > 0) {
       // grep -v exits 1 when it selects nothing (last line removed); the
       // rewrite must still happen, so no && chaining here either.

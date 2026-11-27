@@ -18,6 +18,7 @@
  * same `SSH_CONNECTION` filter the resolver already uses, so a census can
  * never mistake another user's or another transport's shell for ours.
  */
+import { shellQuote } from "./safety.js";
 
 /** Prefix that makes census lines distinguishable from shell noise. */
 export const CENSUS_MARKER = "__DSH_HARBOR_TTY_CENSUS_V1__";
@@ -34,9 +35,6 @@ export function isPtyPath(value) {
   return typeof value === "string" && PTY_PATH.test(value);
 }
 
-function quote(text) {
-  return `'${text.replace(/'/g, "'\\''")}'`;
-}
 
 /**
  * One-line-per-shell census script.
@@ -52,7 +50,7 @@ function quote(text) {
 export function buildCensusScript({ procRoot = "/proc" } = {}) {
   return `
 [ -n "${'$'}SSH_CONNECTION" ] || exit 0
-for __dsh_p in ${quote(procRoot)}/[0-9]*; do
+for __dsh_p in ${shellQuote(procRoot)}/[0-9]*; do
   __dsh_n=${'$'}{__dsh_p##*/}
   case ${'$'}__dsh_n in ''|*[!0-9]*) continue ;; esac
   __dsh_t=$(readlink "${'$'}__dsh_p/fd/0" 2>/dev/null) || continue

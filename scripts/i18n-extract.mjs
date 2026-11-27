@@ -164,7 +164,7 @@ function push(map, key, where) {
 // (same class as the checker-path fix from PR #28, one level deeper).
 // Read the composed catalog, the same one core.js resolves at runtime: the
 // base dictionary plus every per-area file.
-const { en } = await import(pathToFileURL(join(root, "src/i18n/messages/index.js")).href);
+const { en } = await import(pathToFileURL(join(root, "src/i18n/messages.en.js")).href);
 
 const dictNormalized = new Map(Object.keys(en).map((key) => [normalizeKey(key), key]));
 const missing = [...callKeys.entries()].filter(([key]) => !dictNormalized.has(key)).map(([key, where]) => `${where.join(", ")}  ${key.slice(0, 70)}`);

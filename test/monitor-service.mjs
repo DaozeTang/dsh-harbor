@@ -51,10 +51,14 @@ function fakeClient(source, options = {}) {
       stream.close = () => {};
       callback(null, stream);
       const payload = typeof source === "function" ? source(index) : source;
-      setTimeout(() => {
+      // A silent probe is used to test the service-side timeout; the stream's
+      // own late close must not keep the test process alive for the full
+      // simulated delay (5s), so the timer is unref'd.
+      const timer = setTimeout(() => {
         if (options.silent !== true) stream.emit("data", Buffer.from(payload));
         stream.emit("close", options.exit ?? 0);
       }, options.delay ?? 0);
+      timer.unref?.();
       return stream;
     }
   };

@@ -7,24 +7,11 @@
 // 任一类别不达标时打印明细并以非零码退出。
 
 import { COLORS, LIGHT_COLORS } from "../src/client/terminal-display/rules.js";
-import { DEFAULT_BACKGROUNDS } from "../src/client/terminal-display/theme.js";
+import { DEFAULT_BACKGROUNDS, relativeLuminance } from "../src/client/terminal-display/theme.js";
+
+export { relativeLuminance };
 
 const RATIO_MIN = 4.5;
-
-function channelValue(c) {
-  c /= 255;
-  return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-}
-
-export function relativeLuminance(hex) {
-  const m = /^#([0-9a-f]{6})$/i.exec(hex);
-  if (!m) throw new Error(`not a #rrggbb color: ${hex}`);
-  const v = parseInt(m[1], 16);
-  const r = channelValue((v >> 16) & 0xff);
-  const g = channelValue((v >> 8) & 0xff);
-  const b = channelValue(v & 0xff);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
 
 export function contrast(hexFg, hexBg) {
   const l1 = relativeLuminance(hexFg);

@@ -44,8 +44,3 @@ export function currentHarborService() {
 export function publishHarborTerminalBackend(backend) {
   harborHub().backend = backend;
 }
-
-/** Whether the official persistent-terminal registry currently serves SSH. */
-export function harborTerminalBackendActive() {
-  return harborHub().backend !== null;
-}

@@ -3,7 +3,7 @@
  */
 import { fail } from "../envelope.js";
 import { setLanguage, t } from "../../i18n/core.js";
-import { normalizeAllowList, normalizeExactRules, normalizePolicy, ALL_CATEGORY_KEYS, CATEGORY_LABELS } from "../safety.js";
+import { normalizeAllowList, normalizeExactRules, normalizePolicy, ALL_CATEGORY_KEYS, CATEGORY_LABELS, EXEC_POLICY_MODES } from "../safety.js";
 import { SETTINGS_ROW_ID, loadSettingsRecord, normalizeDefaultUsername, normalizeFeatureSettings } from "./models.js";
 import { normalizeOwner, ownerKey } from "../terminal-owner.js";
 import { composeExecPolicy, dshPolicyRefusal, readDshPermission } from "../dsh-permission.js";
@@ -275,7 +275,7 @@ export const withSettings = (Base) => class extends Base {
   execPolicySet(request) {
     const policy = normalizePolicy(request.policy);
     if (request.policy !== policy.mode) {
-      return { ok: false, error: fail("exec-policy-unsupported", `the execution policy supports ${["standard", "custom", "allowAll"].join(", ")}, not "${request.policy}"`) };
+      return { ok: false, error: fail("exec-policy-unsupported", `the execution policy supports ${EXEC_POLICY_MODES.join(", ")}, not "${request.policy}"`) };
     }
     const conn = this.connections.get(request.connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };

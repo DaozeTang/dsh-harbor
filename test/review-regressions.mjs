@@ -11,9 +11,9 @@ import { createTerminalOutput } from '../src/host/terminal-output.js';
 import { EXEC_CWD_MARKER } from '../src/host/exec-cwd.js';
 import { readResultSchema, terminalStreamRequestSchema, changeDirectoryRequestSchema } from '../src/rpc/schemas.js';
 const svc = Object.create(HarborService.prototype);
-svc.config = {streamHeartbeatMs:10,maxBufferBytes:1024,maxCaptureBytes:1024};
+svc.config = {streamHeartbeatMs:10,maxBufferBytes:1024};
 svc.sessions=new Map();svc.connections=new Map();
-const session={id:'s',connectionId:'c',buffer:'',captureBuffer:'',waiters:[],streamListeners:new Set(),exited:null,inputKnown:true,inputLine:''};
+const session={id:'s',connectionId:'c',buffer:'',waiters:[],streamListeners:new Set(),exited:null,inputKnown:true,inputLine:''};
 const writes=[];session.stream={write(text){writes.push(text);}};
 const conn={sessions:new Set(['s']),client:{},loginShell:'bash'};
 svc.sessions.set('s',session);svc.connections.set('c',conn);
@@ -70,7 +70,7 @@ assert.equal(writes.join(''),"cd -- '/tmp/a'\\''b'\r");
 
 // The normal ssh_exec path turns a resolver refusal into a real tool error.
 const execService=Object.create(HarborService.prototype);
-execService.config={maxBufferBytes:1024,maxCaptureBytes:1024};
+execService.config={maxBufferBytes:1024};
 execService.connections=new Map([['c',{client:{},sessions:new Set(),loginShell:'bash'}]]);
 execService.sessions=new Map();
 execService.ensureAlive=async()=>true;

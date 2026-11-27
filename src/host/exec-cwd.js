@@ -1,12 +1,14 @@
 
-import { t } from "../i18n/core.js";/** Resolve a unique foreground POSIX shell on this SSH transport, never by PID age. */
+import { t } from "../i18n/core.js";
+import { shellQuote } from "./safety.js";
+
+/** Resolve a unique foreground POSIX shell on this SSH transport, never by PID age. */
 export const EXEC_CWD_MARKER = '__DSH_HARBOR_CWD_V2__';
 export const EXEC_CWD_ERROR_PREFIX = 'ssh_exec:';
 const POSIX_SHELLS = new Set(['bash', 'zsh', 'sh', 'dash', 'ash', 'ksh', 'mksh']);
 export function posixLoginShell(name) {
   return typeof name === 'string' && POSIX_SHELLS.has(name.toLowerCase());
 }
-function quote(text) { return `'${text.replace(/'/g, `'\\''`)}'`; }
 
 /**
  * procRoot is injectable for filesystem fixtures; production always uses /proc.
@@ -21,11 +23,11 @@ function quote(text) { return `'${text.replace(/'/g, `'\\''`)}'`; }
  */
 export function buildCwdResolverPrefix({ procRoot = '/proc', tty = null } = {}) {
   return `
-__dsh_tty_filter=${quote(typeof tty === 'string' && tty.startsWith('/') ? tty : '')}
+__dsh_tty_filter=${shellQuote(typeof tty === 'string' && tty.startsWith('/') ? tty : '')}
 __dsh_find_shell() {
   __dsh_count=0; __dsh_seen=0; __dsh_busy=0; __dsh_nonint=0; __dsh_pid=''; __dsh_detail=''
   [ -n "$SSH_CONNECTION" ] || return 1
-  for __dsh_p in ${quote(procRoot)}/[0-9]*; do
+  for __dsh_p in ${shellQuote(procRoot)}/[0-9]*; do
     __dsh_n=\${__dsh_p##*/}
     case $__dsh_n in ''|*[!0-9]*) continue ;; esac
     __dsh_t=$(readlink "$__dsh_p/fd/0" 2>/dev/null) || continue
@@ -80,7 +82,7 @@ __dsh_out=$(__dsh_find_shell); __dsh_status=$?
 __dsh_pid=''; __dsh_encoded=''
 if [ "$__dsh_status" -eq 0 ]; then
   __dsh_pid=$__dsh_out
-  if ! cd -- ${quote(procRoot)}/"$__dsh_pid"/cwd 2>/dev/null || ! pwd -P >/dev/null 2>&1; then
+  if ! cd -- ${shellQuote(procRoot)}/"$__dsh_pid"/cwd 2>/dev/null || ! pwd -P >/dev/null 2>&1; then
     printf '${EXEC_CWD_MARKER}\\n'
     printf '%s\\n' '${EXEC_CWD_ERROR_PREFIX} interactive directory is unavailable; command was not executed' >&2
     exit 125

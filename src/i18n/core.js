@@ -21,7 +21,7 @@
  * This module must stay free of React and of browser globals: the host bundle
  * imports it too.
  */
-import { en } from "./messages/index.js";
+import { en } from "./messages.en.js";
 
 /** Languages the plugin ships dictionaries for. */
 export const LANGUAGES = ["zh", "en"];
@@ -205,11 +205,6 @@ export function t(text) {
   return translate(text);
 }
 
-/** Whether `text` has an English wording (used by the catalog coverage test). */
-export function hasTranslation(text) {
-  if (typeof text !== "string") return false;
-  return en[text] !== undefined || (compileCatalog().size > 0 && translate(text) !== text);
-}
 
 /** The raw dictionary, for tests and tooling. */
 export const EN_MESSAGES = en;

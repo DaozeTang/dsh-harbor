@@ -14,7 +14,7 @@
  * cordis.patch.yml and reaches the root service through `service-hub.js`.
  */
 import { harborHub, currentHarborService } from "../shared/service-hub.js";
-import { promptFromTerminalData } from "./service/text.js";
+import { promptFromTerminalData, tailUtf8 } from "./service/text.js";
 
 /** Registry type models pass to terminal_open. */
 export const HARBOR_SSH_BACKEND_TYPE = "harbor-ssh";
@@ -40,15 +40,6 @@ const MAX_MOTD_BYTES = 8 * 1024;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Keep the newest UTF-8 bytes of a string without splitting a code point. */
-function tailBytes(text, maxBytes) {
-  const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= maxBytes) return { text, truncated: false };
-  let start = bytes.length - maxBytes;
-  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start += 1;
-  return { text: bytes.subarray(start).toString("utf8"), truncated: true };
-}
-
 /** Line page, newest line last, addressed by distance from the newest line. */
 function pageLines(lines, request) {
   const total = lines.length;
@@ -59,7 +50,7 @@ function pageLines(lines, request) {
   const from = total - offset - count;
   const to = total - offset;
   let text = count > 0 ? lines.slice(Math.max(0, from), Math.max(0, to)).join("\n") : "";
-  const bounded = tailBytes(text, MAX_READ_BYTES);
+  const bounded = tailUtf8(text, MAX_READ_BYTES);
   text = bounded.text;
   return {
     text,
@@ -222,7 +213,7 @@ export class SshTerminalSession {
     }
     const delta = rendered.text.slice(this.renderedCursor);
     this.renderedCursor = rendered.text.length;
-    const bounded = tailBytes(delta, MAX_READ_BYTES);
+    const bounded = tailUtf8(delta, MAX_READ_BYTES);
     return {
       delta: bounded.text,
       truncated: this.renderTruncated || rendered.truncated || bounded.truncated
@@ -293,7 +284,7 @@ export class HarborSshBackend {
     const prepared = await service.openAgentTerminal({ owner: spec.owner, signal: spec.signal });
     const session = prepared.session;
     const rendered = service.renderTerminalSession(session).text;
-    const motd = tailBytes(rendered, MAX_MOTD_BYTES).text;
+    const motd = tailUtf8(rendered, MAX_MOTD_BYTES).text;
     const binding = new SshTerminalSession({
       service,
       session,

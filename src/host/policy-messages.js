@@ -15,8 +15,3 @@ export function policyBlockedReason(category) {
 export const UNVERIFIED_LINE_REASON =
   "安全策略已阻止：无法验证历史命令或自动补全后的内容。请手动输入只读诊断命令。"; // i18n-identifier
 
-/** Prefix of the notice appended to the terminal buffer on a policy block. */
-export const POLICY_NOTICE_PREFIX = "[DSH SSH 安全策略]"; // i18n-identifier
-
-/** Default reason carried by a blocked dangerous command. */
-export const DANGEROUS_DEFAULT_REASON = "危险操作"; // i18n-identifier

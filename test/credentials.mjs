@@ -6,7 +6,7 @@ import HarborService from "../src/index.js";
 
 function makeService() {
   const service = Object.create(HarborService.prototype);
-  service.config = { maxBufferBytes: 65536, maxCaptureBytes: 65536 };
+  service.config = { maxBufferBytes: 65536 };
   service.connections = new Map();
   /** credential store keyed by the (branded) credential ref value */
   const store = new Map();

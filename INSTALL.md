@@ -12,7 +12,7 @@ dsh plugin --profile web add "$PWD"
 dsh web              # 或重启 DSH.app
 ```
 
-`npm install` 会生成入口产物 `lib/`：`index.js`（宿主半）、`client.js`（浏览器半）、`typert.js` 与 `remote.js`（RPC 契约）。以链接方式安装时，改完代码 `npm run build` 后刷新页面即可；宿主半的改动需重启 profile。
+`npm install` 会生成入口产物 `lib/`：`index.js`（宿主半）、`client.js`（浏览器半）、`typert.js` 与 `remote.js`（RPC 契约）、`terminal-backend.js`（官方持久终端分组内的 SSH 后端）。以链接方式安装时，改完代码 `npm run build` 后刷新页面即可；宿主半的改动需重启 profile。
 
 ## 从压缩包安装
 

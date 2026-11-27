@@ -30,7 +30,7 @@ function channelValue(c) {
   return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
 }
 
-function relativeLuminance(hex) {
+export function relativeLuminance(hex) {
   const v = parseInt(hex.slice(1), 16);
   const r = channelValue((v >> 16) & 0xff);
   const g = channelValue((v >> 8) & 0xff);

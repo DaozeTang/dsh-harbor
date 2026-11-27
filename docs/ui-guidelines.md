@@ -42,20 +42,16 @@ Harbor lives inside DeepSeek Harness. It shares the document, the theme, the fon
 
 `Icon name={...}` reads from `src/client/ui/icons.js`, whose geometry comes from the host's own icon sprite. Names follow the sprite's vocabulary:
 
-`terminal server key tunnel file layers-outline save-outline search-outline
-eye-outline eye-off-outline globe-outline settings-outline ellipsis-outline
-plus-outline check-outline branch-outline chevron-down-outline
-chevron-left-outline chevron-right-outline chevron-up-outline
-triangle-right-fill close-outline copy-outline refresh-outline edit-outline
-trash-outline warning-outline warning-triangle-outline check-circle-fill
-check-circle-outline user-outline users-outline stop-fill loading-outline
-download-outline upload-outline play-outline pause-outline fullscreen-outline
-code-outline link-outline folder-open-outline folder-close data-outline
-clock-outline gauge-outline shield-outline info-outline
-question-outline queue-outline checklist-outline sliders-two-outline
-archive-outline pin-outline drag-handle-outline wrap-lines-outline
-workspace-tree-outline panel-left-outline browse-outline list-pen-outline
-sparkle apps-add-outline compare-split-outline`
+`terminal server key tunnel file save-outline search-outline
+eye-outline globe-outline settings-outline ellipsis-outline plus-outline
+check-outline branch-outline chevron-down-outline chevron-left-outline
+chevron-right-outline chevron-up-outline close-outline copy-outline
+refresh-outline edit-outline trash-outline warning-outline
+warning-triangle-outline check-circle-fill stop-fill loading-outline
+download-outline upload-outline play-outline pause-outline
+folder-open-outline folder-close gauge-outline shield-outline info-outline
+queue-outline checklist-outline sliders-two-outline archive-outline pin-outline
+list-pen-outline sparkle apps-add-outline compare-split-outline`
 
 Adding a glyph means taking it from the host sprite (see `docs/icon-pipeline.md`), not drawing a near-miss of your own.
 

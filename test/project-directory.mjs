@@ -20,7 +20,7 @@ function fakeTable(entries = []) {
 
 function makeService(table) {
   const service = Object.create(HarborService.prototype);
-  service.config = { maxBufferBytes: 65536, maxCaptureBytes: 65536 };
+  service.config = { maxBufferBytes: 65536 };
   service.connections = new Map();
   service.ctx = { credentials: { async describe() { return { configured: false }; } } };
   service.requireProfileTable = () => table;

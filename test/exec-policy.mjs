@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { assessShellCommand, normalizePolicy, ALL_CATEGORY_KEYS } from "../src/host/safety.js";
 import HarborService, { loadSettingsRecord } from "../src/index.js";
-import { registerSshSessionTools } from "../src/host/tools/ssh-session.js";
+import { assessTerminalSend, registerSshSessionTools } from "../src/host/tools/ssh-session.js";
 import { registerBatchTools } from "../src/host/tools/batch.js";
 
 // ── A. safety layer ─────────────────────────────────────────────────────────
@@ -312,42 +312,32 @@ const conn = { profileId: "profile-1" };
   service.execPolicyAllow = savedAllow;
 }
 
-// The same checklist must reach the agent line gate (writeToConnection), or a
-// released category would work through ssh_exec but stay blocked through
-// ssh_write.
+// The same checklist must reach the agent line gate (assessTerminalSend, the
+// decision behind terminal_send), or a released category would work through
+// ssh_exec but stay blocked when typed into the terminal.
 {
-  const written = [];
-  const session = { id: "sess-2", exited: null, stream: { write: (data) => written.push(data) }, waiters: [], inputRevision: 0, inputKnown: true, inputLine: "" };
-  service.sessions ??= new Map();
-  service.sessions.set("sess-2", session);
-  service.connections.set("conn-e", { profileId: null, sessions: new Set(["sess-2"]), tunnels: new Map() });
+  const binding = { session: { inputLine: "", inputKnown: true } };
+  service.connections.set("conn-e", { profileId: null, sessions: new Set(), tunnels: new Map() });
   service.execPolicy = "custom";
   service.execPolicyAllow = ["reboot-shutdown"];
-  const releasedLine = service.writeToConnection("conn-e", "reboot\r");
+  const releasedLine = assessTerminalSend(binding, "reboot\r", service.resolveExecPolicy("conn-e"));
   assert.equal(releasedLine.ok, true, "the released category passes the line gate");
-  assert.ok(written.join("").includes("reboot"), "the line was forwarded");
-  const heldLine = service.writeToConnection("conn-e", "rm -rf /tmp/x\r");
+  const heldLine = assessTerminalSend(binding, "rm -rf /tmp/x\r", service.resolveExecPolicy("conn-e"));
   assert.equal(heldLine.ok, false, "an unreleased category stays held on the line gate");
-  assert.equal(heldLine.error.code, "unsafe-command");
+  assert.equal(service.resolveExecPolicy("conn-e").mode, "custom");
   service.connections.delete("conn-e");
-  service.sessions.delete("sess-2");
 }
 
-// writeToConnection forwards guarded lines under allowAll; the tier comes
-// from the connection resolution inside writeToConnection, not the caller.
+// The line gate takes its tier from the connection resolution, not the caller:
+// allowAll passes agent-typed lines and standard keeps guarding them.
 {
-  const written = [];
-  const session = { id: "sess-1", exited: null, stream: { write: (data) => written.push(data) }, waiters: [], inputRevision: 0, inputKnown: true, inputLine: "" };
-  service.sessions = new Map([["sess-1", session]]);
-  service.connections.get("conn-b").sessions = new Set(["sess-1"]);
   withTier(service.connections.get("conn-b"), "allowAll");
-  const passed = service.writeToConnection("conn-b", "rm -rf /tmp/x\r");
+  const binding = { session: { inputLine: "", inputKnown: true } };
+  const passed = assessTerminalSend(binding, "rm -rf /tmp/x\r", service.resolveExecPolicy("conn-b"));
   assert.equal(passed.ok, true, "allowAll lets agent-written lines through");
-  assert.ok(written.join("").includes("rm -rf /tmp/x"), "the line was forwarded");
   withTier(service.connections.get("conn-b"), "standard");
-  const guarded = service.writeToConnection("conn-b", "rm -rf /tmp/x\r");
+  const guarded = assessTerminalSend(binding, "rm -rf /tmp/x\r", service.resolveExecPolicy("conn-b"));
   assert.equal(guarded.ok, false, "standard keeps guarding agent-written lines");
-  assert.equal(guarded.error.code, "unsafe-command");
 }
 
 // No agent tool may write the policy: the registered tool surface must not

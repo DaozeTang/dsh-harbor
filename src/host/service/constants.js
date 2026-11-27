@@ -1,34 +1,33 @@
 /**
  * Tunables and environment parsing for the Harbor host half.
  */
-const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
-const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
-const MAX_CAPTURE_BYTES = 128 * 1024;
-const READ_TIMEOUT_MS = 300;
-const MAX_SESSIONS = 64;
+export const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+export const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
+export const READ_TIMEOUT_MS = 300;
+export const MAX_SESSIONS = 64;
 // One interactive terminal per conversation per connection is the ownership
 // rule; the per-connection cap bounds the PTY channels one sshd transport must
 // carry (sshd's own MaxSessions defaults to 10, shared with SFTP and exec).
-const MAX_SESSIONS_PER_CONNECTION = 8;
+export const MAX_SESSIONS_PER_CONNECTION = 8;
 // Learning which remote tty a PTY runs on costs one exec round trip, run off
 // the open path. Bounded so an unreachable exec channel cannot keep probing.
-const TTY_PROBE_MS = 4000;
-const TTY_PROBE_RETRY_DELAYS_MS = [0, 150, 500, 1200];
-const OPERATOR_APPROVAL_TTL_MS = 5 * 60 * 1000;
+export const TTY_PROBE_MS = 4000;
+export const TTY_PROBE_RETRY_DELAYS_MS = [0, 150, 500, 1200];
+export const OPERATOR_APPROVAL_TTL_MS = 5 * 60 * 1000;
 // A prompt the operator never answers must not suspend the tool call forever.
 // The approval itself has no host-side deadline in DSH, so Harbor owns one:
 // when it fires the request settles as cancelled, the DSH client card is
 // withdrawn, and the model receives a definite denial instead of a hung turn.
-const OPERATOR_APPROVAL_TIMEOUT_MS = 2 * 60 * 1000;
-const SFTP_DIR_FILE_IDLE_TIMEOUT_MS = 60 * 1000;
+export const OPERATOR_APPROVAL_TIMEOUT_MS = 2 * 60 * 1000;
+export const SFTP_DIR_FILE_IDLE_TIMEOUT_MS = 60 * 1000;
 // ssh2 disables keepalives by default; without them NATs and cloud firewalls
 // silently drop idle connections and every later operation fails on a dead
 // transport. Keep the mapping alive and detect a truly dead link fast.
-const KEEPALIVE_INTERVAL_MS = 20000;
-const KEEPALIVE_COUNT_MAX = 3;
+export const KEEPALIVE_INTERVAL_MS = 20000;
+export const KEEPALIVE_COUNT_MAX = 3;
 // Transient connect failures (resets, timeouts, scanner-induced refusals) are
 // retried with backoff; authentication failures are never retried.
-const CONNECT_RETRIES = 3;
+export const CONNECT_RETRIES = 3;
 
 /**
  * Key-exchange algorithms for Huawei legacy VRP (S12712 and similar switches,
@@ -58,62 +57,35 @@ export function isKexMismatchError(error) {
   return /no matching key exchange|no matching kex|key exchange algorithm/i.test(message);
 }
 
-const RECONNECT_BASE_DELAY_MS = 1000;
-const RECONNECT_MAX_DELAY_MS = 30000;
-const RECONNECT_WAIT_MS = 30000;
+export const RECONNECT_BASE_DELAY_MS = 1000;
+export const RECONNECT_MAX_DELAY_MS = 30000;
+export const RECONNECT_WAIT_MS = 30000;
 // Stream push keepalive: when the terminal is idle the generator still yields
 // an empty item at this cadence, so the client can tell a live-but-quiet
 // terminal from a dead WebSocket mux.
-const STREAM_HEARTBEAT_MS = 15000;
+export const STREAM_HEARTBEAT_MS = 15000;
 // Streaming file plane (workbench S6 patch): plain-HTTP byte routes registered
 // on the DSH webserver with `auth: "required"`. The WebServer admits a request
 // through the connection service's Host/Origin + browser-cookie fence
 // (webserver/authorize) BEFORE the handler runs, so the handler itself carries
 // no admission code. Raw bytes on the wire — no base64 envelope, and no
 // whole-file buffering on either side of the ssh2 SFTP streams.
-const STREAM_ROUTE_PREFIX = "/harbor/stream";
-const STREAM_HIGH_WATER_MARK = 256 * 1024;
+export const STREAM_ROUTE_PREFIX = "/harbor/stream";
+export const STREAM_HIGH_WATER_MARK = 256 * 1024;
 // Zombie-upload bound: a paused request cannot observe the client's FIN while
 // unread body bytes precede it (Node reports request close only after the body
 // drains), so an idle-socket timeout backstops the cancelled-upload cleanup.
-const STREAM_IDLE_TIMEOUT_MS = 30000;
+export const STREAM_IDLE_TIMEOUT_MS = 30000;
 // batchRun opens a full SSH connect + exec per target; an unbounded Promise.all
 // would storm every selected server (and any rate-limited network path between)
 // at once. Worker-pool the targets instead.
-const BATCH_MAX_CONCURRENCY = 4;
+export const BATCH_MAX_CONCURRENCY = 4;
 // Upper bound for one SFTP/SCP read (agent tools may lower it via max_bytes).
-const MAX_FILE_READ_BYTES = 4 * 1024 * 1024;
+export const MAX_FILE_READ_BYTES = 4 * 1024 * 1024;
 // Late readers can still see the exit status of the N most recently exited
 // sessions (session tombstones).
-const MAX_EXIT_TOMBSTONES = 64;
+export const MAX_EXIT_TOMBSTONES = 64;
 // Exited terminals kept in memory for late reads; beyond this they become
 // tombstones so a long-lived profile cannot exhaust MAX_SESSIONS.
-const MAX_EXITED_RETAINED = 8;
+export const MAX_EXITED_RETAINED = 8;
 
-export {
-  MAX_BUFFER_BYTES,
-  MAX_COMMAND_OUTPUT_BYTES,
-  MAX_CAPTURE_BYTES,
-  READ_TIMEOUT_MS,
-  MAX_SESSIONS,
-  MAX_SESSIONS_PER_CONNECTION,
-  TTY_PROBE_MS,
-  TTY_PROBE_RETRY_DELAYS_MS,
-  OPERATOR_APPROVAL_TTL_MS,
-  OPERATOR_APPROVAL_TIMEOUT_MS,
-  SFTP_DIR_FILE_IDLE_TIMEOUT_MS,
-  KEEPALIVE_INTERVAL_MS,
-  KEEPALIVE_COUNT_MAX,
-  CONNECT_RETRIES,
-  RECONNECT_BASE_DELAY_MS,
-  RECONNECT_MAX_DELAY_MS,
-  RECONNECT_WAIT_MS,
-  STREAM_HEARTBEAT_MS,
-  STREAM_ROUTE_PREFIX,
-  STREAM_HIGH_WATER_MARK,
-  STREAM_IDLE_TIMEOUT_MS,
-  BATCH_MAX_CONCURRENCY,
-  MAX_FILE_READ_BYTES,
-  MAX_EXIT_TOMBSTONES,
-  MAX_EXITED_RETAINED,
-};

@@ -9,9 +9,7 @@ import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from ".
 import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, execEchoWarning, extractExecCwd, posixLoginShell } from "../exec-cwd.js";
 import { processTerminalInput } from "../terminal-input.js";
 import { anonymousSessions, pickOwnerSession } from "../terminal-owner.js";
-import { redactForModel } from "../redact.js";
 import { fail } from "../envelope.js";
-import { POLICY_NOTICE_PREFIX } from "../policy-messages.js";
 import { t } from "../../i18n/core.js";
 import { appendCapped, tailCapped, normalizeTerminalEol } from "./text.js";
 import { OPERATOR_APPROVAL_TTL_MS } from "./constants.js";
@@ -393,7 +391,7 @@ export const withExec = (Base) => class extends Base {
       const prompt = ownerSession.lastPrompt ?? this.fallbackPrompt(conn);
       // exec() is a separate non-interactive SSH channel. It never makes
       // the PTY shell emit a prompt, so restore the last real prompt here.
-      this.appendSessionOutput(ownerSession, `${display}\r\n${prompt}`, { capture: false, observePrompt: false });
+      this.appendSessionOutput(ownerSession, `${display}\r\n${prompt}`, { observePrompt: false });
     }
     const value = {
       exitCode: state.exitCode,
@@ -454,58 +452,13 @@ export const withExec = (Base) => class extends Base {
   }
 
   /**
-   * Send raw input into ONE terminal: the caller's own.
-   *
-   * This used to fan out to every shell of the connection (`for (const
-   * sessionId of conn.sessions)`), which is how two chats' agents typed into
-   * each other's terminal. Input lands in exactly one shell now, and a caller
-   * with no terminal gets an honest error instead of a silent 0-byte success.
-   */
-  writeToConnection(connectionId, input, ownerSessionId) {
-    const conn = this.connections.get(connectionId);
-    if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
-    const target = this.ownerTerminalFor(connectionId, ownerSessionId);
-    if (target === undefined) {
-      return { ok: false, error: fail("no-terminal", t("这个会话在这台服务器上还没有交互终端。请先在右侧面板为本会话打开终端，再重试。")) };
-    }
-    // The tier resolves per connection and conversation: the operator's switch
-    // and the conversation that set it both travel with the caller.
-    const policy = this.resolveExecPolicy(connectionId, ownerSessionId);
-    try {
-      const guarded = this.prepareTerminalInput(target, input, policy);
-      if (guarded.forwarded) target.stream.write(guarded.forwarded);
-      if (guarded.blockedReason) return { ok: false, error: fail("unsafe-command", guarded.blockedReason) };
-      return { ok: true, value: { written: guarded.forwarded.length } };
-    } catch (error) {
-      return { ok: false, error: fail("write-failed", error.message) };
-    }
-  }
-
-  /** Add a local policy notice to the same buffer rendered by the terminal. */
-  appendTerminalNotice(session, message) {
-    this.appendSessionOutput(session, `\r\n\x1b[33m${t(POLICY_NOTICE_PREFIX)} ${message}\x1b[0m\r\n`);
-  }
-
-  /**
-   * Preserve normal terminal editing, but submit a line only after host-side
-   * policy approval. A denied line is cleared with Ctrl-U before the shell can
-   * execute it. History navigation and tab completion fail closed as well.
-   */
-  prepareTerminalInput(session, text, policy = null) {
-    session.inputRevision = (session.inputRevision ?? 0) + 1;
-    const { forwarded, blockedReason } = processTerminalInput(session, text, (line) => assessShellCommand(line, policy ?? undefined));
-    if (blockedReason !== null) this.appendTerminalNotice(session, blockedReason);
-    return { forwarded, blockedReason };
-  }
-
-  /**
    * Keep the local input-line mirror in sync with raw operator input written
-   * directly to the PTY (the interactive browser terminal path). The agent's
-   * prepareTerminalInput() gate relies on this mirror; without syncing it
-   * here, a human-typed destructive line would be invisible to the gate and a
-   * later agent-driven Enter could submit it. Mirrors the per-char tracking of
-   * prepareTerminalInput but never blocks or rewrites — the operator is trusted
-   * on this path, only the mirror is kept honest.
+   * directly to the PTY (the interactive browser terminal path). The agent-side
+   * gate in tools/ssh-session.js reads this mirror when it evaluates a
+   * terminal_send Enter; without syncing it here, a human-typed destructive
+   * line would be invisible to the gate and a later agent-driven Enter could
+   * submit it. Never blocks or rewrites — the operator is trusted on this path,
+   * only the mirror is kept honest.
    */
   updateInputMirror(session, text) {
     session.inputRevision = (session.inputRevision ?? 0) + 1;
@@ -515,60 +468,6 @@ export const withExec = (Base) => class extends Base {
     processTerminalInput(session, text, null);
   }
 
-  /**
-   * Buffered text of the CALLER'S terminal.
-   *
-   * Reading "the first live shell" handed one conversation another's output —
-   * including whatever the other operator had typed or pasted. The reading
-   * cursors (`lastReadRaw`/`lastReadRedacted`) live on the session, so two
-   * conversations also no longer share a "new output" position.
-   */
-  readConnectionOutput(connectionId, mode, ownerSessionId) {
-    const conn = this.connections.get(connectionId);
-    if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${connectionId}" does not exist`) };
-    // Resolving may adopt the connection's single anonymous terminal, which is
-    // the "open a terminal, then ask the agent to look at it" path.
-    const first = this.ownerTerminalFor(connectionId, ownerSessionId);
-    if (first === void 0) {
-      return { ok: true, value: { data: "", hasSession: false, truncated: false, redacted: false } };
-    }
-    // Default "new": hand back only what arrived since the previous read —
-    // re-sending the whole tail would make the model re-pay for output it
-    // already holds. "tail" keeps the legacy full-capture behavior.
-    let data = first.captureBuffer;
-    let truncated = first.captureHasDropped === true;
-    if (mode !== "tail") {
-      const previous = first.lastReadRedacted;
-      const baseline = first.lastReadRaw;
-      const pending = first.capturePendingBuffer ?? "";
-      const canContinue = typeof baseline === "string" && !first.capturePendingTruncated;
-      // Rebuild the unread view from the previous raw snapshot and bounded new
-      // output. This remains incremental after captureBuffer has rolled over.
-      // Redact before slicing so credentials spanning reads cannot leak.
-      const raw = canContinue ? baseline + pending : first.captureBuffer;
-      const complete = redactForModel(raw).text;
-      data = canContinue && typeof previous === "string" && complete.startsWith(previous)
-        ? complete.slice(previous.length)
- : complete;
-      truncated = !canContinue && (first.capturePendingTruncated || first.captureHasDropped === true);
-      // Keep the baseline bounded even if the prior snapshot and pending
-      // output together exceed the rolling capture limit.
-      first.lastReadRaw = tailCapped(raw, this.config.maxCaptureBytes);
-      first.lastReadRedacted = redactForModel(first.lastReadRaw).text;
-      first.capturePendingBuffer = "";
-      first.capturePendingTruncated = false;
-    }
-    const redaction = redactForModel(data);
-    return {
-      ok: true,
-      value: {
-        data: redaction.text,
-        hasSession: true,
-        truncated,
-        redacted: redaction.redacted
-      }
-    };
-  }
 
   /**
    * Record a grant from the operator approval channel for one execution. The

@@ -2,10 +2,11 @@
  * Local terminal line mirror, shared by two paths that were previously two
  * copies of the same per-character state machine:
  *
- * - prepareTerminalInput (agent path): an Enter is forwarded to the PTY only
- *   when the mirrored line passes the shell-command policy; a denied line is
- *   killed with Ctrl-U (\x15) before it can execute. History navigation and
- *   completion poison the mirror and fail closed.
+ * - the agent gate (assessTerminalSend in host/tools/ssh-session.js): an Enter
+ *   is forwarded to the PTY only when the mirrored line passes the
+ *   shell-command policy; a denied line is killed with Ctrl-U (\x15) before it
+ *   can execute. History navigation and completion poison the mirror and fail
+ *   closed.
  * - updateInputMirror (operator path): trusted keystrokes are forwarded
  *   verbatim; the mirror is only kept honest so a later agent-driven Enter
  *   cannot submit a human-typed destructive line invisibly.

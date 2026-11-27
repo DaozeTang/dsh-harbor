@@ -1,10 +1,12 @@
 /**
  * xterm's own stylesheet, installed once next to the kit sheet.
  *
- * The generated module ships xterm's CSS as a string so the plugin bundle
- * carries it (the Web shell only serves the plugin's single JS resource).
+ * The client build inlines `@xterm/xterm/css/xterm.css` as text (esbuild's
+ * `.css` loader), so the plugin bundle carries xterm's stylesheet without a
+ * separate build step or a checked-in generated module. The copyright header
+ * is preserved inside the inlined CSS.
  */
-import { XTERM_CSS } from "./xterm-css.js";
+import XTERM_CSS from "@xterm/xterm/css/xterm.css";
 
 const ID = "dsh-harbor-xterm";
 

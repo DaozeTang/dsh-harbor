@@ -360,29 +360,12 @@ export const withAgentActions = (Base) => class extends Base {
     };
   }
 
-  /** Read terminal output from the caller's terminal on the explicit or current connection. */
-  readCurrentConnection(request) {
-    const selected = this.resolveConnection(request.connectionId, request.sessionId);
-    if (!selected.ok) return selected;
-    const result = this.readConnectionOutput(selected.connectionId, request.mode, request.sessionId);
-    if (!result.ok) return result;
-    return {
-      ok: true,
-      value: {
-        connectionId: selected.connectionId,
-        host: selected.connection.host,
- ...result.value
-      }
-    };
-  }
-
   /**
    * Make sure the caller has a live terminal: its own, the connection's single
    * adoptable anonymous one, or a newly opened shell.
    *
    * Used by ssh_exec before the exec channel opens, so its command and output
-   * have a terminal to mirror into. It is also the lazy-open path agent writes
-   * used before the official terminal tools replaced them.
+   * have a terminal to mirror into.
    *
    * @returns {{ok: true, connectionId: string, value: {sessionId: string, reused: boolean}}|{ok: false, error: object}}
    */
@@ -402,13 +385,6 @@ export const withAgentActions = (Base) => class extends Base {
     });
     if (!opened.ok) return opened;
     return { ok: true, connectionId: selected.connectionId, value: { sessionId: opened.value.sessionId, reused: opened.value.reused === true } };
-  }
-
-  /** Send tool input to the caller's terminal on the explicit or current connection. */
-  writeCurrentConnection(request) {
-    const selected = this.resolveConnection(request.connectionId, request.sessionId);
-    if (!selected.ok) return selected;
-    return this.writeToConnection(selected.connectionId, request.input, request.sessionId);
   }
 
   /** Disconnect the explicit or current SSH connection. */
