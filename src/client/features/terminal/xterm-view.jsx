@@ -246,7 +246,13 @@ export function XtermView({ api, sessionId, connectionId }) {
       let errorBackoff = 0;
       while (alive) {
         try {
-          const { data, exit, startOffset, offset } = await api.read(sessionId, 300, entry.offset);
+          // Always send a cursor. Polling with `undefined` asked the host for
+          // its legacy drain, which returns output WITHOUT offsets: the entry's
+          // position stayed unknown, and the next mount that could stream again
+          // replayed the whole journal on top of the scrollback already on
+          // screen. Asking from 0 the first time returns real offsets (and the
+          // history a fresh mount wants anyway).
+          const { data, exit, startOffset, offset } = await api.read(sessionId, 300, entry.offset ?? 0);
           if (!alive) return;
           errorBackoff = 0;
           if (showItem({ data, exit, startOffset, offset })) return;

@@ -88,6 +88,107 @@ const execFor = (overrides = {}) => ({
   assert.match(unavailable.reason, /没有可用的审批通道/);
 }
 
+// A prompt nobody answers must not suspend the tool call until the outer
+// run_code/turn deadline. Harbor owns a deadline, the request signal is
+// aborted, and a grant that lands afterwards is discarded.
+{
+  const { service, sshGate } = makeHarness({ approval: { request: () => new Promise(() => {}) } });
+  service.config = { approvalPromptTimeoutMs: 25 };
+  const started = Date.now();
+  const result = await sshGate(execFor({ arguments: { command: "reboot" } }), next);
+  assert.equal(result.kind, "deny");
+  assert.match(result.reason, /审批等待超过/);
+  assert.ok(Date.now() - started < 1000, "the gate returns at its own deadline");
+  assert.equal(service.operatorApprovals?.size ?? 0, 0, "a timed-out ask records no voucher");
+}
+{
+  let answer;
+  const { service, sshGate } = makeHarness({ approval: { request: () => new Promise((resolve) => { answer = resolve; }) } });
+  service.config = { approvalPromptTimeoutMs: 25 };
+  const pending = sshGate(execFor({ arguments: { command: "reboot" } }), next);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  answer("allowed-once");
+  const result = await pending;
+  assert.equal(result.kind, "deny", "a late allow does not run the command");
+  assert.match(result.reason, /审批等待超过/);
+  assert.equal(service.operatorApprovals?.size ?? 0, 0);
+}
+{
+  let seen;
+  const { service, sshGate } = makeHarness({ approval: { request: (request) => { seen = request.signal; return new Promise(() => {}); } } });
+  service.config = { approvalPromptTimeoutMs: 25 };
+  await sshGate(execFor({ arguments: { command: "reboot" } }), next);
+  assert.ok(seen?.aborted, "the approval request carries an aborted signal after the deadline");
+}
+{
+  let asked = 0;
+  const { service, sshGate } = makeHarness({ approval: { request: async () => { asked += 1; return "rejected"; } } });
+  service.resolveExecPolicy = () => ({ mode: "allowAll", source: "global", allow: [], approval: "never", dsh: { ceiling: "allowAll", source: "dsh-full-access" } });
+  const result = await sshGate(execFor({ arguments: { command: "reboot" } }), next);
+  assert.equal(result, NEXT, "full access stands down");
+  assert.equal(asked, 0, "full access does not prompt");
+}
+{
+  let asked = 0;
+  const { service, sshGate } = makeHarness({ approval: { request: async () => { asked += 1; return "allowed-once"; } } });
+  service.resolveExecPolicy = () => ({ mode: "standard", source: "session", allow: [], approval: "never", dsh: { ceiling: "readOnly", source: "dsh-read-only" } });
+  const result = await sshGate(execFor({ arguments: { command: "reboot" } }), next);
+  assert.equal(result.kind, "deny", "read-only refuses instead of prompting");
+  assert.match(result.reason, /只读模式/);
+  assert.equal(asked, 0);
+}
+
+// terminal_send can split a command across calls. The gate must assess the
+// completed input line on the call that submits it, not only that call's text.
+{
+  let asked = null;
+  const { service, sshGate } = makeHarness({ approval: { request: async (request) => { asked = request; return "rejected"; } } });
+  service.bindingForTerminal = (id) => id === "pty-1"
+    ? { connectionId: "conn1", session: { inputLine: "r", inputKnown: true } }
+    : undefined;
+  const result = await sshGate(execFor({
+    name: "terminal_send",
+    callId: "call-split",
+    arguments: { sessionId: "pty-1", text: "m -rf /tmp/x", submit: true }
+  }), next);
+  assert.equal(result.kind, "deny");
+  assert.ok(asked !== null, "the completed line is assessed");
+  assert.match(asked.reason, /rm -rf \/tmp\/x/);
+}
+{
+  let asked = 0;
+  const { service, sshGate } = makeHarness({ approval: { request: async () => { asked += 1; return "allowed-once"; } } });
+  service.bindingForTerminal = (id) => id === "pty-1"
+    ? { connectionId: "conn1", session: { inputLine: "rm -rf /tmp/x", inputKnown: true } }
+    : undefined;
+  const result = await sshGate(execFor({
+    name: "terminal_send",
+    callId: "call-submit",
+    arguments: { sessionId: "pty-1", text: "", submit: true }
+  }), next);
+  assert.equal(asked, 1, "an empty submit re-checks the accumulated line");
+  assert.equal(result, NEXT);
+}
+{
+  // The mirror is unknown (history navigation, completion, an editing key):
+  // there is no line to show the operator, and "allow" would submit a line the
+  // gate never saw. It used to ask with the blank submit text and then run.
+  let asked = 0;
+  const { service, sshGate } = makeHarness({ approval: { request: async () => { asked += 1; return "allowed-once"; } } });
+  service.bindingForTerminal = (id) => id === "pty-1"
+    ? { connectionId: "conn1", session: { inputLine: "", inputKnown: false } }
+    : undefined;
+  const result = await sshGate(execFor({
+    name: "terminal_send",
+    callId: "call-blind",
+    arguments: { sessionId: "pty-1", text: "reboot", submit: true }
+  }), next);
+  assert.equal(result.kind, "deny", "an unverifiable line is refused, never approved blind");
+  assert.equal(asked, 0, "nothing is asked when there is no line to name");
+  assert.match(result.reason, /无法验证/);
+  assert.match(result.reason, /Ctrl-C/, "the reason says how to recover the shell's line");
+}
+
 // ── sftp_delete gate ─────────────────────────────────────────────────────────
 {
   const { service, sftpGate } = makeHarness({ approval: { request: async (req) => { askedSftp = req; return "allowed-once"; } } });
@@ -108,6 +209,38 @@ const execFor = (overrides = {}) => ({
   assert.match(askedSftp.reason, /\/tmp\/foo/);
   assert.equal(service.operatorApprovals.get("call-sftp").command, "rm -rf '/tmp/foo'", "the voucher binds the exact quoted command");
   void deleted; // the body only deletes after its own consume; covered via safety.mjs
+}
+
+// sftp_delete follows the same DSH ceiling and deadline as ssh_exec.
+{
+  let asked = 0;
+  const { service, sftpGate } = makeHarness({ approval: { request: async () => { asked += 1; return "rejected"; } } });
+  service.resolveRemoteToolPath = ({ connectionId, path }) => ({ connectionId: connectionId ?? "conn1", path });
+  service.resolveExecPolicy = () => ({ mode: "allowAll", source: "global", allow: [], approval: "never", dsh: { ceiling: "allowAll", source: "dsh-full-access" } });
+  let recorded = null;
+  service.recordOperatorApproval = (callId, connectionId, command) => { recorded = { callId, connectionId, command }; };
+  const result = await sftpGate(execFor({ name: "sftp_delete", callId: "call-auto", arguments: { path: "/tmp/foo" } }), next);
+  assert.equal(result, NEXT, "full access does not prompt before a delete");
+  assert.equal(asked, 0);
+  assert.equal(recorded.command, "rm -rf '/tmp/foo'", "the automatic grant still binds the exact command");
+}
+{
+  let asked = 0;
+  const { service, sftpGate } = makeHarness({ approval: { request: async () => { asked += 1; return "allowed-once"; } } });
+  service.resolveRemoteToolPath = ({ connectionId, path }) => ({ connectionId: connectionId ?? "conn1", path });
+  service.resolveExecPolicy = () => ({ mode: "standard", source: "session", allow: [], approval: "never", dsh: { ceiling: "readOnly", source: "dsh-read-only" } });
+  const result = await sftpGate(execFor({ name: "sftp_delete", callId: "call-ro", arguments: { path: "/tmp/foo" } }), next);
+  assert.equal(result.kind, "deny", "read-only refuses a delete instead of prompting");
+  assert.match(result.reason, /只读模式/);
+  assert.equal(asked, 0);
+}
+{
+  const { service, sftpGate } = makeHarness({ approval: { request: () => new Promise(() => {}) } });
+  service.config = { approvalPromptTimeoutMs: 25 };
+  service.resolveRemoteToolPath = ({ connectionId, path }) => ({ connectionId: connectionId ?? "conn1", path });
+  const result = await sftpGate(execFor({ name: "sftp_delete", callId: "call-timeout", arguments: { path: "/tmp/foo" } }), next);
+  assert.equal(result.kind, "deny");
+  assert.match(result.reason, /审批等待超过/);
 }
 
 console.log("ask-gate ok");

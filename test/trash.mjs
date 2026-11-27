@@ -70,6 +70,51 @@ for (const command of rejected) {
   assert.equal(parseSimpleDeleteCommand(command), null, `expected rejected: ${JSON.stringify(command)}`);
 }
 
+// ── shell-active bytes in ~ targets stay literal ────────────────────────────
+//
+// A backslash-escaped character is a LITERAL byte for the shell. Re-emitting it
+// inside double quotes would expand it in the generated trash script, so an
+// approved "delete this literal path" could run $(...) or a backtick command.
+{
+  const literal = parseSimpleDeleteCommand("rm -rf ~/x\\$\\(echo\\ hi\\) ~/p\\`echo\\ hi\\` ~/v\\$PID");
+  assert.notEqual(literal, null, "escaped characters are literal, not a reason to reject the rewrite");
+  assert.deepEqual(literal.targets, [
+    { kind: "home", path: "x$(echo hi)" },
+    { kind: "home", path: "p`echo hi`" },
+    { kind: "home", path: "v$PID" }
+  ]);
+  const script = buildTrashCommand(literal.targets);
+  const listLine = script.split("\n").find((line) => line.startsWith("for __dsh_p in "));
+  assert.equal(
+    listLine,
+    "for __dsh_p in \"$HOME\"/'x$(echo hi)' \"$HOME\"/'p`echo hi`' \"$HOME\"/'v$PID'; do",
+    "the ~ tail must be single-quoted so no expansion can run"
+  );
+
+  // End-to-end: a file whose name is literally x$(echo hi) is the one moved.
+  const base = mkdtempSync(join(tmpdir(), "dsh-trash-literal-"));
+  try {
+    const home = join(base, "home");
+    mkdirSync(home, { recursive: true });
+    const literalName = "x$(echo hi)";
+    writeFileSync(join(home, literalName), "literal\n");
+    const run = runInSandbox(buildTrashCommand([{ kind: "home", path: literalName }]), { home, cwd: base });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(existsSync(join(home, literalName)), false, "the literal file the operator approved is the one moved");
+    assert.match(run.stdout, /__DSH_TRASH_V1__\tmoved\t/, run.stdout);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// A restore refusal must not re-interpret a path in its message either.
+{
+  const entry = { name: "1700000000-x", original: "/tmp/x$(reboot)", epoch: 1700000000, iso: "20231114T221320Z", raw: "1700000000-x\t/tmp/x$(reboot)\t1700000000\t20231114T221320Z" };
+  const script = buildRestoreCommand(entry);
+  assert.match(script, /printf '%s\\n' 'restore target already exists: \/tmp\/x\$\(reboot\)'/, "the message path is a quoted argument, never part of the format string");
+  assert.doesNotMatch(script, /echo "restore target already exists/);
+}
+
 // ── output parsing ───────────────────────────────────────────────────────────
 
 {

@@ -76,6 +76,21 @@ test("handler restarts after partial success so the second factor is offered", (
   assert.equal(tracker2.partialSuccesses, 1);
 });
 
+test("a reused tracker does not exhaust the restart budget", () => {
+  // The tracker lives on the connection record and survives reconnects. Reading
+  // the restart budget from it meant that a record which had already logged in
+  // a few times stopped restarting the method walk — exactly what the second
+  // factor of a dual-factor device needs.
+  const tracker = createAuthTracker();
+  tracker.partialSuccesses = 99;
+  const handler = makeAuthHandler(tracker, { hasPassword: true, hasPrivateKey: true, tryKeyboard: false });
+  assert.equal(handler(["password", "publickey"], false, () => {}), "none");
+  assert.equal(handler(["password", "publickey"], false, () => {}), "password");
+  assert.equal(handler(["publickey"], true, () => {}), "password", "the walk restarts even after many earlier logins");
+  assert.equal(handler(["publickey"], false, () => {}), "publickey");
+  assert.equal(tracker.partialSuccesses, 100, "the counter stays a diagnostic total");
+});
+
 test("partial-success restart is bounded against a nonconformant server", () => {
   const tracker = createAuthTracker();
   const handler = makeAuthHandler(tracker, { hasPassword: true, hasPrivateKey: true, tryKeyboard: false });

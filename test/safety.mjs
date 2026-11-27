@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assessShellCommand, isPrefillable } from "../src/host/safety.js";
+import { assessShellCommand, canonicalCommandText, isPrefillable } from "../src/host/safety.js";
 import { redactForModel } from "../src/host/redact.js";
 import HarborService, { normalizeTerminalEol } from "../src/index.js";
 
@@ -52,6 +52,55 @@ for (const command of safeCommands) {
 for (const command of blockedCommands) {
   assert.equal(assessShellCommand(command).ok, false, `expected blocked: ${command}`);
 }
+
+// Re-spelling the same deletion must not walk past the gate. The original
+// pattern demanded whitespace before the program, so every entry below ran
+// unblocked — and, because a "safe" verdict skips the trash rewrite as well,
+// with no approval and no reversible delete either.
+const deleteEvasionCommands = [
+  "true;rm -rf /tmp/x",
+  "true&&rm -rf /tmp/x",
+  "cd /srv;rm -rf build",
+  "/bin/rm -rf /tmp/x",
+  "./rm -rf /tmp/x",
+  "~/bin/rm -rf /tmp/x",
+  "\\rm -rf /tmp/x",
+  "'rm' -rf /tmp/x",
+  "r''m -rf /tmp/x",
+  "r\"m\" -rf /tmp/x",
+  "sh -c \"rm -rf /tmp/x\"",
+  "bash -lc 'rm -rf /tmp/x'",
+  "sudo -u root rm -rf /tmp/x",
+  "$(rm -rf /tmp/x)",
+  "(rm -rf /tmp/x)",
+  "$'\\x72m' -rf /tmp/x",
+  "$'\\162m' -rf /tmp/x",
+  "r\\\nm -rf /tmp/x"
+];
+for (const command of deleteEvasionCommands) {
+  assert.equal(assessShellCommand(command).ok, false, `expected blocked: ${command}`);
+}
+
+// …while a boundary that is merely adjacent to "rm" keeps ordinary commands
+// usable: the gate has to stay quiet enough that an operator does not disable
+// it.
+const deleteLookalikeCommands = [
+  "cat /etc/nginx/rm.conf",
+  "docker run --rm alpine echo ok",
+  "terraform plan",
+  "charm --version",
+  "form --check",
+  "warm --up",
+  "git log --oneline -5"
+];
+for (const command of deleteLookalikeCommands) {
+  assert.equal(assessShellCommand(command).ok, true, `expected safe: ${command}`);
+}
+
+assert.equal(canonicalCommandText("r''m -rf /tmp/x"), "rm -rf /tmp/x");
+assert.equal(canonicalCommandText("\\rm -rf /tmp/x"), "rm -rf /tmp/x");
+assert.equal(canonicalCommandText("$'\\x72m' -rf /tmp/x"), "rm -rf /tmp/x");
+assert.equal(canonicalCommandText("echo 'hello world'"), "echo hello world");
 
 assert.equal(isPrefillable("rm -rf /tmp/foo"), true);
 assert.equal(isPrefillable("rm -rf\t/tmp/x"), false, "Tab must block prefill");
@@ -150,6 +199,16 @@ assert.equal(deniedExec.value.command, "shred /tmp/x");
 assert.match(deniedExec.value.reason, /删除文件或目录/);
 assert.equal(deniedExec.value.queued, undefined, "nothing is queued anymore — the ask replaced the cards");
 assert.equal(service.sessions.get("live-sess").buffer, "", "no terminal notice: the gate suspends the call instead of queueing");
+
+// The same deletion hidden behind an operator is denied on the same path: no
+// voucher is invented for a command the operator never saw.
+{
+  const compoundExec = await service.execOnConnection("live", "true;rm -rf /tmp/x");
+  assert.equal(compoundExec.blocked, true, "a re-spelled deletion reaches the same deny path");
+  assert.match(compoundExec.value.reason, /删除文件或目录/);
+  const prefixedExec = await service.execOnConnection("live", "/bin/rm -rf /tmp/x");
+  assert.equal(prefixedExec.blocked, true, "a path-qualified rm reaches the same deny path");
+}
 
 // A voucher is bound to the exact command the operator saw: a different one
 // grants nothing, and consuming a voucher happens exactly once.
@@ -400,6 +459,29 @@ for (const [name, [args, value]] of Object.entries(renderFixtures)) {
   assert.equal(service.sessions.get("mirror").inputLine, "");
 }
 
+// Line-editing control keys invalidate the mirror. Sending "x", Ctrl-U, then
+// "rm -rf /" used to look like the harmless line "xrm -rf /" while the shell
+// executed "rm -rf /": the Enter was approved against text nobody typed.
+{
+  const { processTerminalInput } = await import("../src/host/terminal-input.js");
+  const editing = ["\x01", "\x02", "\x04", "\x05", "\x06", "\x0b", "\x0e", "\x10", "\x12", "\x14", "\x15", "\x16", "\x17", "\x19", "\x1f"];
+  for (const key of editing) {
+    const state = { inputLine: "kept", inputKnown: true };
+    processTerminalInput(state, key, () => ({ ok: true }));
+    assert.equal(state.inputKnown, false, "control " + JSON.stringify(key) + " must invalidate the mirror");
+  }
+  // The few controls that provably leave the line alone keep it usable.
+  for (const key of ["\x00", "\x07", "\x0c", "\x11", "\x13"]) {
+    const state = { inputLine: "kept", inputKnown: true };
+    processTerminalInput(state, key, () => ({ ok: true }));
+    assert.equal(state.inputKnown, true, "control " + JSON.stringify(key) + " preserves the line");
+  }
+  // End to end: the hidden line is cleared, never submitted.
+  const typed = service.prepareTerminalInput({ inputLine: "", inputKnown: true, buffer: "" }, "x\x15rm -rf /\r");
+  assert.equal(typed.forwarded.includes("\r"), false, "the Enter never reaches the shell");
+  assert.equal(typed.forwarded.endsWith("\x15"), true, "the line is cleared with Ctrl-U instead");
+  assert.match(typed.blockedReason, /无法验证/);
+}
 // Durable SSH resources deliberately split public metadata from secret values.
 function memoryTable() {
   const records = new Map();
@@ -444,4 +526,4 @@ const deletedProfile = await profileService.profileDelete({ profileId: savedProf
 assert.equal(deletedProfile.value.deleted, true);
 assert.equal(secrets.size, 0);
 
-console.log(`safety policy: ${safeCommands.length} safe and ${blockedCommands.length} blocked cases passed`);
+console.log(`safety policy: ${safeCommands.length + deleteLookalikeCommands.length} safe and ${blockedCommands.length + deleteEvasionCommands.length} blocked cases passed`);

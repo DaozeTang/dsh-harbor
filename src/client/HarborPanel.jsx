@@ -480,7 +480,13 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
             </div>
             <div className="hb-pane" style={{ display: view === "files" ? "flex" : "none" }}>
               <PaneBoundary>
+                {/* The pane owns per-server state (listing, cwd, selection,
+                    editor). Keying it by the connection makes a switch a
+                    remount: a response from server A can never land in the
+                    pane that now shows server B, and a row action can never
+                    combine B's connection with A's path. */}
                 <HarborFiles
+                  key={active.connectionId}
                   api={api}
                   connectionId={active.connectionId}
                   onCd={cdFromFiles}

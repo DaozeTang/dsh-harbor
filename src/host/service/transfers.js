@@ -2,16 +2,26 @@
  * Directory batch transfers and resumable upload tasks.
  */
 import { randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { constants as fsConstants, createReadStream, createWriteStream } from "node:fs";
 import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat, unlink as fsUnlink } from "node:fs/promises";
 import { dirname as dirnamePath, join as joinPath, relative as relativePath } from "node:path";
 import { pipeline as streamPipeline } from "node:stream/promises";
-import { runTransferTasks, joinRemotePath, splitRemotePath } from "../sftp-dir.js";
+import { assertLocalPathInside, assertSafeEntryName, runTransferTasks, joinRemotePath, splitRemotePath } from "../sftp-dir.js";
+import { assertLocalWriteTarget, canonicalizeLocalPath } from "../local-path-guard.js";
 import { uploadPipeline } from "../sftp-pipeline.js";
 import { hasInteractiveTerminal, scheduleUploadWrite } from "../ssh-upload-scheduling.js";
 import { hashTransferStream, transferConnectionIdentity } from "../transfer-tasks.js";
 import { fail } from "../envelope.js";
 import { SFTP_DIR_FILE_IDLE_TIMEOUT_MS } from "./constants.js";
+
+/**
+ * Open flags for a download destination that must never be a symlink. Built
+ * once: O_NOFOLLOW does not exist on every platform/Node build, and a numeric
+ * `undefined` inside the mask would silently become a bogus flag set.
+ */
+const NO_FOLLOW_WRITE_FLAGS = typeof fsConstants.O_NOFOLLOW === "number" && fsConstants.O_NOFOLLOW !== 0
+  ? fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW
+  : undefined;
 
 export const withTransfers = (Base) => class extends Base {
   /** Pipe one directory-transfer file with cancellation, an idle deadline, and partial-file cleanup. */
@@ -256,10 +266,19 @@ export const withTransfers = (Base) => class extends Base {
     return { ok: true, value: { cancelled: this.transferTasks.cancel(request.id, request.connectionId) } };
   }
 
-  /** Download one remote SFTP file into a local write stream. */
-  sftpDownloadFile(sftp, remoteFile, localFile, signal) {
+  /**
+   * Download one remote SFTP file into a local write stream.
+   *
+   * `noFollowSymlink` opens the destination with O_NOFOLLOW, so a link planted
+   * between the caller's containment check and this open fails with ELOOP
+   * instead of writing through it. Plain file downloads (which may legitimately
+   * replace a link the operator made) keep the default open.
+   */
+  sftpDownloadFile(sftp, remoteFile, localFile, signal, { noFollowSymlink = false } = {}) {
     const source = sftp.sftp.createReadStream(remoteFile);
-    const target = createWriteStream(localFile);
+    const target = noFollowSymlink && NO_FOLLOW_WRITE_FLAGS !== undefined
+      ? createWriteStream(localFile, { flags: NO_FOLLOW_WRITE_FLAGS })
+      : createWriteStream(localFile);
     return this.pipeSftpFile(source, target, signal, async () => {
       try { await fsUnlink(localFile); } catch (error) {
         if (error.code !== "ENOENT") throw error;
@@ -267,12 +286,23 @@ export const withTransfers = (Base) => class extends Base {
     });
   }
 
-  /** Recursively list a remote directory; returns [{ rel, path, size, isDirectory }]. */
+  /**
+   * Recursively list a remote directory; returns [{ rel, path, size, isDirectory }].
+   *
+   * `entry.filename` and `entry.attrs` are server-controlled. The name must be
+   * a plain leaf before it reaches either the remote path join or the host-side
+   * relative-path computation: a name containing ".." or a backslash would
+   * otherwise become a local path traversal in `sftpDownloadDir`.
+   */
   async walkRemoteDir(sftp, root, base = root, out = []) {
     const entries = await this.sftpCall(sftp, (cb) => sftp.sftp.readdir(root, cb));
     for (const entry of entries) {
-      const path = joinRemotePath(root, entry.filename);
+      const name = assertSafeEntryName(entry.filename);
+      const path = joinRemotePath(root, name);
       const rel = relativePath(base, path).split("\\").join("/");
+      if (rel === ".." || rel.startsWith("../") || rel.startsWith("/")) {
+        throw new Error(`SFTP entry escapes the download root: ${JSON.stringify(name)}`);
+      }
       const isDirectory = (entry.attrs.mode & 0o170000) === 0o040000;
       if (isDirectory) {
         out.push({ rel, path, size: 0, isDirectory: true });
@@ -422,18 +452,34 @@ export const withTransfers = (Base) => class extends Base {
         return { ok: false, error: fail("sftp-download-dir-failed", `${remotePath} is not a directory`) };
       }
       await fsMkdir(localPath, { recursive: true });
+      // One canonical root for the whole batch. The lexical checks below still
+      // prove the RELATIVE name cannot change directory level; this resolves
+      // what already exists on disk, so a symlink inside the destination tree
+      // (planted by the agent's own bash tool, by an earlier tree, or by
+      // anything else on the machine) cannot receive the bytes instead of the
+      // directory the operator approved.
+      const rootCanonical = await canonicalizeLocalPath(localPath);
       const entries = await this.walkRemoteDir(sftp, remotePath);
       const directories = entries.filter((e) => e.isDirectory).length;
       for (const dir of entries.filter((e) => e.isDirectory)) {
-        await fsMkdir(joinPath(localPath, dir.rel), { recursive: true });
+        // assertSafeEntryName already rejected server-controlled traversal;
+        // this is the invariant every actual filesystem write is checked
+        // against, so a future walker change cannot silently reopen it.
+        const local = assertLocalPathInside(localPath, joinPath(localPath, dir.rel), "download directory");
+        await assertLocalWriteTarget(rootCanonical, local, "download directory");
+        await fsMkdir(local, { recursive: true });
       }
       const tasks = entries.filter((e) => !e.isDirectory).map((entry) => ({
         path: entry.rel,
         size: entry.size,
         run: async (signal) => {
-          const local = joinPath(localPath, entry.rel);
+          const local = assertLocalPathInside(localPath, joinPath(localPath, entry.rel), "download file");
+          // Checked per file, not once per tree: a link may appear between the
+          // walk and this write. O_NOFOLLOW then covers the last window
+          // between this check and the open.
+          await assertLocalWriteTarget(rootCanonical, local, "download file");
           await fsMkdir(dirnamePath(local), { recursive: true });
-          await this.sftpDownloadFile(sftp, entry.path, local, signal);
+          await this.sftpDownloadFile(sftp, entry.path, local, signal, { noFollowSymlink: true });
         }
       }));
       const { files, bytes, failures } = await runTransferTasks(tasks, { signal: request.signal });

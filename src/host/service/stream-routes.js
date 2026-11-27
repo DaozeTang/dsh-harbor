@@ -8,6 +8,29 @@ import { hasInteractiveTerminal, INTERACTIVE_UPLOAD_CHUNK_BYTES, scheduleUploadW
 import { STREAM_ROUTE_PREFIX, STREAM_HIGH_WATER_MARK, STREAM_IDLE_TIMEOUT_MS, MAX_COMMAND_OUTPUT_BYTES } from "./constants.js";
 import { tailCapped } from "./text.js";
 
+/**
+ * The WebServer route descriptor for the byte plane.
+ *
+ * `auth: "required"` is explicit on purpose: DSH's WebServer admits every
+ * request before it invokes the handler (the connection service owns the
+ * Host/Origin + browser-cookie fence through `webserver/authorize`). The
+ * handler therefore must not re-implement admission. It used to call
+ * `connection.requestRejection`, which DSH removed in v0.2.2-rc.2 — that call
+ * threw on every request and made the whole byte plane answer HTTP 400 before
+ * a single byte moved.
+ *
+ * @param {{handleStreamRoute: Function}} service - the Harbor service.
+ * @returns the prefix route registration consumed by `webServer.register`.
+ */
+export function streamRouteDescriptor(service) {
+  return {
+    kind: "prefix",
+    path: STREAM_ROUTE_PREFIX,
+    auth: "required",
+    handler: (req, res) => service.handleStreamRoute(req, res)
+  };
+}
+
 export const withStreamRoutes = (Base) => class extends Base {
   // ── Streaming file plane (workbench S6 patch) ──────────────────────────────
   // HTTP byte routes over this service's own connections: callers address an
@@ -16,14 +39,8 @@ export const withStreamRoutes = (Base) => class extends Base {
   // the typert business envelope ({ok:false,error:{code,message}}) with an HTTP
   // status for the transport-level outcome; success replies are {ok:true,value}.
 
-  /** Route entry: auth fence first, then path/method dispatch. */
-  handleStreamRoute(req, res, connection) {
-    const rejection = connection.requestRejection(req);
-    if (rejection !== void 0) {
-      res.writeHead(rejection, { "content-type": "text/plain; charset=utf-8" });
-      res.end(rejection === 401 ? "unauthorized" : "forbidden");
-      return;
-    }
+  /** Route entry: the WebServer has already admitted this request. */
+  handleStreamRoute(req, res) {
     let url;
     try {
       url = new URL(req.url ?? "/", "http://localhost");

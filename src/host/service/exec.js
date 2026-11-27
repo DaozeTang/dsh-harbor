@@ -2,6 +2,7 @@
  * Non-interactive exec channels, network-CLI fallback and the terminal input gate.
  */
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { extractCliPrompt, promptReturned, cliPageRequested, stripCliOutput, sanitizeCliCommand } from "../network-cli.js";
 import { assessShellCommand, CATEGORY_DELETE_FILES } from "../safety.js";
 import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from "../trash.js";
@@ -44,24 +45,35 @@ export const withExec = (Base) => class extends Base {
       settle();
       try { stream.close(); } catch {}
     }, timeoutMs);
+    // One decoder per pipe: an SSH packet boundary can fall inside a UTF-8
+    // sequence, and decoding each chunk on its own turned both halves into
+    // U+FFFD (most visible with Chinese and emoji output).
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    const collect = (which, decoder, text) => {
+      const result = appendCapped(state[which], text, this.config.maxCommandOutputBytes);
+      state[which] = result.text;
+      state.truncated ||= result.truncated;
+    };
+    const flushDecoders = () => {
+      collect("stdout", stdoutDecoder, stdoutDecoder.end());
+      collect("stderr", stderrDecoder, stderrDecoder.end());
+    };
     try {
       await new Promise((resolve) => {
         settle = resolve;
         stream.on("data", (chunk) => {
-          const result = appendCapped(state.stdout, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
-          state.stdout = result.text;
-          state.truncated ||= result.truncated;
+          collect("stdout", stdoutDecoder, stdoutDecoder.write(chunk));
         });
         stream.stderr.on("data", (chunk) => {
-          const result = appendCapped(state.stderr, chunk.toString("utf8"), this.config.maxCommandOutputBytes);
-          state.stderr = result.text;
-          state.truncated ||= result.truncated;
+          collect("stderr", stderrDecoder, stderrDecoder.write(chunk));
         });
         stream.on("close", (code) => {
+          flushDecoders();
           state.exitCode = typeof code === "number" ? code : null;
           settle();
         });
-        stream.on("error", () => { state.streamError = true; settle(); });
+        stream.on("error", () => { flushDecoders(); state.streamError = true; settle(); });
       });
     } finally {
       clearTimeout(timer);
@@ -147,6 +159,12 @@ export const withExec = (Base) => class extends Base {
     const decision = assessShellCommand(command, policy);
     let trashScript = null;
     if (!decision.ok) {
+      // The pre-execute gate normally settles this, but a direct service call
+      // (or a mode switch after the gate) must not consume a stale voucher
+      // under a session that can no longer ask for authorization.
+      if (policy.approval === "never") {
+        return this.blockedExecResult(connectionId, command, t("本次对话的 DSH 权限模式不允许请求授权，危险命令未执行。请勿重试或绕行；请让操作者调整 DSH 权限。"), policy);
+      }
       // A simple, fully-literal rm/unlink/rmdir is executed as the reversible
       // trash move, never as a real deletion — whether the operator approved
       // the ask or no approval exists at all. Real `rm` only ever happens
@@ -427,8 +445,10 @@ export const withExec = (Base) => class extends Base {
         reason,
         command,
         // The tier that produced this rejection, so the agent can tell the
-        // operator what to relax instead of retrying blindly.
- ...(policy ? { policy: policy.mode, policySource: policy.source } : {})
+        // operator what to relax instead of retrying blindly. `policyBasis`
+        // names the DSH session ceiling when one was applied.
+ ...(policy ? { policy: policy.mode, policySource: policy.source } : {}),
+ ...(policy?.dsh ? { policyBasis: policy.dsh.source } : {})
       }
     };
   }

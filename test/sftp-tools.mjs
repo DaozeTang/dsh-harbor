@@ -21,6 +21,9 @@ function fakeSftp(tree) {
       if (!node) { cb(new Error(`${path}: no such file`)); return; }
       cb(null, { mode: node.statMode ?? node.mode, size: node.size ?? 0, mtime: 1700000000 });
     },
+    // lstat does not follow links; the fake tree has none below the surface
+    // the rename guard looks at, so it mirrors stat.
+    lstat(path, cb) { this.stat(path, cb); },
     mkdir(path, cb) { if (tree[path]) { cb(new Error(`${path}: exists`)); return; } tree[path] = { isDirectory: true, mode: DIR_MODE, children: [] }; cb(null); },
     rmdir(path, cb) { if (!tree[path]) { cb(new Error(`${path}: no such file`)); return; } delete tree[path]; cb(null); },
     unlink(path, cb) { if (!tree[path]) { cb(new Error(`${path}: no such file`)); return; } delete tree[path]; cb(null); },
@@ -128,6 +131,15 @@ function makeService(tree) {
   const missing = await service.sftpRename({ from: "/tmp/ghost", to: "/tmp/x" });
   assert.equal(missing.ok, false);
   assert.equal(missing.error.code, "sftp-rename-failed");
+
+  // A rename onto an existing name must not replace it: POSIX rename(2) is
+  // allowed to overwrite, which silently destroyed the target.
+  const clashTree = { "/tmp/a": { mode: FILE_MODE, size: 3 }, "/tmp/b": { mode: FILE_MODE, size: 9 } };
+  const clashService = makeService(clashTree);
+  const clash = await clashService.sftpRename({ from: "/tmp/a", to: "/tmp/b" });
+  assert.equal(clash.ok, false);
+  assert.equal(clash.error.code, "target-exists");
+  assert.deepEqual(Object.keys(clashTree).sort(), ["/tmp/a", "/tmp/b"], "the destination keeps its content");
 }
 
 // ── connection resolution errors surface as no-connection ──

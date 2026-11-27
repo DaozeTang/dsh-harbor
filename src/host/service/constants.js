@@ -15,6 +15,11 @@ const MAX_SESSIONS_PER_CONNECTION = 8;
 const TTY_PROBE_MS = 4000;
 const TTY_PROBE_RETRY_DELAYS_MS = [0, 150, 500, 1200];
 const OPERATOR_APPROVAL_TTL_MS = 5 * 60 * 1000;
+// A prompt the operator never answers must not suspend the tool call forever.
+// The approval itself has no host-side deadline in DSH, so Harbor owns one:
+// when it fires the request settles as cancelled, the DSH client card is
+// withdrawn, and the model receives a definite denial instead of a hung turn.
+const OPERATOR_APPROVAL_TIMEOUT_MS = 2 * 60 * 1000;
 const SFTP_DIR_FILE_IDLE_TIMEOUT_MS = 60 * 1000;
 // ssh2 disables keepalives by default; without them NATs and cloud firewalls
 // silently drop idle connections and every later operation fails on a dead
@@ -61,9 +66,10 @@ const RECONNECT_WAIT_MS = 30000;
 // terminal from a dead WebSocket mux.
 const STREAM_HEARTBEAT_MS = 15000;
 // Streaming file plane (workbench S6 patch): plain-HTTP byte routes registered
-// on the DSH webserver, guarded by the connection service's Host/Origin +
-// browser-cookie fence (the same guard the typert gateway applies to /api and
-// /api/remote.mux). Raw bytes on the wire — no base64 envelope, and no
+// on the DSH webserver with `auth: "required"`. The WebServer admits a request
+// through the connection service's Host/Origin + browser-cookie fence
+// (webserver/authorize) BEFORE the handler runs, so the handler itself carries
+// no admission code. Raw bytes on the wire — no base64 envelope, and no
 // whole-file buffering on either side of the ssh2 SFTP streams.
 const STREAM_ROUTE_PREFIX = "/harbor/stream";
 const STREAM_HIGH_WATER_MARK = 256 * 1024;
@@ -94,6 +100,7 @@ export {
   TTY_PROBE_MS,
   TTY_PROBE_RETRY_DELAYS_MS,
   OPERATOR_APPROVAL_TTL_MS,
+  OPERATOR_APPROVAL_TIMEOUT_MS,
   SFTP_DIR_FILE_IDLE_TIMEOUT_MS,
   KEEPALIVE_INTERVAL_MS,
   KEEPALIVE_COUNT_MAX,

@@ -9,7 +9,8 @@
  * it hands the terminal journal, so a log is exactly what the panel showed.
  */
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
@@ -41,6 +42,8 @@ export class SessionLogStore {
     this.streams = new Map();
     /** sessionId -> promise settling when the last append reached the file. */
     this.pending = new Map();
+    /** sessionId -> in-flight begin(); end() must not race the stream setup. */
+    this.beginning = new Map();
     this.ready = null;
   }
 
@@ -72,25 +75,44 @@ export class SessionLogStore {
       pending: []
     };
     this.entries.set(sessionId, entry);
-    await this.init();
-    const stream = createWriteStream(this.logPath(sessionId), { flags: "a" });
-    stream.on("error", () => { /* a broken log must not crash the session */ });
-    this.streams.set(sessionId, stream);
-    const buffered = entry.pending;
-    entry.pending = [];
-    if (buffered.length > 0) {
-      // Replayed chunks must be covered by flush(): write callbacks fire in
-      // order, so awaiting the LAST one also covers every earlier chunk — and
-      // a read racing begin() sees the data instead of an empty file.
-      this.pending.set(sessionId, new Promise((resolve) => {
-        let done = 0;
-        const onDone = () => { if (++done >= buffered.length) resolve(); };
-        for (const chunk of buffered) {
-          try { stream.write(chunk, onDone); } catch { onDone(); }
-        }
-      }));
+    // The stream cannot exist before the directory does, so this awaits. A
+    // session that closes inside that window used to find no stream, write its
+    // final metadata, and then have begin() create a stream afterwards — one
+    // that nothing would ever end (the log file stayed open and the entry was
+    // gone, so prune()/removeAll() could not see it either). Publishing the
+    // promise lets end() wait instead of racing it.
+    const starting = (async () => {
+      await this.init();
+      // end() already ran: this session is over, do not open anything for it.
+      if (this.entries.get(sessionId) !== entry) return;
+      const stream = createWriteStream(this.logPath(sessionId), { flags: "a" });
+      stream.on("error", () => { /* a broken log must not crash the session */ });
+      this.streams.set(sessionId, stream);
+      const buffered = entry.pending;
+      entry.pending = [];
+      if (buffered.length > 0) {
+        // Replayed chunks must be covered by flush(): write callbacks fire in
+        // order, so awaiting the LAST one also covers every earlier chunk — and
+        // a read racing begin() sees the data instead of an empty file.
+        this.pending.set(sessionId, new Promise((resolve) => {
+          let done = 0;
+          const onDone = () => { if (++done >= buffered.length) resolve(); };
+          for (const chunk of buffered) {
+            try { stream.write(chunk, onDone); } catch { onDone(); }
+          }
+        }));
+      }
+    })();
+    this.beginning.set(sessionId, starting);
+    try {
+      await starting;
+    } finally {
+      if (this.beginning.get(sessionId) === starting) this.beginning.delete(sessionId);
     }
-    await this.writeMeta(entry).catch(() => {});
+    // Only persist the open-state metadata while the session is still open:
+    // writing it after end() removed the entry would overwrite the final
+    // sidecar with `endedAt: null`.
+    if (this.entries.get(sessionId) === entry) await this.writeMeta(entry).catch(() => {});
     return entry;
   }
 
@@ -125,6 +147,10 @@ export class SessionLogStore {
 
   /** Close one session's log and persist its final metadata. */
   async end(sessionId, { exitCode = null, reason } = {}) {
+    const starting = this.beginning.get(sessionId);
+    if (starting !== undefined) {
+      try { await starting; } catch { /* a failed begin leaves nothing to close */ }
+    }
     const entry = this.entries.get(sessionId);
     const stream = this.streams.get(sessionId);
     this.streams.delete(sessionId);
@@ -141,8 +167,25 @@ export class SessionLogStore {
     return entry;
   }
 
+  /**
+   * Persist one sidecar atomically.
+   *
+   * Two writers can legitimately target one session at the same moment (begin
+   * finishing while end() closes it). writeFile is not atomic, so their bytes
+   * interleaved into a file that was no longer valid JSON — which list() skips
+   * and prune() therefore never reclaims. A temp file plus rename means a
+   * reader always sees one complete document.
+   */
   async writeMeta(entry) {
-    await writeFile(this.metaPath(entry.sessionId), JSON.stringify(entry), "utf8");
+    const target = this.metaPath(entry.sessionId);
+    const temp = `${target}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temp, JSON.stringify(entry), "utf8");
+      await rename(temp, target);
+    } catch (error) {
+      try { await rm(temp, { force: true }); } catch {}
+      throw error;
+    }
   }
 
   /** All recorded sessions, newest first (metadata only; the log stays a file). */

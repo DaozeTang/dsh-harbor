@@ -218,6 +218,93 @@ async function readExactly(stream, bytes) {
   assert.ok(source.includes("t(`活动连接 ${tunnel.connections}`)"), "connection-count labels still go through the translator");
 }
 
+// ── 7. a client RST between accept and the forwardOut callback ──
+// forwardOut is a full SSH round trip. Before this net was reported, the local
+// socket had no 'error' listener inside that window, so one reset connection
+// threw out of the emit (DSH exits the process on an uncaught exception).
+{
+  const service = makeService();
+  const pending = [];
+  fakeConn(service, { forwardOut(_a, _b, _c, _d, cb) { pending.push(cb); } });
+  await startLocal(service);
+  const server = service.connections.get("c1").tunnels.values().next().value.server;
+
+  const socket = fakeSocket();
+  fireAccept(server, socket);
+  assert.equal(pending.length, 1, "the forward is still in flight");
+
+  // No listener would make this emit throw; the host would then exit.
+  assert.doesNotThrow(() => socket.emit("error", new Error("read ECONNRESET")), "a mid-handshake RST costs one socket, not the process");
+
+  // The channel that arrives afterwards is discarded, never piped.
+  const channel = fakeChannel();
+  pending.shift()(null, channel);
+  assert.equal(channel.destroyed, true, "a channel for an already-failed socket is destroyed");
+  assert.deepEqual(channel._piped, [], "a channel for an already-failed socket is never piped");
+}
+
+// ── 8. remote forward: a missing/invalid target can never become a bridge ──
+// net.connect(undefined, …) throws ERR_MISSING_ARGS and 70000 throws
+// ERR_SOCKET_BAD_PORT — both from inside ssh2's 'tcp connection' dispatch,
+// where nothing catches, so the first forwarded connection used to end the
+// process. The ports are validated before forwardIn now.
+{
+  const { EventEmitter } = await import("node:events");
+  const service = makeService();
+  const client = new EventEmitter();
+  const forwards = [];
+  client.forwardIn = (addr, port, cb) => { forwards.push({ addr, port }); cb(null, 5000); };
+  client.unforwardIn = (_addr, _port, cb) => cb?.();
+  const conn = fakeConn(service, client);
+
+  for (const [label, request] of [
+    ["missing target_port", { remoteHost: "127.0.0.1", remotePort: 0 }],
+    ["target_port 0", { remoteHost: "127.0.0.1", remotePort: 0, targetPort: 0 }],
+    ["target_port 70000", { remoteHost: "127.0.0.1", remotePort: 0, targetPort: 70000 }],
+    ["target_port as a string", { remoteHost: "127.0.0.1", remotePort: 0, targetPort: "8080" }],
+    ["empty target_host", { remoteHost: "127.0.0.1", remotePort: 0, targetHost: "   ", targetPort: 8080 }]
+  ]) {
+    const result = await service.tunnelStartRemote({ connectionId: "c1", ...request });
+    assert.equal(result.ok, false, `${label} is refused`);
+    assert.match(result.error.message, /target/, `${label} explains itself`);
+    assert.equal(client.listenerCount("tcp connection"), 0, `${label} installs no bridge`);
+    assert.equal(conn.tunnels.size, 0, `${label} records no tunnel`);
+  }
+  assert.deepEqual(forwards, [], "nothing was bound on the server for a refused target");
+
+  const badListen = await service.tunnelStartRemote({ connectionId: "c1", remoteHost: "127.0.0.1", remotePort: 70000, targetPort: 8080 });
+  assert.equal(badListen.ok, false, "an out-of-range listen port is refused too");
+  assert.deepEqual(forwards, [], "an invalid listen port never reaches forwardIn");
+
+  // A valid request still works, and its bridge never lets a throw escape.
+  const started = await service.tunnelStartRemote({ connectionId: "c1", remoteHost: "127.0.0.1", remotePort: 0, targetPort: 8080 });
+  assert.equal(started.ok, true, started.error?.message);
+  assert.equal(started.value.remotePort, 5000, "the server-assigned port is reported");
+  assert.equal(started.value.targetPort, 8080, "the validated target travels with the record");
+  const bridge = conn.tunnels.get(started.value.tunnelId).bridgeInfo.bridge;
+  assert.equal(client.listenerCount("tcp connection"), 1, "the bridge is installed on the client");
+
+  // accept() failing (a destroyed channel, an exhausted ssh2 session pool)
+  // is contained: the emit itself must not throw.
+  assert.doesNotThrow(
+    () => client.emit("tcp connection", { destIP: "127.0.0.1", destPort: 5000 }, () => { throw new Error("accept failed"); }),
+    "a failing accept never escapes the ssh2 dispatch"
+  );
+  assert.doesNotThrow(
+    () => client.emit("tcp connection", undefined, () => { throw new Error("must not be called"); }),
+    "a malformed forwarded event is ignored"
+  );
+  // A forwarded connection for another port is not ours.
+  let notOurs = 0;
+  client.emit("tcp connection", { destIP: "127.0.0.1", destPort: 9999 }, () => { notOurs += 1; return fakeChannel(); });
+  assert.equal(notOurs, 0, "port matching still filters foreign channels");
+
+  const stopped = await service.tunnelStop({ connectionId: "c1", tunnelId: started.value.tunnelId });
+  assert.equal(stopped.ok, true);
+  assert.equal(client.listenerCount("tcp connection"), 0, "stopping removes the bridge");
+  assert.equal(typeof bridge, "function");
+}
+
 } finally {
   const servers = [...openServers];
   for (const service of services) {

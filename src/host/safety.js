@@ -54,13 +54,148 @@ export const CATEGORY_LABELS = Object.freeze({
 });
 // i18n-identifier-end
 
+/**
+ * One canonical spelling for shell quoting and escaping, for the deny-list scan
+ * only. The gate still executes the operator's exact text, and the trash
+ * rewrite keeps its own stricter literal parser (trash.js).
+ *
+ * Matching the raw text is trivially evaded by re-spelling the same command:
+ * `\rm`, `'rm'`, `r''m`, `r"m"`, `$'\x72m'` and `sh -c "rm ..."` all run the
+ * same deletion, yet none of them contains the byte sequence " rm". This
+ * collapses those spellings to what the shell would actually run: single
+ * quotes verbatim, double quotes with only their four escapes, `$'...'`
+ * ANSI-C escapes decoded, backslash escapes resolved, a trailing backslash-newline
+ * continuation dropped. Anything it cannot resolve stays as written — the raw
+ * spelling is scanned next to the canonical one, so a match in either blocks.
+ *
+ * @param {unknown} command - one shell command line.
+ * @returns {string} the canonical spelling to scan.
+ */
+export function canonicalCommandText(command) {
+  const text = String(command ?? "");
+  let out = "";
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end === -1) { out += text.slice(i); break; }
+      out += text.slice(i + 1, end);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      let closed = false;
+      while (j < n) {
+        const c = text[j];
+        if (c === "\\") {
+          const next = text[j + 1];
+          if (next === undefined) { j = n; break; }
+          // Inside double quotes only these four escapes are consumed; any
+          // other backslash is a literal byte the shell passes through.
+          if (next === '"' || next === "\\" || next === "$" || next === "`") { out += next; j += 2; continue; }
+          out += `\\${next}`;
+          j += 2;
+          continue;
+        }
+        if (c === '"') { closed = true; j += 1; break; }
+        out += c;
+        j += 1;
+      }
+      i = j;
+      if (!closed) break;
+      continue;
+    }
+    if (ch === "$" && text[i + 1] === "'") {
+      // ANSI-C quoting ($'...'): bash-level escapes, so \x72 / \162 are "r".
+      let j = i + 2;
+      let body = "";
+      let closed = false;
+      while (j < n) {
+        const c = text[j];
+        if (c === "\\") { body += c + (text[j + 1] ?? ""); j += 2; continue; }
+        if (c === "'") { closed = true; j += 1; break; }
+        body += c;
+        j += 1;
+      }
+      if (!closed) { out += text.slice(i); break; }
+      out += decodeAnsiCString(body);
+      i = j;
+      continue;
+    }
+    if (ch === "\\") {
+      const next = text[i + 1];
+      if (next === undefined) { out += ch; i += 1; continue; }
+      if (next === "\n") { i += 2; continue; } // line continuation
+      out += next;
+      i += 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+const ANSI_C_SIMPLE_ESCAPES = new Map([
+  ["a", "\x07"], ["b", "\b"], ["e", "\x1b"], ["E", "\x1b"], ["f", "\f"],
+  ["n", "\n"], ["r", "\r"], ["t", "\t"], ["v", "\v"],
+  ["\\", "\\"], ["'", "'"], ['"', '"'], ["?", "?"]
+]);
+
+/** Decode the body of one `$'...'` literal; unrecognised escapes keep their backslash. */
+function decodeAnsiCString(body) {
+  let out = "";
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== "\\") { out += ch; continue; }
+    const next = body[i + 1];
+    if (next === undefined) { out += ch; break; }
+    const simple = ANSI_C_SIMPLE_ESCAPES.get(next);
+    if (simple !== undefined) { out += simple; i += 1; continue; }
+    if (next === "x") {
+      const hex = /^[0-9a-fA-F]{1,2}/.exec(body.slice(i + 2));
+      if (hex !== null) { out += String.fromCharCode(Number.parseInt(hex[0], 16)); i += 1 + hex[0].length; continue; }
+    }
+    if (next >= "0" && next <= "7") {
+      const octal = /^[0-7]{1,3}/.exec(body.slice(i + 1));
+      if (octal !== null) { out += String.fromCharCode(Number.parseInt(octal[0], 8) & 0xff); i += octal[0].length; continue; }
+    }
+    if (next === "c" && body[i + 2] !== undefined) {
+      out += String.fromCharCode(body[i + 2].toUpperCase().charCodeAt(0) & 0x1f);
+      i += 2;
+      continue;
+    }
+    out += `\\${next}`;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * A delete program anywhere in the line: at the start, after an operator
+ * (`;`, `&&`, `|`, a newline, a backtick, `(`), after a wrapper (`sh -c`,
+ * `sudo`, `xargs`) or as the argument of a path-qualified invocation
+ * (`/bin/rm`, `./rm`, `~/bin/rm`).
+ *
+ * The two boundaries are deliberate. Before the program, `[^\w-]` keeps
+ * ordinary words out (`confirm`, `format`, `terraform`) and `-` keeps the
+ * everyday `docker run --rm` flag out. After it, the program must END the
+ * shell word (end of line, whitespace, an operator or a bracket) — a plain
+ * `\b` also matched `rm.conf` and `rm.exe`, turning ordinary file names
+ * into blocked deletions.
+ */
+const DELETE_PROGRAM_PATTERN = /(?:^|[^\w-])(?:[~\w.+-]*\/)*(?:rm|unlink|shred|rmdir)(?=$|[\s;&|()<>`])/i;
+
 // The deny-list: pattern, machine-readable key and display string in one
 // place, so the custom tier's release set and the i18n surface can never
 // drift apart. Order matters only for the reason shown; the custom tier scans
 // past released patterns either way.
 // i18n-identifier-start (display strings here are i18n keys, passed through t() at the call site)
 const IRREVERSIBLE_BLOCK_LIST = [
-  [/(?:^|\s)(?:rm|unlink|shred|rmdir)\b/i, "delete-files", CATEGORY_DELETE_FILES],
+  [DELETE_PROGRAM_PATTERN, "delete-files", CATEGORY_DELETE_FILES],
   // Deny-list evasion is a real, observed failure mode: an agent whose `rm`
   // was blocked once re-issued the deletion through an equivalent form. These
   // entries cover the high-frequency vectors — batch deletion disguised as
@@ -155,8 +290,13 @@ export function assessShellCommand(command, policy = STANDARD_POLICY) {
 
   const released = tier.mode === "custom" ? new Set(tier.allow) : null;
   if (released && normalizeExactRules(policy.exact).includes(value)) return { ok: true };
+  // Both spellings are scanned: the operator's own text (so nothing that the
+  // patterns already caught is lost) and the canonical one (so re-spelling a
+  // program cannot hide it). The pattern order still decides the reason.
+  const canonical = canonicalCommandText(value);
+  const scanned = canonical === value ? [value] : [value, canonical];
   for (const [pattern, categoryKey, category] of IRREVERSIBLE_BLOCK_LIST) {
-    if (!pattern.test(value)) continue;
+    if (!scanned.some((text) => pattern.test(text))) continue;
     if (released !== null && released.has(categoryKey)) continue;
     return blocked(category, categoryKey);
   }

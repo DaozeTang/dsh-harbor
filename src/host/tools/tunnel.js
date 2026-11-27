@@ -46,8 +46,11 @@ export function registerTunnelTools(ctx, service) {
           kind: { type: "string", required: true },
           bindAddr: { type: "string", required: true },
           bindPort: { type: "number", required: true },
-          remoteHost: { type: "string", required: true },
-          remotePort: { type: "number", required: true },
+          // Not required: a dynamic (SOCKS5) forward has no single remote
+          // endpoint, and demanding them made every tunnel_start kind=dynamic
+          // fail the host's output validation AFTER the listener was up.
+          remoteHost: { type: "string" },
+          remotePort: { type: "number" },
           targetHost: { type: "string" },
           targetPort: { type: "number" }
         }
@@ -101,6 +104,10 @@ export function registerTunnelTools(ctx, service) {
             remotePort: { type: "number" },
             targetHost: { type: "string" },
             targetPort: { type: "number" },
+            // Live SOCKS5 client count; a declared property, because
+            // additionalProperties is false and an undeclared field made
+            // tunnel_list fail validation whenever a dynamic forward existed.
+            connections: { type: "number" },
             active: { type: "boolean", required: true }
           } } }
         }

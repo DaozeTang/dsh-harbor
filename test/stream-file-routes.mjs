@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import HarborService from "../src/index.js";
+import { streamRouteDescriptor } from "../src/host/service/stream-routes.js";
 
 function response() {
   return {
@@ -34,10 +35,11 @@ function response() {
   let archiveCalled = false;
   service.streamDownloadArchive = async () => { archiveCalled = true; };
   const res = response();
+  // The WebServer admits a request before invoking the handler; this harness
+  // calls the handler as an already-admitted request.
   service.handleStreamRoute(
     { method: "GET", url: "/harbor/stream/archive?connectionId=c1&path=%2Fdata", socket: {} },
-    res,
-    { requestRejection: () => undefined }
+    res
  );
 
   assert.equal(archiveCalled, false, "archive must never enter the SSH exec implementation");
@@ -49,6 +51,22 @@ function response() {
       message: "archive streaming is disabled until SFTP namespace-safe archiving is available"
     }
   });
+}
+
+// The route descriptor is where the byte plane's admission contract lives.
+// DSH 0.2.2-rc.2 removed connection.requestRejection; WebServer registrations
+// default to auth: "required" and admit before the handler runs. Declaring it
+// explicitly keeps that security contract from depending on a host default.
+{
+  const calls = [];
+  const descriptor = streamRouteDescriptor({ handleStreamRoute: (...args) => calls.push(args) });
+  assert.equal(descriptor.kind, "prefix");
+  assert.equal(descriptor.path, "/harbor/stream");
+  assert.equal(descriptor.auth, "required", "the byte plane must never be anonymously reachable");
+  const req = { method: "GET", url: "/harbor/stream/file?connectionId=c1&path=%2Fx" };
+  const res = response();
+  descriptor.handler(req, res);
+  assert.deepEqual(calls, [[req, res]], "the registered handler delegates to the service");
 }
 
 console.log("stream routes: archive namespace guard passed");
@@ -86,7 +104,7 @@ console.log("stream routes: archive namespace guard passed");
   await new Promise((resolve) => setImmediate(resolve));
   const poll = (connectionId) => {
     const reply = response();
-    service.handleStreamRoute({ method: "GET", url: `/harbor/stream/verification?connectionId=${connectionId}&id=${id}` }, reply, { requestRejection: () => undefined });
+    service.handleStreamRoute({ method: "GET", url: `/harbor/stream/verification?connectionId=${connectionId}&id=${id}` }, reply);
     return reply;
   };
   assert.deepEqual(JSON.parse(poll("c1").body), { bytes: 256, total: 1024 });

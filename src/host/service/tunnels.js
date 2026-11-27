@@ -6,6 +6,16 @@ import { randomUUID } from "node:crypto";
 import { attachSocks5 } from "../socks5.js";
 import { fail } from "../envelope.js";
 
+/**
+ * A TCP port usable by forwardIn/forwardOut/net.connect: 0 means "let the OS
+ * pick" for a listen port. Anything else (absent, a string, negative, 70000)
+ * has to be refused before it reaches net.connect, whose ERR_SOCKET_BAD_PORT /
+ * ERR_MISSING_ARGS would be thrown from inside ssh2's event dispatch.
+ */
+function isPortNumber(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 65535;
+}
+
 export const withTunnels = (Base) => class extends Base {
   // ── Port forwarding (tunnels) ──────────────────────────────────────────────
 
@@ -42,17 +52,28 @@ export const withTunnels = (Base) => class extends Base {
           socket.destroy();
           return;
         }
+        // forwardOut is a full SSH round trip, and a local client can reset its
+        // connection inside that window. Without a listener installed NOW the
+        // 'error' event has zero listeners and Node throws it out of the emit,
+        // which DSH's fail-loud handler turns into a process exit — one
+        // ordinary RST would take the whole host down (#review P0-2).
+        let channel = null;
+        let socketFailed = false;
+        socket.on("error", () => {
+          socketFailed = true;
+          channel?.destroy?.();
+        });
         try {
-          conn.client.forwardOut(bindAddr, bindPort, request.remoteHost, request.remotePort, (error, channel) => {
+          conn.client.forwardOut(bindAddr, bindPort, request.remoteHost, request.remotePort, (error, late) => {
             // A channel arriving for a socket that is already gone is
             // discarded instead of piped into a dead object.
-            if (error || socket.destroyed) {
+            if (error || socketFailed || socket.destroyed) {
               socket.destroy();
-              channel?.destroy?.();
+              late?.destroy?.();
               return;
             }
+            channel = late;
             channel.on("error", () => socket.destroy());
-            socket.on("error", () => channel.destroy());
             socket.pipe(channel).pipe(socket);
           });
         } catch {
@@ -114,8 +135,29 @@ export const withTunnels = (Base) => class extends Base {
     // remoteHost/remotePort are the endpoint the SERVER listens on (the ssh -R
     // "bind" side) and targetHost/targetPort are the local target. bindAddr/
     // bindPort are accepted only as a fallback for older callers.
-    const listenAddr = (request.remoteHost ?? request.bindAddr ?? "127.0.0.1").trim() || "127.0.0.1";
+    const rawListenAddr = request.remoteHost ?? request.bindAddr ?? "127.0.0.1";
+    const listenAddr = String(rawListenAddr).trim() || "127.0.0.1";
     const listenPort = request.remotePort ?? request.bindPort ?? 0;
+    // Both ports are validated HERE, before forwardIn opens anything: the
+    // bridge runs inside ssh2's own 'tcp connection' dispatch, where a throw
+    // from net.connect (ERR_MISSING_ARGS for an absent port,
+    // ERR_SOCKET_BAD_PORT for an out-of-range one) escapes the EventEmitter
+    // and takes the host down. The tool schema does not make target_port
+    // required, so "remote forward with no target" is an ordinary mistake, not
+    // a hostile one — it must cost this call, never the process (#review P0-3).
+    if (!isPortNumber(listenPort)) {
+      return { ok: false, error: fail("tunnel-invalid-listen-port", `remote listen port must be an integer between 0 and 65535, got ${JSON.stringify(request.remotePort ?? request.bindPort ?? null)}`) };
+    }
+    const targetHost = request.targetHost === undefined || request.targetHost === null
+      ? "127.0.0.1"
+      : String(request.targetHost).trim();
+    if (targetHost.length === 0) {
+      return { ok: false, error: fail("tunnel-invalid-target", "remote forward needs a target_host: the local host the server's connections are forwarded to (default 127.0.0.1)") };
+    }
+    const targetPort = request.targetPort;
+    if (!isPortNumber(targetPort) || targetPort === 0) {
+      return { ok: false, error: fail("tunnel-invalid-target", `remote forward needs a target_port between 1 and 65535 (the local service the server's connections are forwarded to), got ${JSON.stringify(targetPort ?? null)}`) };
+    }
     let assignedPort = listenPort;
     try {
       await new Promise((resolve, reject) => {
@@ -134,15 +176,24 @@ export const withTunnels = (Base) => class extends Base {
       }
       // Bridge every accepted remote connection to the local target.
       const bridge = (info, accept) => {
-        // sshd reports the address the client connected to, not the wildcard
-        // the forward was bound to; match a wildcard bind by port only.
-        const addressMatches = listenAddr === "0.0.0.0" || listenAddr === "::" || info.destIP === listenAddr;
-        if (!addressMatches || info.destPort !== assignedPort) return;
-        const stream = accept();
-        const socket = net.connect(request.targetPort, request.targetHost);
-        socket.on("error", () => stream.destroy());
-        stream.on("error", () => socket.destroy());
-        stream.pipe(socket).pipe(stream);
+        // ssh2 emits 'tcp connection' from its own packet dispatch, so nothing
+        // thrown here is caught anywhere: one bad event would end the process.
+        // The body therefore never lets an exception out, and a failed bridge
+        // costs exactly the one forwarded channel.
+        let stream;
+        try {
+          // sshd reports the address the client connected to, not the wildcard
+          // the forward was bound to; match a wildcard bind by port only.
+          const addressMatches = listenAddr === "0.0.0.0" || listenAddr === "::" || info?.destIP === listenAddr;
+          if (!addressMatches || info?.destPort !== assignedPort) return;
+          stream = accept();
+          const socket = net.connect(targetPort, targetHost);
+          socket.on("error", () => stream.destroy());
+          stream.on("error", () => socket.destroy());
+          stream.pipe(socket).pipe(stream);
+        } catch {
+          try { stream?.destroy?.(); } catch {}
+        }
       };
       conn.client.prependListener("tcp connection", bridge);
       const bridgeInfo = { kind: "remote", bindAddr: listenAddr, bindPort: assignedPort, bridge };
@@ -153,8 +204,8 @@ export const withTunnels = (Base) => class extends Base {
         bindPort: assignedPort,
         remoteHost: listenAddr,
         remotePort: assignedPort,
-        targetHost: request.targetHost,
-        targetPort: request.targetPort,
+        targetHost,
+        targetPort,
         active: true,
         bridgeInfo
       });
@@ -167,8 +218,8 @@ export const withTunnels = (Base) => class extends Base {
           bindPort: assignedPort,
           remoteHost: listenAddr,
           remotePort: assignedPort,
-          targetHost: request.targetHost,
-          targetPort: request.targetPort
+          targetHost,
+          targetPort
         }
       };
     } catch (error) {
@@ -289,10 +340,12 @@ export const withTunnels = (Base) => class extends Base {
         kind: t.kind,
         bindAddr: t.bindAddr,
         bindPort: t.bindPort,
-        remoteHost: t.remoteHost,
-        remotePort: t.remotePort,
         active: t.active
       };
+      // A dynamic (SOCKS5) forward has no remote endpoint; emitting the keys
+      // with `undefined` is what the tool's output validator chokes on.
+      if (t.remoteHost !== undefined) entry.remoteHost = t.remoteHost;
+      if (t.remotePort !== undefined) entry.remotePort = t.remotePort;
       if (t.targetHost !== undefined) entry.targetHost = t.targetHost;
       if (t.targetPort !== undefined) entry.targetPort = t.targetPort;
       if (t.connections !== undefined) entry.connections = t.connections;

@@ -9,7 +9,9 @@ import { shellQuote } from "../safety.js";
 import { buildTrashCommand, parseSimpleDeleteCommand } from "../trash.js";
 import { t } from "../../i18n/core.js";
 import { posixLoginShell } from "../exec-cwd.js";
-import { askOperatorApproval } from "./ssh-session.js";
+import { inspectLocalAgentPath, resolveLocalAgentPath } from "../local-path-guard.js";
+import { askOperatorApproval, approvalTimeoutSeconds } from "./ssh-session.js";
+import { OPERATOR_APPROVAL_TIMEOUT_MS } from "../service/constants.js";
 
 export function registerSftpTools(ctx, service) {
   /**
@@ -38,6 +40,71 @@ export function registerSftpTools(ctx, service) {
   /** Second path of a rename must land on the same server as the first. */
   const target = (resolved, connectionId) => (connectionId ?? resolved.connectionId);
 
+  /**
+   * Bound one agent-supplied local path.
+   *
+   * `sftp_upload_*` read the DSH host's filesystem and `sftp_download_dir`
+   * writes it. DSH's file sandbox binds DSH's own tools, not plugin code, so
+   * without this gate a prompt-injected model could upload the operator's
+   * private keys, or drop a remote-controlled tree into ~/.ssh. A path at or
+   * below the session workspace is ordinary work; anything else suspends the
+   * call on the host approval channel for this one read/write and fails closed
+   * when no answerer exists.
+   *
+   * @param {object|undefined} exec - tool execution (agent, callId, signal).
+   * @param {unknown} localPath - the tool's local_path argument.
+   * @param {"read"|"write"} verb - what the tool is about to do locally.
+   * @param {string} toolName - prefix for the thrown message.
+   * @returns {Promise<string>} the absolute local path to hand to the service.
+   */
+  const requireLocalAgentPath = async (exec, localPath, verb, toolName) => {
+    try {
+      let workspaceRoot;
+      try {
+        workspaceRoot = service.sessionDirectoryOf?.(exec) ?? exec?.agent?.session?.header?.cwd;
+      } catch {
+        // A host without the working-directory service still has the session
+        // header; an unknown workspace simply falls through to the approval.
+        workspaceRoot = exec?.agent?.session?.header?.cwd;
+      }
+      const absolute = resolveLocalAgentPath(localPath, workspaceRoot);
+      const decision = await inspectLocalAgentPath(absolute, workspaceRoot);
+      if (decision.inside) return absolute;
+      const shown = decision.canonical ?? absolute;
+      const where = typeof workspaceRoot === "string" && workspaceRoot !== ""
+        ? workspaceRoot
+        : t("（本对话没有已知的工作区目录）");
+      const action = verb === "read" ? t("读取") : t("写入");
+      const timeoutMs = service.config?.approvalPromptTimeoutMs ?? OPERATOR_APPROVAL_TIMEOUT_MS;
+      const seconds = approvalTimeoutSeconds(timeoutMs);
+      const reason = t(`AI 请求${action}本次会话工作区之外的本地路径：\n${shown}\n会话工作区：${where}\n批准=仅本次${action}；拒绝=不触碰任何本地文件。`) + "\n\n" + t(`本次确认等待 ${seconds} 秒；超时未选择将自动拒绝。`);
+      // exec carries the agent/callId/signal, but the approval audit line wants
+      // the tool name too; the tool body's context is not guaranteed to have
+      // it, so name it explicitly.
+      const approvalExecution = {
+        ...exec,
+        name: exec?.name ?? toolName,
+        callId: exec?.callId,
+        agent: exec?.agent,
+        signal: exec?.signal
+      };
+      const { outcome, timedOut } = await askOperatorApproval(ctx, approvalExecution, reason, timeoutMs);
+      if (timedOut) {
+        throw new Error(t(`本地路径确认等待超过 ${seconds} 秒，未${action}任何本地文件。请勿自动重试；如确需${action}该路径，请让操作者在提示出现时选择。`));
+      }
+      if (outcome === "allowed-once") return absolute;
+      if (outcome === "rejected") {
+        throw new Error(t(`操作者拒绝了${action}工作区之外的本地路径（${shown}）。请勿重试或换路径绕行；如确需${action}，请让操作者自行处理。`));
+      }
+      if (outcome === "cancelled") {
+        throw new Error(t(`本地路径确认被取消，未${action}任何本地文件。请勿重试。`));
+      }
+      throw new Error(t(`该本地路径在工作区之外，必须由操作者确认，但当前宿主没有可用的审批通道；未${action}任何本地文件。请让操作者自行处理。`));
+    } catch (error) {
+      throw new Error(`${toolName} failed: ${error.message}`);
+    }
+  };
+
   // sftp_delete is a deletion by definition, so its gate asks unconditionally:
   // the whole call suspends until the operator answers, and only "allow"
   // records the voucher the body consumes to actually delete. Deny paths and
@@ -56,9 +123,34 @@ export function registerSftpTools(ctx, service) {
       if (!selected.ok) return { kind: "deny", reason: selected.error.message };
       const connectionId = selected.connectionId;
       const host = selected.connection?.host ?? connectionId;
+      const ownerSessionId = service.terminalOwner?.(execution.agent) ?? undefined;
+      const policy = service.resolveExecPolicy(connectionId, ownerSessionId);
       const command = `rm -rf ${shellQuote(preview.path)}`;
-      const reason = t(`AI 请求删除 ${host} 上的：\n${preview.path}\n批准后优先执行移入回收站的可逆删除；拒绝则不会删除任何内容。`);
-      const { outcome } = await askOperatorApproval(ctx, execution, reason);
+      // Under DSH Auto review or full access the tool call has already passed
+      // the session's authority. Ask nothing, but keep the voucher/trash
+      // protocol intact so the body still performs the reversible move.
+      if (policy.mode === "allowAll") {
+        service.recordOperatorApproval(execution.callId, connectionId, command);
+        return typeof next === "function" ? next() : undefined;
+      }
+      if (policy.approval === "never") {
+        return {
+          kind: "deny",
+          reason: policy.dsh?.ceiling === "readOnly"
+            ? t(`本次对话处于 DSH 只读模式，删除 ${preview.path} 未执行。请勿重试或绕行。`)
+            : t(`本次对话的 DSH 审批策略已关闭（never），删除 ${preview.path} 未执行。请勿重试；如确需删除，请让操作者在 DSH 权限选择器中切换模式，或自行在面板中处理。`)
+        };
+      }
+      const timeoutMs = service.config?.approvalPromptTimeoutMs ?? OPERATOR_APPROVAL_TIMEOUT_MS;
+      const seconds = approvalTimeoutSeconds(timeoutMs);
+      const reason = t(`AI 请求删除 ${host} 上的：\n${preview.path}\n批准后优先执行移入回收站的可逆删除；拒绝则不会删除任何内容。`) + "\n\n" + t(`本次确认等待 ${seconds} 秒；超时未选择将自动拒绝，不会删除任何内容。`);
+      const { outcome, timedOut } = await askOperatorApproval(ctx, execution, reason, timeoutMs);
+      if (timedOut) {
+        return {
+          kind: "deny",
+          reason: t(`删除操作的审批等待超过 ${seconds} 秒，未删除任何内容。请勿自动重试；如确需删除，请让操作者在提示出现时选择，或自行在面板中处理。`)
+        };
+      }
       if (outcome === "allowed-once") {
         service.recordOperatorApproval(execution.callId, connectionId, command);
         return typeof next === "function" ? next() : undefined;
@@ -191,7 +283,7 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_delete",
-    description: "Delete a remote file or directory over SFTP. Omit connection_id for the current server. Deletion suspends this call until the operator answers the host's confirmation prompt in the conversation: approving performs a reversible move to the server trash when the path is a simple literal (a real deletion otherwise), rejecting deletes nothing — never retry or route around a rejection.",
+    description: "Delete a remote file or directory over SFTP. Omit connection_id for the current server. Deletion follows the conversation's DSH permission mode; when Harbor's approval prompt is used it waits 120 seconds and then refuses. Approving performs a reversible move to the server trash when the path is a simple literal (a real deletion otherwise); rejecting deletes nothing — never retry or route around a rejection.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
       path: { type: "string", required: true, description: "Remote path to delete. A relative path resolves under the remote workspace root." }
@@ -215,6 +307,10 @@ export function registerSftpTools(ctx, service) {
       if (!selected.ok) throw new Error(`sftp_delete failed: ${selected.error.message}`);
       const connectionId = selected.connectionId;
       const command = `rm -rf ${shellQuote(resolved.path)}`;
+      const policy = service.resolveExecPolicy(connectionId, service.terminalOwner?.(exec?.agent) ?? undefined);
+      if (policy.mode !== "allowAll" && policy.approval === "never") {
+        return { path: resolved.path, blocked: true, reason: t("本次对话的 DSH 权限模式不允许请求授权，未删除任何内容。"), command };
+      }
       const parsed = parseSimpleDeleteCommand(command);
       const trashScript = parsed ? buildTrashCommand(parsed.targets) : null;
       if (!(exec?.callId !== undefined && service.consumeOperatorApproval(exec.callId, connectionId, command))) {
@@ -272,7 +368,7 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_upload_file",
-    description: "Upload one local file over the active SSH connection using bounded pipelined SFTP. A failed or cancelled task may be resumed after reconnecting to the same server using its task id; the source and remote prefix are verified. The destination is replaced only after completion.",
+    description: "Upload one local file over the active SSH connection using bounded pipelined SFTP. A failed or cancelled task may be resumed after reconnecting to the same server using its task id; the source and remote prefix are verified. The destination is replaced only after completion. A local source outside this conversation's workspace requires operator approval.",
     parameters: {
       connection_id: { type: "string", description: "SSH connection id; omit for the active connection." },
       local_path: { type: "string", required: true, description: "Local source file path." },
@@ -288,7 +384,8 @@ export function registerSftpTools(ctx, service) {
     },
     async execute(args, exec) {
       const target = await resolveTarget(exec, args.connection_id, args.remote_path);
-      const result = await service.sftpUploadLocalFile({ connectionId: target.connectionId, localPath: args.local_path, remotePath: target.path, resumeId: args.resume_id, signal: exec?.signal, ...(target.bound ? { remoteWorkspaceRoot: target.workspaceRoot } : {}) });
+      const localPath = await requireLocalAgentPath(exec, args.local_path, "read", "sftp_upload_file");
+      const result = await service.sftpUploadLocalFile({ connectionId: target.connectionId, localPath, remotePath: target.path, resumeId: args.resume_id, signal: exec?.signal, ...(target.bound ? { remoteWorkspaceRoot: target.workspaceRoot } : {}) });
       if (!result.ok) throw new Error(`sftp_upload_file failed: ${result.error.message}`);
       return result.value;
     }
@@ -296,7 +393,7 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_upload_dir",
-    description: "Upload a local directory tree to a remote server over SFTP, creating the remote directory structure. Small files transfer in parallel (bounded), large files one at a time for full link throughput. Per-file failures are reported, not fatal. Omit connection_id for the current server.",
+    description: "Upload a local directory tree to a remote server over SFTP, creating the remote directory structure. Small files transfer in parallel (bounded), large files one at a time for full link throughput. Per-file failures are reported, not fatal. Omit connection_id for the current server. A local source outside this conversation's workspace requires operator approval.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
       local_path: { type: "string", required: true, description: "Local directory to upload." },
@@ -324,9 +421,10 @@ export function registerSftpTools(ctx, service) {
     },
     async execute(args, exec) {
       const target = await resolveTarget(exec, args.connection_id, args.remote_path);
+      const localPath = await requireLocalAgentPath(exec, args.local_path, "read", "sftp_upload_dir");
       const result = await service.sftpUploadDir({
         connectionId: target.connectionId,
-        localPath: args.local_path,
+        localPath,
         remotePath: target.path,
         signal: exec?.signal,
  ...(target.bound ? { remoteWorkspaceRoot: target.workspaceRoot } : {})
@@ -338,7 +436,7 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_download_dir",
-    description: "Download a remote directory tree over SFTP to a local directory, recreating the structure. Small files transfer in parallel (bounded), large files one at a time. Per-file failures are reported, not fatal. Omit connection_id for the current server.",
+    description: "Download a remote directory tree over SFTP to a local directory, recreating the structure. Small files transfer in parallel (bounded), large files one at a time. Per-file failures are reported, not fatal. Omit connection_id for the current server. A local destination outside this conversation's workspace requires operator approval.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
       remote_path: { type: "string", required: true, description: "Remote directory to download." },
@@ -366,10 +464,11 @@ export function registerSftpTools(ctx, service) {
     },
     async execute(args, exec) {
       const target = await resolveTarget(exec, args.connection_id, args.remote_path);
+      const localPath = await requireLocalAgentPath(exec, args.local_path, "write", "sftp_download_dir");
       const result = await service.sftpDownloadDir({
         connectionId: target.connectionId,
         remotePath: target.path,
-        localPath: args.local_path,
+        localPath,
         signal: exec?.signal
       });
       if (!result.ok) throw new Error(`sftp_download_dir failed: ${result.error.message}`);

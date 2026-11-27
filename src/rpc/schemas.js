@@ -228,6 +228,14 @@ export const agentSettingsSaveRequestSchema = z.object({
 
 // ── execution policy (session-scoped switching; operator-only RPC) ──────────
 
+const dshPermissionSchema = z.object({
+  preset: z.string().nullable(),
+  sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]).nullable(),
+  approval: z.enum(["ask", "never"]).nullable(),
+  ceiling: z.enum(["auto", "allowAll", "standard", "readOnly"]),
+  source: z.enum(["dsh-auto", "dsh-full-access", "dsh-workspace-write", "dsh-read-only"])
+});
+
 export const execPolicyGetRequestSchema = z.object({ connectionId: z.string().optional(), sessionId: ownerSessionIdSchema.optional() });
 export const execPolicyGetResultSchema = resultSchema(z.object({
   // The tier in force for this connection right now.
@@ -239,7 +247,11 @@ export const execPolicyGetResultSchema = resultSchema(z.object({
   allow: z.array(z.string()),
   // Raw settings so the panel can render where each layer points.
   global: z.object({ policy: execPolicyModeSchema, allow: z.array(z.string()) }),
-  profileOverride: execPolicyModeSchema.nullable()
+  profileOverride: execPolicyModeSchema.nullable(),
+  // The DSH session ceiling, when the host composed permission presets. Absent
+  // on older hosts and for callers without a conversation id.
+  dsh: dshPermissionSchema.optional(),
+  approval: z.enum(["ask", "never"]).optional()
 }));
 export const execPolicySetRequestSchema = z.object({ connectionId: z.string(), policy: execPolicyModeSchema, sessionId: ownerSessionIdSchema.optional() });
 export const execPolicySetResultSchema = execPolicyGetResultSchema;

@@ -16,6 +16,12 @@ import { t } from "../i18n/core.js";
 export const MAX_INPUT_LINE_LENGTH = 8192;
 
 /**
+ * C0 controls that demonstrably leave the shell's line buffer alone. Anything
+ * else is treated as an editor key and invalidates the mirror.
+ */
+const LINE_PRESERVING_CONTROLS = new Set(["\x00", "\x07", "\x0c", "\x11", "\x13"]);
+
+/**
  * Advance the mirror over `text`.
  * @param {{ inputLine: string, inputKnown: boolean }} state mirror, mutated in place
  * @param {string} text raw characters heading for the PTY
@@ -66,6 +72,16 @@ export function processTerminalInput(state, text, decide) {
       continue;
     }
     if (char.codePointAt(0) < 32) {
+      // Every other C0 control either edits the line editor's buffer or does
+      // something the mirror cannot predict: ^A/^E move the cursor, ^K/^W/^U
+      // kill text, ^D/^T/^Y edit, ^P/^N walk history, ^R searches. Forwarding
+      // them without touching the mirror left `xrm -rf /` looking like the
+      // harmless line "xrm -rf /" while the shell ran "rm -rf /" — those keys
+      // now poison the mirror, so the next Enter fails closed instead of
+      // submitting a line nobody inspected. Only the four below are provably
+      // line-preserving (NUL and BEL are ignored, ^L redraws, ^Q/^S are flow
+      // control consumed by the tty).
+      if (!LINE_PRESERVING_CONTROLS.has(char)) state.inputKnown = false;
       forwarded += char;
       continue;
     }

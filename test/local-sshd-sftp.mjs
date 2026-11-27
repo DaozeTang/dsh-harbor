@@ -71,31 +71,31 @@ try {
   service.resolveConnection = () => ({ ok: true, connection });
   service.requireSftp = async () => ({ ok: true, sftp });
   service.ctx = { logger: { warn() {} } };
-  const web = createServer((req, res) => service.handleStreamRoute(req, res, {
-    requestRejection: () => req.headers["x-test-auth"] === "yes" ? undefined : 401
-  }));
+  // The production route is registered with auth: "required"; the DSH
+  // WebServer admits a request before it calls the handler. This direct
+  // harness therefore calls the handler as an already-admitted request.
+  const web = createServer((req, res) => service.handleStreamRoute(req, res));
   await new Promise((resolve) => web.listen(0, "127.0.0.1", resolve));
   try {
     const endpoint = `http://127.0.0.1:${web.address().port}/harbor/stream/file?connectionId=local-ssh&path=%2Fpipeline-source.bin&verify=sha256`;
-    assert.equal((await fetch(endpoint)).status, 401, "download requires host authentication");
-    const response = await fetch(endpoint, { headers: { "x-test-auth": "yes" } });
+    const response = await fetch(endpoint);
     assert.equal(response.status, 200);
     assert.equal(Number(response.headers.get("content-length")), payload.length);
     const downloaded = Buffer.from(await response.arrayBuffer());
     const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
     assert.equal(digest(downloaded), digest(payload), "HTTP stream and SFTP source have the same SHA-256");
     assert.equal(response.headers.get("x-content-sha256"), digest(payload), "download advertises the verified remote digest");
-    const resumed = await fetch(`${endpoint}&offset=12345&expectedSha256=${digest(payload)}`, { headers: { "x-test-auth": "yes" } });
+    const resumed = await fetch(`${endpoint}&offset=12345&expectedSha256=${digest(payload)}`);
     assert.equal(resumed.status, 200);
     assert.equal(resumed.headers.get("x-download-offset"), "12345");
     assert.deepEqual(Buffer.from(await resumed.arrayBuffer()), payload.subarray(12345));
-    const stale = await fetch(`${endpoint}&offset=12345&expectedSha256=${"0".repeat(64)}`, { headers: { "x-test-auth": "yes" } });
+    const stale = await fetch(`${endpoint}&offset=12345&expectedSha256=${"0".repeat(64)}`);
     assert.equal(stale.status, 409);
-    const finished = await fetch(`${endpoint}&offset=${payload.length}&expectedSha256=${digest(payload)}`, { headers: { "x-test-auth": "yes" } });
+    const finished = await fetch(`${endpoint}&offset=${payload.length}&expectedSha256=${digest(payload)}`);
     assert.equal(finished.status, 200);
     assert.equal((await finished.arrayBuffer()).byteLength, 0);
     const uploadUrl = `http://127.0.0.1:${web.address().port}/harbor/stream/file?connectionId=local-ssh&path=%2Fbrowser-upload.bin&overwrite=false`;
-    const put = (body) => fetch(uploadUrl, { method: "PUT", headers: { "x-test-auth": "yes" }, body });
+    const put = (body) => fetch(uploadUrl, { method: "PUT", body });
     const firstUpload = await put(payload);
     assert.equal(firstUpload.status, 200, JSON.stringify(await firstUpload.json()));
     const conflictingUpload = await put("replacement");

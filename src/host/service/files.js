@@ -10,6 +10,20 @@ import { fail } from "../envelope.js";
 import { MAX_FILE_READ_BYTES, MAX_COMMAND_OUTPUT_BYTES } from "./constants.js";
 import { tailCapped } from "./text.js";
 
+/**
+ * Release one SCP channel. `end()` sends EOF so the remote `scp -t` exits;
+ * `close()` is the fallback for a channel that already errored out. Both are
+ * best-effort — a dead transport must not turn cleanup into a thrown error.
+ */
+function closeScpChannel(stream) {
+  if (stream === undefined || stream === null) return;
+  try {
+    if (stream.destroyed === true) return;
+    if (typeof stream.end === "function") stream.end();
+    else if (typeof stream.close === "function") stream.close();
+  } catch {}
+}
+
 export const withFiles = (Base) => class extends Base {
   // ── SFTP (file management) ─────────────────────────────────────────────────
 
@@ -26,6 +40,19 @@ export const withFiles = (Base) => class extends Base {
           else resolve(s);
         });
       });
+      // A subsystem dies independently of the transport: the remote
+      // sftp-server exits, sshd evicts the channel, an idle timeout fires.
+      // Keeping a dead wrapper in `connection.sftp` made every later SFTP call
+      // wait for a reply that can never arrive — the panel just hung with no
+      // error, forever, because nothing ever invalidated the cache. Drop it the
+      // moment the subsystem ends, and keep an 'error' listener on it so a late
+      // error is consumed here instead of becoming an uncaught event.
+      const drop = () => {
+        if (connection.sftp === sftp) connection.sftp = null;
+      };
+      sftp.once?.("close", drop);
+      sftp.once?.("end", drop);
+      sftp.once?.("error", drop);
       connection.sftp = sftp;
       return { ok: true, sftp };
     } catch (error) {
@@ -44,12 +71,12 @@ export const withFiles = (Base) => class extends Base {
     if (!sftp.ok) return sftp;
     const remotePath = request.path || ".";
     try {
-      const entries = await new Promise((resolve, reject) => {
+      const entries = await this.sftpDeadline(new Promise((resolve, reject) => {
         sftp.sftp.readdir(remotePath, (error, list) => {
           if (error) reject(error);
           else resolve(list);
         });
-      });
+      }));
       const items = await Promise.all(entries.map(async (entry) => {
         const kind = entry.attrs.mode & 0o170000;
         let isDirectory = kind === 0o040000;
@@ -60,9 +87,9 @@ export const withFiles = (Base) => class extends Base {
         if (kind === 0o120000) {
           const entryPath = remotePath === "/" ? `/${entry.filename}` : `${remotePath.replace(/\/+$/, "")}/${entry.filename}`;
           try {
-            const attrs = await new Promise((resolve, reject) => {
+            const attrs = await this.sftpDeadline(new Promise((resolve, reject) => {
               sftp.sftp.stat(entryPath, (error, value) => (error ? reject(error) : resolve(value)));
-            });
+            }));
             isDirectory = (attrs.mode & 0o170000) === 0o040000;
           } catch {
             // A broken or inaccessible link remains downloadable as a file;
@@ -90,12 +117,12 @@ export const withFiles = (Base) => class extends Base {
     const sftp = await this.requireSftp(selected.connection);
     if (!sftp.ok) return sftp;
     try {
-      const attrs = await new Promise((resolve, reject) => {
+      const attrs = await this.sftpDeadline(new Promise((resolve, reject) => {
         sftp.sftp.stat(request.path, (error, a) => {
           if (error) reject(error);
           else resolve(a);
         });
-      });
+      }));
       return {
         ok: true,
         value: {
@@ -225,6 +252,8 @@ export const withFiles = (Base) => class extends Base {
       };
     } catch (error) {
       return { ok: false, error: fail("scp-read-failed", `${request.path}: ${stream?.scpStderr?.trim() || error.message}`) };
+    } finally {
+      closeScpChannel(stream);
     }
   }
 
@@ -240,6 +269,13 @@ export const withFiles = (Base) => class extends Base {
       return { ok: true, value: { path: request.path, bytes: result.bytes } };
     } catch (error) {
       return { ok: false, error: fail("scp-write-failed", `${request.path}: ${stream?.scpStderr?.trim() || error.message}`) };
+    } finally {
+      // The remote `scp -t` exits on stdin EOF. Without this the process stays
+      // alive after a completed upload, holding one SSH session channel — and
+      // sshd's MaxSessions (10 by default) then refuses every later exec,
+      // shell and SFTP channel on this connection, which is how ten uploads
+      // silently break a server.
+      closeScpChannel(stream);
     }
   }
 
@@ -250,12 +286,12 @@ export const withFiles = (Base) => class extends Base {
     const sftp = await this.requireSftp(selected.connection);
     if (!sftp.ok) return sftp;
     try {
-      await new Promise((resolve, reject) => {
+      await this.sftpDeadline(new Promise((resolve, reject) => {
         sftp.sftp.mkdir(request.path, (error) => {
           if (error) reject(error);
           else resolve();
         });
-      });
+      }));
       return { ok: true, value: { path: request.path } };
     } catch (error) {
       return { ok: false, error: fail("sftp-mkdir-failed", `${request.path}: ${error.message}`) };
@@ -269,19 +305,19 @@ export const withFiles = (Base) => class extends Base {
     const sftp = await this.requireSftp(selected.connection);
     if (!sftp.ok) return sftp;
     try {
-      const isDir = await new Promise((resolve, reject) => {
+      const isDir = await this.sftpDeadline(new Promise((resolve, reject) => {
         sftp.sftp.stat(request.path, (error, attrs) => {
           if (error) reject(error);
           else resolve((attrs.mode & 0o170000) === 0o040000);
         });
-      });
-      await new Promise((resolve, reject) => {
+      }));
+      await this.sftpDeadline(new Promise((resolve, reject) => {
         const fn = isDir ? sftp.sftp.rmdir : sftp.sftp.unlink;
         fn.call(sftp.sftp, request.path, (error) => {
           if (error) reject(error);
           else resolve();
         });
-      });
+      }));
       return { ok: true, value: { path: request.path, isDirectory: isDir } };
     } catch (error) {
       return { ok: false, error: fail("sftp-delete-failed", `${request.path}: ${error.message}`) };
@@ -338,16 +374,46 @@ export const withFiles = (Base) => class extends Base {
     const sftp = await this.requireSftp(selected.connection);
     if (!sftp.ok) return sftp;
     try {
-      await new Promise((resolve, reject) => {
+      // POSIX/OpenSSH rename(2) silently replaces an existing destination, so a
+      // typo in the rename dialog destroyed a file nobody selected. A rename is
+      // "move this name"; replacing content is a separate decision the operator
+      // makes by deleting the target first.
+      const existing = await this.sftpDeadline(new Promise((resolve) => {
+        sftp.sftp.lstat(request.to, (error, attrs) => resolve(error ? null : attrs));
+      }));
+      if (existing !== null && !(await this.isSameRemoteEntry(sftp, request.from, existing))) {
+        return { ok: false, error: fail("target-exists", `${request.to} already exists; delete it first if you meant to replace it`) };
+      }
+      await this.sftpDeadline(new Promise((resolve, reject) => {
         sftp.sftp.rename(request.from, request.to, (error) => {
           if (error) reject(error);
           else resolve();
         });
-      });
+      }));
       return { ok: true, value: { from: request.from, to: request.to } };
     } catch (error) {
       return { ok: false, error: fail("sftp-rename-failed", `${request.from} -> ${request.to}: ${error.message}`) };
     }
+  }
+
+  /**
+   * Whether the destination of a rename is the SAME entry as the source — a
+   * case-only rename on a case-insensitive filesystem (`file` -> `File`), or a
+   * trailing-slash variation. SFTP v3 exposes no inode number, so equality is
+   * decided by the stable attributes a rename cannot change.
+   */
+  async isSameRemoteEntry(sftp, from, toAttrs) {
+    let fromAttrs;
+    try {
+      fromAttrs = await this.sftpDeadline(new Promise((resolve, reject) => {
+        sftp.sftp.lstat(from, (error, attrs) => (error ? reject(error) : resolve(attrs)));
+      }));
+    } catch {
+      return false;
+    }
+    return fromAttrs.size === toAttrs.size
+      && fromAttrs.mtime === toAttrs.mtime
+      && fromAttrs.mode === toAttrs.mode;
   }
 
   // ── Directory batch transfer (SFTP) ────────────────────────────────────────

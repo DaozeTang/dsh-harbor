@@ -14,6 +14,7 @@ import {
   saveCommandSnippets, searchCommandSnippets, snippetParameters
 } from "../../command-snippets.js";
 import { harborUiSetError } from "../../store.js";
+import { resolvePaneTerminal } from "../../session-terminals.js";
 import { t } from "../../../i18n/core.js";
 
 export function SnippetsView({ api, active, sessionId, profiles, groups, onFilled }) {
@@ -35,9 +36,12 @@ export function SnippetsView({ api, active, sessionId, profiles, groups, onFille
     return () => cancelAnimationFrame(frame);
   }, []);
 
-  // Type into THIS conversation's terminal; an older host has no `terminals`
-  // array, and then its first session is what "the terminal" meant.
-  const targetSessionId = sessionId ?? active?.sessions?.[0] ?? null;
+  // Type into THIS conversation's terminal. `sessionId` is the DSH conversation
+  // id — a PTY id only looks similar. Passing it straight to api.write meant
+  // every snippet failed with no-session, because the host looks the id up in
+  // its terminal table. resolvePaneTerminal owns that translation (and keeps the
+  // older-host fallback of "the connection's only shell").
+  const targetSessionId = resolvePaneTerminal(active, sessionId).sessionId;
   const visible = useMemo(
     () => searchCommandSnippets(matchingCommandSnippets(availableCommandSnippets(items), active, profiles), query),
     [items, active, profiles, query]

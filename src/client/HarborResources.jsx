@@ -1676,6 +1676,7 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
           />
         </Field>
         <div className="hb-quiet">{policyHint}</div>
+        <Notice icon="info-outline">{t("对话里选择的 DSH 权限模式会作为本次对话的上限：自动审查和完全访问会让 Harbor 让出默认拦截，仅工作区写只能使用标准档，只读会直接拒绝危险命令。")}</Notice>
 
         {execPolicy === "custom" && (
           <div className="hb-stack hb-stack--tight">

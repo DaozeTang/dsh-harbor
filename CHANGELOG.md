@@ -2,6 +2,16 @@
 
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。0.2.0 为首个公开版本，0.1.0 是其内部基线。
 
+## 0.5.2 — 2026-11-27
+
+**审批有期限，执行策略跟随 DSH 权限模式。**
+
+- **审批不再无限等待**：DSH 的 approval seam 没有 TTL，Harbor 之前只把外层 signal 传进去。现在 `askOperatorApproval` 自己拥有 120 秒期限，并用 `Promise.race` 兜底；超时会中止审批 signal、让 DSH 撤下卡片、返回明确的 timeout deny，且不会记录一次性凭证；晚到的 `allowed-once` 也会被丢弃。覆盖 `ssh_exec`、`terminal_send`、`sftp_delete`。
+- **终端拆行不再绕过**：`terminal_send` 之前只检查当前这段 `text`，Agent 可以分两次输入 `r` 和 `m -rf ...` 再回车绕过黑名单。现在 gate 会在会话的输入行镜像上模拟本次发送，按回车提交的完整命令行判定，审批文案也展示完整行；未提交的片段不提前拦截，到真正提交时再检查。
+- **跟随 DSH 会话权限**：新增 `src/host/dsh-permission.js`，从 `permissionPresets` / `sandboxPolicy` / `approval` 读取本对话的模式，作为 Harbor 策略的上限：auto 让渡给 Auto review，danger-full-access 默认 allowAll，workspace-write 固定 standard，read-only 直接拒绝；没有权限预设时保持原行为。显式 Harbor 会话切换只能收紧，不能放宽。
+- **面板与设置**：策略胶囊显示「（DSH）」与当前模式，菜单禁用超过上限的档位；设置页说明 DSH 模式是上限；完全访问 + `never` 下收紧会提示无法再请求审批。
+- **测试**：新增 `test/dsh-permission.mjs`，扩展 `test/ask-gate.mjs` 覆盖 120 秒期限、晚到授权、只读/完全访问、SFTP 删除；`i18n`、`lint`、`build` 通过。
+
 ## 0.5.1 — 2026-11-27
 
 **Agent 操作与右侧栏看板对齐：连接、终端与命令不再绕过面板。**

@@ -8,6 +8,8 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import { assessShellCommand, CATEGORY_DELETE_FILES } from "../safety.js";
 import { parseSimpleDeleteCommand } from "../trash.js";
 import { t } from "../../i18n/core.js";
+import { OPERATOR_APPROVAL_TIMEOUT_MS } from "../service/constants.js";
+import { processTerminalInput } from "../terminal-input.js";
 
 /** Human name for an execution-policy tier, for agent-facing notices. */
 export function execPolicyLabel(mode) {
@@ -16,30 +18,114 @@ export function execPolicyLabel(mode) {
   return t("标准");
 }
 
+/** Whole seconds a prompt waits before Harbor withdraws it, for operator-facing copy. */
+export function approvalTimeoutSeconds(timeoutMs) {
+  const value = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : OPERATOR_APPROVAL_TIMEOUT_MS;
+  return Math.max(1, Math.round(value / 1000));
+}
+
+/**
+ * Assess one terminal_send against the command that will actually be
+ * submitted, not only the fragment in this call.
+ *
+ * The official terminal tool writes text into the PTY; an agent can split a
+ * command across calls (type "r", then "m -rf ...", then Enter). Screening only
+ * the current text would let the completed line bypass the deny-list. The
+ * session's input mirror already tracks the operator/agent line, so simulate
+ * this text against a clone of that mirror and decide every Enter it contains.
+ * A text without Enter is allowed to type (it cannot execute yet); the later
+ * submit call re-checks the accumulated line.
+ *
+ * @param {object|undefined} binding - Harbor's terminal binding for the registry session.
+ * @param {string} text - this terminal_send call's text.
+ * @param {object} policy - the resolved Harbor/DSH policy.
+ * An unknown mirror is reported as `unverified`, never as a blank line: this
+ * Enter would submit a line nobody can name, so the caller must deny instead of
+ * asking the operator to approve " ".
+ *
+ * @returns {{ok: boolean, reason?: string, category?: string, line?: string|null, unverified?: boolean}}
+ */
+export function assessTerminalSend(binding, text, policy) {
+  const session = binding?.session;
+  if (session === undefined || typeof text !== "string") return assessShellCommand(text, policy);
+  const simulated = {
+    inputLine: typeof session.inputLine === "string" ? session.inputLine : "",
+    inputKnown: session.inputKnown !== false
+  };
+  let blocked = null;
+  const { blockedReason } = processTerminalInput(simulated, text, (line) => {
+    const decision = assessShellCommand(line, policy);
+    if (!decision.ok && blocked === null) blocked = { ...decision, line };
+    return decision;
+  });
+  if (blocked !== null) return blocked;
+  if (blockedReason !== null) return { ok: false, reason: blockedReason, line: null, unverified: true };
+  return { ok: true };
+}
+
 /**
  * Ask the operator through the host's approval channel. Returns the raw
- * outcome ("allowed-once" | "rejected" | "cancelled" | "unavailable") so the
- * gate can grant precisely, and degrades to "unavailable" whenever the host
- * composes no approval service, exposes none to plugins, or the call has no
- * agent to route the prompt to — fail-closed in every direction.
+ * outcome ("allowed-once" | "rejected" | "cancelled" | "unavailable") plus
+ * whether Harbor's own deadline ended the wait, and degrades to "unavailable"
+ * whenever the host composes no approval service, exposes none to plugins, or
+ * the call has no agent to route the prompt to — fail-closed in every
+ * direction.
+ *
+ * DSH deliberately gives approvals no TTL: the request waits until an answerer
+ * decides or the caller's signal aborts. A tool call must not inherit that
+ * unbounded wait, so this seam owns a deadline. It aborts the request signal,
+ * which makes the approval service settle "cancelled" and makes the DSH
+ * Gateway withdraw the browser card; a late "allowed-once" that races the
+ * deadline is still reported as a timeout and never grants the command.
+ *
+ * @param ctx - host context carrying the optional approval service.
+ * @param execution - the tool execution being gated.
+ * @param reason - operator-facing explanation of the command.
+ * @param timeoutMs - deadline in milliseconds; defaults to the shared constant.
+ * @returns the outcome and whether the deadline (not an answer) ended the ask.
  */
-export async function askOperatorApproval(ctx, execution, reason) {
+export async function askOperatorApproval(ctx, execution, reason, timeoutMs = OPERATOR_APPROVAL_TIMEOUT_MS) {
   let approval;
   try { approval = ctx.get("approval"); } catch { approval = undefined; }
   if (approval === undefined || execution?.agent === undefined || execution?.callId === undefined) {
-    return { outcome: "unavailable" };
+    return { outcome: "unavailable", timedOut: false };
   }
-  try {
-    const outcome = await approval.request({
+  if (execution.signal?.aborted) return { outcome: "cancelled", timedOut: false };
+  const limit = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : OPERATOR_APPROVAL_TIMEOUT_MS;
+  const deadline = new AbortController();
+  const signal = execution.signal === undefined
+    ? deadline.signal
+    : AbortSignal.any([execution.signal, deadline.signal]);
+  // The race is the guarantee, not just the signal: a deployment whose
+  // approval answerer never settles on abort must not suspend the tool call.
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      deadline.abort(new Error("approval prompt timed out"));
+      resolve({ outcome: "cancelled", timedOut: true });
+    }, limit);
+  });
+  const answer = Promise.resolve()
+    .then(() => approval.request({
       agent: execution.agent,
       toolName: execution.name,
       callId: execution.callId,
       reason,
-      signal: execution.signal
-    });
-    return { outcome: typeof outcome === "string" ? outcome : "unavailable" };
-  } catch {
-    return { outcome: "unavailable" };
+      signal
+    }))
+    .then(
+      (outcome) => ({ outcome: typeof outcome === "string" ? outcome : "unavailable", timedOut: false }),
+      () => ({ outcome: "unavailable", timedOut: false })
+    );
+  try {
+    const settled = await Promise.race([answer, expired]);
+    // A timer that fired while the answer was landing still wins the security
+    // decision: a grant that arrives at the deadline must not run the command.
+    return deadline.signal.aborted
+      ? { outcome: "cancelled", timedOut: true }
+      : settled;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -70,27 +156,66 @@ export function registerSshSessionTools(ctx, service) {
         // unknown ids stay with whatever gate the host's terminal plugin has.
         const binding = service.bindingForTerminal?.(execution.arguments?.sessionId);
         if (binding === undefined) return typeof next === "function" ? next() : undefined;
-        target = { connectionId: binding.connectionId, connection: service.connections?.get(binding.connectionId) };
+        target = { connectionId: binding.connectionId, connection: service.connections?.get(binding.connectionId), binding };
       } else {
         target = service.resolveConnection(execution.arguments?.connection_id, ownerSessionId);
         if (!target.ok) return typeof next === "function" ? next() : undefined; // no target: let the tool report the honest error
       }
       const policy = service.resolveExecPolicy(target.connectionId, ownerSessionId);
-      const decision = assessShellCommand(command, policy);
+      // A terminal_send may be only a fragment of a line the agent has already
+      // typed. Assess the accumulated input line that this call will submit,
+      // not just the fragment, or split sends could bypass the deny-list.
+      const sentText = name === "terminal_send" && execution.arguments?.submit !== false
+        ? `${command}\r`
+        : command;
+      const decision = target.binding !== undefined
+        ? assessTerminalSend(target.binding, sentText, policy)
+        : assessShellCommand(command, policy);
+      const assessedCommand = decision.line ?? command;
       if (decision.ok) return typeof next === "function" ? next() : undefined;
+      // The mirror cannot say what this Enter submits (history navigation,
+      // completion, an editing key). There is nothing to show the operator, and
+      // an "allow" would submit the hidden line — so this fails closed instead
+      // of asking. Ctrl-C resets the shell's line and the mirror with it.
+      if (decision.unverified === true) {
+        return {
+          kind: "deny",
+          reason: t("终端当前行无法验证（此前出现过方向键、补全或行编辑键），无法判断这次回车会提交什么，命令未执行。可先向该终端发送 Ctrl-C（^C）清空当前行，或让操作者在终端里回车后重试。")
+        };
+      }
+      // The DSH session mode can be read-only, or its approval policy can be
+      // "never". Neither leaves a channel to ask: return the reason directly
+      // instead of calling approval.request() just to receive an immediate
+      // "rejected" that looks like a human refusal.
+      if (policy.approval === "never") {
+        return {
+          kind: "deny",
+          reason: policy.dsh?.ceiling === "readOnly"
+            ? t("本次对话处于 DSH 只读模式，危险命令未执行。请勿重试或绕行；如确需执行，请让操作者在 DSH 权限选择器中切换模式。")
+            : t("本次对话的 DSH 审批策略已关闭（never），无法请求授权，危险命令未执行。请勿重试；如确需执行，请让操作者在 DSH 权限选择器中切换模式，或直接在终端执行。")
+        };
+      }
       let trashNote = "";
-      if (decision.category === CATEGORY_DELETE_FILES && parseSimpleDeleteCommand(command)) {
+      if (decision.category === CATEGORY_DELETE_FILES && parseSimpleDeleteCommand(assessedCommand)) {
         trashNote = t("（批准后实际执行的是移入回收站的可逆操作，不会真删）");
       }
       const host = target.connection?.host ?? "";
-      const reason = t(`AI 请求在 ${host} 上执行危险命令，已被执行策略（${execPolicyLabel(policy.mode)}）拦截：\n${command}\n风险类别：${t(decision.category ?? decision.reason)}${trashNote}\n批准=本次执行；拒绝=命令不会运行。`);
-      const { outcome } = await askOperatorApproval(ctx, execution, reason);
+      const timeoutMs = service.config?.approvalPromptTimeoutMs ?? OPERATOR_APPROVAL_TIMEOUT_MS;
+      const seconds = approvalTimeoutSeconds(timeoutMs);
+      const reason = t(`AI 请求在 ${host} 上执行危险命令，已被执行策略（${execPolicyLabel(policy.mode)}）拦截：\n${assessedCommand}\n风险类别：${t(decision.category ?? decision.reason)}${trashNote}\n批准=本次执行；拒绝=命令不会运行。`) + "\n\n" + t(`本次确认等待 ${seconds} 秒；超时未选择将自动拒绝，命令不会执行。`);
+      const { outcome, timedOut } = await askOperatorApproval(ctx, execution, reason, timeoutMs);
+      if (timedOut) {
+        return {
+          kind: "deny",
+          reason: t(`审批等待超过 ${seconds} 秒，危险命令未执行。请勿自动重试；如仍需执行，请让操作者在提示出现时选择，或直接在终端执行。`)
+        };
+      }
       if (outcome === "allowed-once") {
         if (name === "ssh_exec") service.recordOperatorApproval(execution.callId, target.connectionId, command);
         return typeof next === "function" ? next() : undefined;
       }
       if (outcome === "rejected") {
-        return { kind: "deny", reason: t(`操作者拒绝了该危险命令（${command}）。请勿重试或换写法绕行；如确需执行，请让操作者自行在终端运行，或请其调整右侧面板的执行策略。`) };
+        return { kind: "deny", reason: t(`操作者拒绝了该危险命令（${assessedCommand}）。请勿重试或换写法绕行；如确需执行，请让操作者自行在终端运行，或请其调整右侧面板的执行策略。`) };
       }
       if (outcome === "cancelled") {
         return { kind: "deny", reason: t("危险命令的确认被取消，命令未执行。请勿重试；如确需执行请与操作者确认。") };
@@ -323,7 +448,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_exec",
-    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes; command output is mirrored into YOUR conversation's terminal, not into other chats'. If this conversation has no terminal on the target, one is opened automatically so the operator can see the command and its output in Harbor. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; use terminal_send in the conversation's terminal instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux/POSIX hosts the dedicated exec channel starts in YOUR conversation's terminal's verified current directory. A busy or ambiguous terminal falls back to the login directory (the result's first line reports the cwd actually used); a terminal whose directory cannot be read rejects the command instead of guessing. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands suspend this call until the operator answers the host's confirmation prompt in the conversation: approving runs the command once, rejecting denies it — never retry or route around a rejection. The command and output are also shown in the terminal panel.",
+    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes; command output is mirrored into YOUR conversation's terminal, not into other chats'. If this conversation has no terminal on the target, one is opened automatically so the operator can see the command and its output in Harbor. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; use terminal_send in the conversation's terminal instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux/POSIX hosts the dedicated exec channel starts in YOUR conversation's terminal's verified current directory. A busy or ambiguous terminal falls back to the login directory (the result's first line reports the cwd actually used); a terminal whose directory cannot be read rejects the command instead of guessing. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands follow the conversation's DSH permission mode: a Harbor approval prompt waits 120 seconds and then refuses; under Auto review or full access the session's own gate applies; read-only refuses them. Never retry or route around a refusal. The command and output are also shown in the terminal panel.",
     parameters: {
       connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
       command: { type: "string", required: true, description: "The shell command to execute." },
@@ -352,6 +477,7 @@ export function registerSshSessionTools(ctx, service) {
           command: { type: "string" },
           policy: { type: "string" },
           policySource: { type: "string" },
+          policyBasis: { type: "string" },
           // Set when the connection is visible but its terminal could not be
           // opened; the exec itself still succeeded.
           warning: { type: "string" },

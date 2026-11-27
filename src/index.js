@@ -10,15 +10,17 @@
  * host/ssh2-client.js.
  */
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { fail } from "./host/envelope.js";
 import { noConnectionGuidance } from "./host/agent-connect.js";
 import { ShellIntegrationTracker, SHELL_FAMILY_PROBE, parseShellFamilyProbe, shellIntegrationCommand } from "./host/shell-integration.js";
 import { buildCwdAwareCommand, posixLoginShell } from "./host/exec-cwd.js";
 import { t } from "./i18n/core.js";
 import { HarborServiceCore } from "./host/service/index.js";
-import { MAX_BUFFER_BYTES, MAX_COMMAND_OUTPUT_BYTES, MAX_CAPTURE_BYTES, MAX_SESSIONS, MAX_SESSIONS_PER_CONNECTION, READ_TIMEOUT_MS, STREAM_HEARTBEAT_MS, STREAM_ROUTE_PREFIX, TTY_PROBE_MS, TTY_PROBE_RETRY_DELAYS_MS } from "./host/service/constants.js";
+import { MAX_BUFFER_BYTES, MAX_COMMAND_OUTPUT_BYTES, MAX_CAPTURE_BYTES, MAX_SESSIONS, MAX_SESSIONS_PER_CONNECTION, OPERATOR_APPROVAL_TIMEOUT_MS, READ_TIMEOUT_MS, STREAM_HEARTBEAT_MS, TTY_PROBE_MS, TTY_PROBE_RETRY_DELAYS_MS } from "./host/service/constants.js";
+import { streamRouteDescriptor } from "./host/service/stream-routes.js";
 import { anonymousSessions, indexOwner, normalizeOwner, ownerKey, ownerSessionIds, pickOwnerSession, unindexOwner } from "./host/terminal-owner.js";
-import { buildCensusScript, newestUnclaimedTty, parseCensus, pickNewTty } from "./host/terminal-census.js";
+import { buildCensusScript, isPtyPath, parseCensus, pickNewTty } from "./host/terminal-census.js";
 import { promptFromTerminalData, tailCapped } from "./host/service/text.js";
 import { markSourceRemote } from "./host/service/source-remote.js";
 import { createSsh2Client } from "./host/ssh2-client.js";
@@ -48,6 +50,9 @@ export default class HarborService extends HarborServiceCore {
       // ~/.dsh/harbor-logs and is resolved lazily on first use.
       sessionLogEnabled: true,
       sessionLogDir: undefined,
+      // A pending operator approval is withdrawn after this long; see
+      // askOperatorApproval in tools/ssh-session.js.
+      approvalPromptTimeoutMs: OPERATOR_APPROVAL_TIMEOUT_MS,
       // One status probe may spend most of its life on a slow or flapping
       // link; keep the bound configurable so a tailnet/latency outlier can be
       // sampled without changing the default cadence for everyone else.
@@ -99,18 +104,15 @@ export default class HarborService extends HarborServiceCore {
     }, "harbor: terminal ownership");
     // Streaming file routes (workbench S6 patch): reactive inject — no hard
     // activation dependency, so compositions without a webserver simply never
-    // serve the byte plane. Same registration pattern the typert gateway uses
-    // for the /api/remote.mux WebSocket (connection.requestRejection guard +
-    // webServer.register prefix route, disposed with this fiber).
-    ctx.inject(["connection", "webServer"], (hostCtx) => {
-      hostCtx.effect(() => hostCtx.webServer.register({
-        kind: "prefix",
-        path: STREAM_ROUTE_PREFIX,
-        handler: (req, res) => {
-          this.handleStreamRoute(req, res, hostCtx.connection);
-        }
-      }), "harbor: streaming file routes");
-
+    // serve the byte plane. The route declares `auth: "required"`, so the DSH
+    // WebServer admits every request (Host/Origin + browser cookie, owned by the
+    // connection service) before the handler runs; the handler must not repeat
+    // that fence itself.
+    ctx.inject(["webServer"], (hostCtx) => {
+      hostCtx.effect(
+        () => hostCtx.webServer.register(streamRouteDescriptor(this)),
+        "harbor: streaming file routes"
+      );
     });
   }
 
@@ -256,8 +258,19 @@ export default class HarborService extends HarborServiceCore {
         else conn.client.shell({ term: "xterm-256color", cols, rows }, opened);
       });
       session.stream = stream;
+      // ssh2 splits the byte stream wherever a packet ends, so a multi-byte
+      // character can straddle two chunks. Decoding each chunk on its own
+      // turned both halves into U+FFFD: every Chinese or emoji run that landed
+      // on a boundary showed up as garbage in the panel, in terminal_read and
+      // in the session log. One streaming decoder per channel carries the
+      // partial sequence to the next chunk, and `end()` flushes the tail.
+      const decoder = new StringDecoder("utf8");
+      const flushDecoder = () => {
+        const tail = decoder.end();
+        if (tail !== "") this.appendSessionOutput(session, tail);
+      };
       stream.on("data", (chunk) => {
-        this.appendSessionOutput(session, chunk.toString("utf8"));
+        this.appendSessionOutput(session, decoder.write(chunk));
       });
       let remoteExit;
       stream.on("exit", (code, signal) => {
@@ -265,9 +278,11 @@ export default class HarborService extends HarborServiceCore {
         else if (signal) remoteExit = { code: 1, reason: "remote-signal" };
       });
       stream.on("close", () => {
+        flushDecoder();
         this.recordExit(session, remoteExit ?? { code: 1, reason: "channel-closed" });
       });
       stream.on("error", () => {
+        flushDecoder();
         this.recordExit(session, { code: 1, reason: "channel-error" });
       });
       // The panel opens this session immediately after a successful manual
@@ -358,7 +373,19 @@ export default class HarborService extends HarborServiceCore {
    * and abandoned for good after two timeouts: a network-CLI device answers no
    * exec channel at all, and probing it forever would be pointless.
    */
-  async learnSessionTty(conn, session) {
+  learnSessionTty(conn, session) {
+    // Serialized per connection. Two terminals opened back to back each take a
+    // census snapshot; running them concurrently meant both snapshots predated
+    // both shells, so each saw "two new ttys" and the allocation fell back to
+    // "newest wins" — the FIRST terminal could be handed the SECOND one's
+    // shell, and ssh_exec then ran in the wrong conversation's directory.
+    const run = () => this.learnSessionTtyNow(conn, session);
+    const queued = Promise.resolve(conn.ttyQueue).then(run, run);
+    conn.ttyQueue = queued.then(() => undefined, () => undefined);
+    return queued;
+  }
+
+  async learnSessionTtyNow(conn, session) {
     // Opt-in through the service config: the constructor sets it, so a
     // prototype-stub instance (tests) never probes a fake transport.
     if (this.config?.resolveTerminalTty !== true) return;
@@ -384,10 +411,19 @@ export default class HarborService extends HarborServiceCore {
       const rows = parseCensus(state.stdout);
       conn.ttyCensus = rows;
       if (rows.length === 0) continue;
-      const candidate = pickNewTty(before, rows) ?? newestUnclaimedTty(rows, this.takenTtys(conn, session));
-      if (candidate === null) continue;
-      this.assignTtys(conn, rows, session, candidate);
-      return;
+      // Exact answer first: when this terminal is the one whose shell appeared,
+      // there is nothing to guess.
+      const exact = pickNewTty(before, rows);
+      if (exact !== null && !this.takenTtys(conn, session).has(exact)) {
+        session.tty = exact;
+        this.assignTtys(conn, rows);
+        return;
+      }
+      // Ambiguous (several shells appeared at once, or this is the first
+      // census of the connection): allocate every pending terminal in open
+      // order instead of handing the newest shell to whoever probes first.
+      this.assignTtys(conn, rows);
+      if (session.tty !== null && session.tty !== undefined) return;
     }
   }
 
@@ -403,13 +439,20 @@ export default class HarborService extends HarborServiceCore {
   }
 
   /**
-   * Record the new terminal's tty and backfill terminals that never learned
-   * their own (opened before this change, or while the census was failing).
-   * The oldest unclaimed shell goes to the oldest terminal: after the fact that
-   * is the only order-preserving match available.
+   * Give every terminal of this connection that has no tty yet the oldest
+   * unclaimed shell, in the order the terminals were opened.
+   *
+   * Opening order and shell start order are the only two facts available, and
+   * both are monotone under the connection's open queue (each channel is opened
+   * before the next), so pairing them is the match that cannot invent a
+   * relationship: an older terminal never receives a shell a later terminal
+   * opened. Ties on the jiffy-resolution start time fall back to the pid, which
+   * preserves creation order in practice.
+   *
+   * @param {object} conn - live connection record.
+   * @param {{tty: string, pid: number, startTime: number}[]} rows - census rows.
    */
-  assignTtys(conn, rows, target, tty) {
-    if (target.tty === null || target.tty === undefined) target.tty = tty;
+  assignTtys(conn, rows) {
     const taken = this.takenTtys(conn, undefined);
     const pending = [];
     for (const sessionId of conn.sessions ?? []) {
@@ -419,9 +462,11 @@ export default class HarborService extends HarborServiceCore {
     }
     if (pending.length === 0) return;
     pending.sort((left, right) => String(left.openedAt).localeCompare(String(right.openedAt)));
-    const unclaimed = rows.slice().sort((left, right) => left.startTime - right.startTime || left.pid - right.pid);
+    const unclaimed = (rows ?? [])
+      .filter((row) => isPtyPath(row.tty) && !taken.has(row.tty))
+      .sort((left, right) => left.startTime - right.startTime || left.pid - right.pid);
     for (const session of pending) {
-      const row = unclaimed.find((candidate) => !taken.has(candidate.tty));
+      const row = unclaimed.shift();
       if (row === undefined) break;
       taken.add(row.tty);
       session.tty = row.tty;

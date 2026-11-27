@@ -17,6 +17,7 @@
  * Pure with respect to I/O: `run` does the actual transfer, everything here
  * is unit-testable with fake tasks.
  */
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 /** Max in-flight small-file transfers. */
 export const SFTP_DIR_SMALL_CONCURRENCY = 6;
@@ -84,6 +85,53 @@ export async function runTransferTasks(tasks, {
   if (rejectedLane !== undefined) throw rejectedLane.reason;
   throwIfAborted();
   return { files, bytes, failures };
+}
+
+/**
+ * A single `readdir` record is server-controlled. A name that can change
+ * directory level is not a plain file name: `/` is a separator on the remote,
+ * and `\\` becomes one again after the host-side relative-path normalisation.
+ * Any such name would let a compromised or buggy SFTP server write outside the
+ * operator's chosen download directory, so downloads refuse the whole tree
+ * instead of silently skipping (a skipped entry hides the attack).
+ *
+ * @param {unknown} name - `entry.filename` from SFTP readdir.
+ * @returns {string} the same name when it is a plain leaf.
+ * @throws when the name is empty, a dot entry, contains a separator or a control byte.
+ */
+export function assertSafeEntryName(name) {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error("SFTP entry has an empty name");
+  }
+  if (name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+    throw new Error(`SFTP entry name is not a plain file name: ${JSON.stringify(name)}`);
+  }
+  if (/[\x00-\x1f\x7f]/.test(name)) {
+    throw new Error(`SFTP entry name contains a control character: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
+
+/**
+ * The local destination of a download must stay at or below the directory the
+ * operator picked. `assertSafeEntryName` already blocks server-controlled
+ * traversal, but this check is the invariant the filesystem write itself relies
+ * on — a future caller that forgets the name check still cannot escape.
+ *
+ * @param {string} root - the operator-selected local directory.
+ * @param {string} target - the local path about to be created.
+ * @param {string} [description] - label used in the error.
+ * @returns {string} the resolved target path.
+ * @throws when `target` is outside `root`.
+ */
+export function assertLocalPathInside(root, target, description = "local path") {
+  const base = resolve(String(root));
+  const candidate = resolve(String(target));
+  const rel = relative(base, candidate);
+  // Only a leading ".." SEGMENT escapes: `relative()` returns "..env" for a
+  // sibling literally named `..env`, which `startsWith("..")` used to refuse.
+  if (rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) return candidate;
+  throw new Error(`${description} escapes ${base}: ${candidate}`);
 }
 
 /** Posix path join for remote SFTP paths (no Windows semantics). */

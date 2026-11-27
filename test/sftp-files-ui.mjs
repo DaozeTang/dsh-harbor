@@ -135,6 +135,13 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
   }
   assert.doesNotMatch(files, /lastSave|restoreBackup|dsh-backup|恢复备份|恢复上一个版本/,
     "HarborFiles.jsx: online editing never creates or offers a backup/version of the remote file");
+
+  const panel = await readFile(new URL("../src/client/HarborPanel.jsx", import.meta.url), "utf8");
+  assert.match(
+    panel,
+    /<HarborFiles\s+key=\{active\.connectionId\}/,
+    "HarborPanel.jsx: the file pane is remounted per connection, so listing/selection state cannot leak across servers"
+  );
 }
 
 console.log("sftp files ui: editor policy, favorites store, filter and JSX wiring all passed");

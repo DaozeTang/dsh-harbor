@@ -146,19 +146,26 @@ test("operator cancellation keeps the original destination and allows resume", a
 });
 
 test("agent upload preserves workspace binding and cancellation signal", async () => {
-  const tools = []; let received;
-  const service = {
-    resolveRemoteToolPath: async () => ({ connectionId: "bound", path: "/srv/work/file", bound: true, workspaceRoot: "/srv/work" }),
-    sftpUploadLocalFile: async (request) => { received = request; return { ok: true, value: { taskId: "t", source: request.localPath, target: request.remotePath, bytes: 5, resumed: false, startOffset: 0 } }; }
-  };
-  registerSftpTools({ tools: { register: (tool) => tools.push(tool) } }, service);
-  const upload = tools.find((tool) => tool.name === "sftp_upload_file");
-  assert.ok(upload);
-  const signal = new AbortController().signal;
-  const value = await upload.execute({ local_path: "/tmp/file", remote_path: "file", resume_id: "t" }, { signal });
-  assert.equal(value.taskId, "t"); assert.equal(received.remoteWorkspaceRoot, "/srv/work");
-  assert.equal(received.connectionId, "bound"); assert.equal(received.signal, signal); assert.equal(received.resumeId, "t");
-  assert.equal(upload.output.render({}, value)[0].type, "text");
+  const dir = await mkdtemp(join(tmpdir(), "dsh-agent-upload-"));
+  const source = join(dir, "file");
+  await writeFile(source, "hello");
+  try {
+    const tools = []; let received;
+    const service = {
+      sessionDirectoryOf: () => dir,
+      resolveRemoteToolPath: async () => ({ connectionId: "bound", path: "/srv/work/file", bound: true, workspaceRoot: "/srv/work" }),
+      sftpUploadLocalFile: async (request) => { received = request; return { ok: true, value: { taskId: "t", source: request.localPath, target: request.remotePath, bytes: 5, resumed: false, startOffset: 0 } }; }
+    };
+    registerSftpTools({ tools: { register: (tool) => tools.push(tool) } }, service);
+    const upload = tools.find((tool) => tool.name === "sftp_upload_file");
+    assert.ok(upload);
+    const signal = new AbortController().signal;
+    const value = await upload.execute({ local_path: source, remote_path: "file", resume_id: "t" }, { signal });
+    assert.equal(value.taskId, "t"); assert.equal(received.remoteWorkspaceRoot, "/srv/work");
+    assert.equal(received.connectionId, "bound"); assert.equal(received.signal, signal); assert.equal(received.resumeId, "t");
+    assert.equal(received.localPath, source, "a workspace-local source is handed to the service unchanged");
+    assert.equal(upload.output.render({}, value)[0].type, "text");
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("task RPC envelopes satisfy the host wire schemas", () => {

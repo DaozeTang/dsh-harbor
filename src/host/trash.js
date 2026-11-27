@@ -90,7 +90,13 @@ function tokenizeLiteralCommand(command) {
     }
     if (ch === "\\") {
       const next = command[i + 1];
-      if (next === undefined || next === "\n") return null;
+      if (next === undefined) return null;
+      // A backslash-escaped character is a LITERAL byte for the shell, so it
+      // may legitimately be $, a backtick, or a quote. Control bytes are still
+      // refused: they would break the generated script's line structure and
+      // the TSV manifest.
+      const code = next.charCodeAt(0);
+      if (code < 32 || code === 127) return null;
       startToken(false);
       current += next;
       i += 2;
@@ -166,9 +172,13 @@ export function parseSimpleDeleteCommand(command) {
 
 function quoteTarget(target) {
   if (target.kind === "home") {
-    // The tokenizer guarantees no " $ ` \ survive inside a target, so the
-    // expansion is the only dynamic part and it is safe inside double quotes.
-    return `"$HOME/${target.path}"`;
+    // $HOME is the ONLY expansion allowed here. The tail is single-quoted:
+    // an escaped character in the original command (e.g. \$(reboot) or
+    // \`id\`) is a LITERAL byte for the shell, so re-emitting it inside double
+    // quotes would expand it and turn an approved "reversible delete" into
+    // arbitrary command execution. Concatenation keeps "$HOME" expanded and
+    // the tail verbatim: "$HOME"/'backups/app.$PID.log'.
+    return `"$HOME"/${shellSingleQuote(target.path)}`;
   }
   return shellSingleQuote(target.path);
 }
@@ -299,7 +309,7 @@ export function buildRestoreCommand(entry) {
   return [
     `__dsh_f="$HOME/.dsh-trash/"${shellSingleQuote(entry.name)}`,
     'if [ ! -e "$__dsh_f" ] && [ ! -L "$__dsh_f" ]; then echo "trash entry not found: $__dsh_f" >&2; exit 1; fi',
-    `if [ -e ${shellSingleQuote(entry.original)} ] || [ -L ${shellSingleQuote(entry.original)} ]; then echo "restore target already exists: ${entry.original.replace(/'/g, "'\\''")}" >&2; exit 1; fi`,
+    `if [ -e ${shellSingleQuote(entry.original)} ] || [ -L ${shellSingleQuote(entry.original)} ]; then printf '%s\\n' ${shellSingleQuote("restore target already exists: " + entry.original)} >&2; exit 1; fi`,
     `mkdir -p ${shellSingleQuote(parent)} || exit 1`,
     `if mv "$__dsh_f" ${shellSingleQuote(entry.original)}; then`,
     `  __dsh_m="$HOME/.dsh-trash/"${shellSingleQuote(TRASH_MANIFEST)}`,

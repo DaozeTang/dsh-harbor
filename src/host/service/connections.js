@@ -254,8 +254,19 @@ export const withConnections = (Base) => class extends Base {
    * failures are not.
    */
   async connectClient(record, retries = CONNECT_RETRIES) {
+    // Both of these describe ONE connect attempt, not the record's lifetime.
+    // Leaving them behind made reconnects stateful in the wrong direction: a
+    // device that dropped an interactive prompt once kept the record on plain
+    // password forever (an account later switched to MFA could never log in
+    // again), and auth telemetry from the previous handshake made
+    // `wasAuthCut` treat a fresh network cut as "authentication had started".
+    // The retry loop below re-arms the fallback when it actually takes it.
+    record.kbdFallbackTried = false;
+    record.authTracker = createAuthTracker();
     let lastError = null;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
+      // Fresh per attempt: a retry must not keep handles from the failed one.
+      record.inflight = new Set();
       if (record.closing) {
         return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" was closed`) };
       }
@@ -265,7 +276,7 @@ export const withConnections = (Base) => class extends Base {
       let sock;
       if (record.proxyJump.length > 0) {
         try {
-          const chain = await this.connectChain(record.proxyJump, record.connectConfig.host, record.connectConfig.port);
+          const chain = await this.connectChain(record.proxyJump, record.connectConfig.host, record.connectConfig.port, record);
           // A retry/reconnect builds a brand-new chain; the previous hops have
           // no other owner and would otherwise keep sockets and keepalive
           // timers alive for the rest of the process.
@@ -348,8 +359,21 @@ export const withConnections = (Base) => class extends Base {
           this.attachHostVerifier(config, record, record.host, record.port, record.hostKeyMode);
           client.connect(config);
         });
+        // The handshake can finish after the operator already cancelled.
+        // Without this the record would keep a live transport that no caller
+        // may use: `closing` makes selectConnection answer connection-lost and
+        // list report "not connected", but the sockets survive until exit.
+        if (record.closing) {
+          try { client.end(); } catch {}
+          for (const hop of record.hops) { try { hop.end(); } catch {} }
+          record.hops = [];
+          record.dead = true;
+          return { ok: false, error: fail("connect-cancelled", `connection "${record.id}" was closed`) };
+        }
         record.dead = false;
         record.reconnectAttempts = 0;
+        // Success: the client owns these now; they are not "in flight".
+        record.inflight = new Set();
         await this.persistFirstSeenHostKey(record);
         return { ok: true };
       } catch (error) {
@@ -446,6 +470,9 @@ export const withConnections = (Base) => class extends Base {
       // the DSH process, and pre-handshake failures are surfaced through the
       // banner read below rather than through this socket.
       sock.on("error", () => {});
+      // The raw socket is otherwise unreachable while the banner is being read,
+      // so an operator cancel could not close it.
+      this.trackInflight(record, () => { try { sock.destroy(); } catch {} });
       await new Promise((resolve, reject) => {
         const onConnect = () => { sock.off("error", onReject); resolve(); };
         const onReject = (error) => reject(error);
@@ -468,7 +495,7 @@ export const withConnections = (Base) => class extends Base {
    * list of hop clients (for teardown). Each hop config is an inline object
    * {host, port, username, auth, readyTimeout}.
    */
-  async connectChain(proxyJump, targetHost, targetPort) {
+  async connectChain(proxyJump, targetHost, targetPort, record = null) {
     const hops = [];
     let sock;
     for (let index = 0; index < proxyJump.length; index += 1) {
@@ -509,6 +536,9 @@ export const withConnections = (Base) => class extends Base {
       const hopState = { hostKeyMismatch: null, hostKeyToRecord: null };
       this.attachHostVerifier(hopConnectConfig, hopState, hopConnectConfig.host, hopConnectConfig.port, hopConfig.hostKeyMode);
       const hopClient = this.newClient();
+      // Reachable by an operator cancel from here on, not only once the whole
+      // chain has succeeded.
+      if (record !== null) this.trackInflight(record, () => { try { hopClient.end(); } catch {} });
       try {
         await new Promise((resolve, reject) => {
           // Standing error listener for the hop's whole life: ssh2 may emit a
@@ -548,6 +578,9 @@ export const withConnections = (Base) => class extends Base {
             for (const h of hops) { try { h.end(); } catch {} }
             reject(new Error(`proxyJump hop ${index + 1} forwardOut to ${nextHost}:${nextPort}: ${error.message}`));
           } else {
+            // Track every forwarded stream too: a cancel while the chain is
+            // still being built would otherwise leave these open.
+            if (record !== null) this.trackInflight(record, () => { try { stream.destroy?.(); } catch {} });
             resolve(stream);
           }
         });
@@ -558,6 +591,36 @@ export const withConnections = (Base) => class extends Base {
 
   sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Register one in-flight resource of a connect attempt so an operator cancel
+   * can actually reach it.
+   *
+   * Everything a handshake allocates before the record owns it is a local
+   * variable inside a promise nobody else holds: the jump-chain hop clients
+   * (assigned to `record.hops` only after the WHOLE chain succeeds) and the
+   * socket the banner repair splices. cancelProfileConnect could therefore only
+   * end `record.client`, which does not exist yet during that phase, so the
+   * cancel did nothing and a late success left a live transport behind a
+   * record that is `closing` forever.
+   *
+   * @param {object} record - connection record.
+   * @param {() => void} teardown - destroys the resource; must not throw.
+   * @returns {() => void} untrack, for the normal completion path.
+   */
+  trackInflight(record, teardown) {
+    (record.inflight ??= new Set()).add(teardown);
+    return () => { record.inflight?.delete(teardown); };
+  }
+
+  /** Run every teardown registered for the attempt in flight. */
+  abortInflight(record) {
+    const pending = record.inflight;
+    record.inflight = new Set();
+    for (const teardown of pending ?? []) {
+      try { teardown(); } catch {}
+    }
   }
 
   /**
@@ -631,6 +694,7 @@ export const withConnections = (Base) => class extends Base {
     record.sessions.clear();
     record.ownerIndex = new Map();
     record.openQueue = Promise.resolve();
+    record.ttyQueue = Promise.resolve();
     record.execPolicyOverrides = new Map();
     this.forgetActiveConnection(record.id);
     this.closeConnectionTunnels(record);
@@ -755,6 +819,12 @@ export const withConnections = (Base) => class extends Base {
         if (request?.profileId !== undefined && record.profileId !== request.profileId) continue;
         record.closing = true;
         cancelled += 1;
+        // Everything the attempt has allocated so far — jump-chain hops,
+        // forwarded streams, a banner-repair socket, and the client once it
+        // exists. `record.hops` is only populated after the whole chain
+        // succeeds, so the tracked handles are what actually breaks a cancel
+        // during the chain/banner phase.
+        this.abortInflight(record);
         try { for (const hop of record.hops) { hop.end(); } } catch {}
         record.hops = [];
         try { record.client?.end(); } catch {}

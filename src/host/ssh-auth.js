@@ -69,6 +69,13 @@ export function makeAuthHandler(tracker, { hasPassword, hasPrivateKey, hasAgent,
     return true; // 'none' is always probed first (RFC 4252 §5.2 semantics)
   });
   let next = 0;
+  // Restart budget for THIS handshake. It used to be read off the connection's
+  // tracker, which outlives the handshake: every reconnect added to the same
+  // counter, so a record that had already logged in a few times silently
+  // stopped restarting the walk — exactly what the second factor of a
+  // dual-factor device needs. The counter on the tracker stays as a diagnostic
+  // total (and is what the failure text is built from).
+  let restarts = 0;
   return (methodsLeft, partialSuccess, _cb) => {
     // USERAUTH_FAILURE carries the server's remaining allowed methods; keep
     // the last list seen, because it names what the device would have accepted.
@@ -81,8 +88,11 @@ export function makeAuthHandler(tracker, { hasPassword, hasPrivateKey, hasAgent,
       // One factor accepted — start over for the remaining factor(s). The
       // 'none' probe is pointless after real credentials were accepted, so a
       // restart resumes at the first credentialed method. The bound keeps a
-      // nonconformant server that re-reports the same factor from looping.
-      if (tracker.partialSuccesses <= available.length) {
+      // nonconformant server that re-reports the same factor from looping, and
+      // it is per handshake: a restart never means "the previous login already
+      // used some up".
+      if (restarts < available.length) {
+        restarts += 1;
         next = available[0] === "none" ? 1 : 0;
       }
     }

@@ -29,7 +29,7 @@ Reaching a remote machine usually takes three windows: a terminal, an SFTP clien
 
 - **One terminal per conversation, with the agent working beside you.** Say "check memory"; the command runs in the terminal in front of you, and exit code, output, duration, timeout and truncation state come back to the model unchanged. Two conversations on the same machine never type over each other.
 - **Credentials never enter the conversation.** Servers are saved as resources; passwords and keys go only to DSH's local credential store. The model sees "the shared credential of prod-web-01", never the secret.
-- **Destructive actions need your approval.** Commands that hit the safety rules suspend the tool call for a native in-session approval. An approved `rm` performs a reversible move into a remote trash directory instead of a delete.
+- **Destructive actions need your approval.** Commands that hit the safety rules suspend the tool call for a native in-session approval. An approved `rm` performs a reversible move into a remote trash directory instead of a delete. An unanswered prompt is refused automatically after 120 seconds, so the tool call returns instead of waiting forever.
 
 ## Screens
 
@@ -60,7 +60,7 @@ Reaching a remote machine usually takes three windows: a terminal, an SFTP clien
 The host's own permission system comes first; Harbor only adds to it.
 
 1. **Secrets stay local**, in `~/.dsh/.credentials.yaml` (owner-only). Browser storage, agent context, tool results and resource lists never carry plaintext.
-2. **Dangerous commands suspend the call** for a native approval: deletes, `terraform destroy`, `kubectl delete`, `docker prune`, forced Git cleanups, reboots, and their common bypasses (`find -exec rm`, `xargs rm`, one-liners that call `unlink`). An approval covers exactly that command on that machine.
+2. **Dangerous commands suspend the call** for a native approval: deletes, `terraform destroy`, `kubectl delete`, `docker prune`, forced Git cleanups, reboots, and their common bypasses (`find -exec rm`, `xargs rm`, one-liners that call `unlink`). An approval covers exactly that command on that machine. An unanswered prompt is refused automatically after 120 seconds and the tool call returns. Harbor's own tier is capped by the conversation's DSH permission mode: Auto review and full access add no extra default gate, workspace write keeps the Standard approval, and read-only refuses directly.
 3. **Agent deletes are reversible.** An approved `rm` moves the target into `~/.dsh-trash/` with its original path in the trash manifest; entries older than 24 hours are cleaned up opportunistically, and nothing is installed on the server. Deleting in the panel is an explicit permanent delete with its own confirmation.
 4. **The agent sees only the current connection.** Connecting saved servers by name requires auto-connect to be enabled, and every such connection opens its terminal in the sidebar, so you always see which machine it is on.
 

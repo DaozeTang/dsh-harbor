@@ -5,7 +5,8 @@ import { fail } from "../envelope.js";
 import { setLanguage, t } from "../../i18n/core.js";
 import { normalizeAllowList, normalizeExactRules, normalizePolicy, ALL_CATEGORY_KEYS, CATEGORY_LABELS } from "../safety.js";
 import { SETTINGS_ROW_ID, loadSettingsRecord, normalizeDefaultUsername, normalizeFeatureSettings } from "./models.js";
-import { ownerKey } from "../terminal-owner.js";
+import { normalizeOwner, ownerKey } from "../terminal-owner.js";
+import { composeExecPolicy, dshPolicyRefusal, readDshPermission } from "../dsh-permission.js";
 
 export const withSettings = (Base) => class extends Base {
   // ── agent auto-connect + operator-level switches ───────────────
@@ -135,6 +136,63 @@ export const withSettings = (Base) => class extends Base {
    * the gate kept blocking.
    */
   resolveExecPolicy(connectionId, ownerSessionId) {
+    const base = this.resolveHarborExecPolicy(connectionId, ownerSessionId);
+    const dsh = this.dshPermissionFor(ownerSessionId);
+    return dsh === null ? base : composeExecPolicy(base, dsh);
+  }
+
+  /**
+   * The DSH session ceiling for one conversation, or null when the host has
+   * no permission-preset service (or the lookup cannot be completed). A null
+   * result must preserve the historical Harbor policy exactly.
+   *
+   * @param {unknown} ownerSessionId - the conversation that owns the terminal.
+   * @returns {object|null} the normalized DSH ceiling.
+   */
+  dshPermissionFor(ownerSessionId) {
+    if (typeof this.ctx?.get !== "function") return null;
+    const session = this.sessionForOwner(ownerSessionId);
+    if (session === undefined) return null;
+    try {
+      return readDshPermission(this.ctx, session);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolve one conversation id to its live DSH Session. Harbor's terminal
+   * owner is usually the top-level conversation, so this is the session whose
+   * permission selector the user actually sees.
+   *
+   * @param {unknown} ownerSessionId - conversation id.
+   * @returns {object|undefined} the live Session.
+   */
+  sessionForOwner(ownerSessionId) {
+    const id = normalizeOwner(ownerSessionId);
+    if (id === null) return undefined;
+    try {
+      const sessions = this.ctx?.get?.("sessions");
+      const session = sessions?.get?.(id);
+      if (session !== undefined) return session;
+    } catch {}
+    try {
+      const agents = this.ctx?.get?.("agents");
+      const agent = agents?.get?.(id);
+      if (agent?.session !== undefined) return agent.session;
+    } catch {}
+    return undefined;
+  }
+
+  /**
+   * Harbor's own layer resolution, before the DSH session ceiling is applied.
+   * Kept separate so tests and panels can explain each layer independently.
+   *
+   * @param {string|undefined} connectionId - the target connection.
+   * @param {unknown} ownerSessionId - the calling conversation.
+   * @returns {{mode: string, source: string, allow: string[], exact?: string[]}} the Harbor tier.
+   */
+  resolveHarborExecPolicy(connectionId, ownerSessionId) {
     const global = this.globalExecPolicy();
     const exact = normalizeExactRules(this.execPolicyExact);
     const rules = exact.length ? { exact } : {};
@@ -191,16 +249,20 @@ export const withSettings = (Base) => class extends Base {
         if (record && record.execPolicy !== null && record.execPolicy !== undefined) profileOverride = record.execPolicy;
       } catch {}
     }
-    return {
-      ok: true,
-      value: {
-        effective: resolved.mode,
-        source: resolved.source,
-        allow: global.allow,
-        global: { policy: global.mode, allow: global.allow },
-        profileOverride
-      }
+    const value = {
+      effective: resolved.mode,
+      source: resolved.source,
+      allow: global.allow,
+      global: { policy: global.mode, allow: global.allow },
+      profileOverride
     };
+    // Only present when a DSH session permission was actually read; an older
+    // host or a conversation without a preset keeps the historical payload.
+    if (resolved.dsh !== undefined) {
+      value.dsh = resolved.dsh;
+      value.approval = resolved.approval;
+    }
+    return { ok: true, value };
   }
 
   /**
@@ -217,6 +279,15 @@ export const withSettings = (Base) => class extends Base {
     }
     const conn = this.connections.get(request.connectionId);
     if (conn === void 0) return { ok: false, error: fail("no-connection", `connection "${request.connectionId}" does not exist`) };
+    // The DSH session mode is a ceiling. Auto review and read-only own the
+    // decision entirely; workspace-write cannot be widened to custom/allowAll
+    // from Harbor. Refuse before mutating so a direct RPC cannot bypass the
+    // menu's disabled rows.
+    const dsh = this.dshPermissionFor(request.sessionId);
+    const refusal = dshPolicyRefusal(dsh, policy.mode);
+    if (refusal !== null) {
+      return { ok: false, error: fail("dsh-policy-locked", t(refusal)) };
+    }
     conn.execPolicyOverrides ??= new Map();
     conn.execPolicyOverrides.set(ownerKey(request.sessionId), policy.mode);
     return this.execPolicyGet({ connectionId: request.connectionId, sessionId: request.sessionId });

@@ -616,10 +616,18 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
     // The dialog pre-fills the current name, so "unchanged" is a no-op the
     // request must not send (the old inline form started empty instead).
     if (!selected || !renameTo.trim() || renameTo.trim() === selected.name) return;
+    // A rename onto an existing name replaced that file silently on POSIX
+    // servers. The backend refuses it too, but the dialog can say so before the
+    // round trip (and before the operator believes the rename succeeded).
+    const nextName = renameTo.trim();
+    if ((entries ?? []).some((entry) => entry.name === nextName)) {
+      setError(t(`目标名称已存在：${nextName}。请换一个名称，或先删除同名项。`));
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      await api.sftpRename(connectionId, joinPath(cwd, selected.name), joinPath(cwd, renameTo.trim()));
+      await api.sftpRename(connectionId, joinPath(cwd, selected.name), joinPath(cwd, nextName));
       setRenameTo("");
       setRenaming(false);
       setSelected(null);
