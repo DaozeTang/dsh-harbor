@@ -2,1084 +2,178 @@
  * Zod schemas for the dsh-harbor wire contract. Bundled into both faces:
  * the host typert manifest validates incoming args and outgoing results, and
  * the client contribution validates the same envelope on the browser side.
- */
-import { z } from "zod";
-
-export const sshErrorSchema = z.object({
-  code: z.string(),
-  message: z.string()
-});
-
-export function okSchema(value) {
-  return z.object({ ok: z.literal(true), value });
-}
-
-export function resultSchema(value) {
-  return z.union([
-    okSchema(value),
-    z.object({ ok: z.literal(false), error: sshErrorSchema })
-  ]);
-}
-
-// ── auth ────────────────────────────────────────────────────────────────────
-
-// A single authentication factor. Dual-factor devices (firewalls/switches
-// with `AuthenticationMethods password,publickey` or the reverse) require two
-// factors on the SAME connection, so a credential may carry a primary factor
-// plus an optional secondary of the opposite kind.
-const passwordFactorSchema = z.object({
-  kind: z.literal("password"),
-  password: z.string()
-});
-
-const keyFactorSchema = z.object({
-  kind: z.literal("key"),
-  privateKey: z.string(),
-  passphrase: z.string().optional()
-});
-
-const passwordAuthSchema = passwordFactorSchema.extend({
-  // Optional second factor: a key, when the primary factor is the password.
-  secondary: keyFactorSchema.optional()
-});
-
-const keyAuthSchema = keyFactorSchema.extend({
-  // Optional second factor: a password, when the primary factor is the key.
-  secondary: passwordFactorSchema.optional()
-});
-
-export const authSchema = z.union([passwordAuthSchema, keyAuthSchema]);
-
-// ── host-key TOFU policy ─────────────────────────────────────────────────────
-// accept-new: trust on first use, reject on change (OpenSSH accept-new).
-// verify:     reject unseen hosts, reject on change.
-// off:        skip host-key verification entirely (not recommended).
-
-const hostKeyModeSchema = z.enum(["accept-new", "verify", "off"]);
-
-// ── terminal ownership ──────────────────────────────────────────────────────
-
-/**
- * The DSH session that owns a terminal, or that binds an agent target.
  *
- * Optional everywhere: a caller without one (an older panel build, the
- * settings page, a host that predates the SessionId plumbing) keeps working
- * through the anonymous path, which is why this never becomes a required
- * field. Absent means "no conversation to attribute this to", not "any".
+ * Barrel only: the definitions live in ./schemas/<domain>.js; this module
+ * re-exports exactly the public wire names so existing imports keep working.
  */
-const ownerSessionIdSchema = z.string().min(1).max(128);
 
-// ── connect ─────────────────────────────────────────────────────────────────
-
-export const connectRequestSchema = z.object({
-  host: z.string().min(1),
-  port: z.number().int().min(1).max(65535).default(22),
-  username: z.string().min(1),
-  // Binds the new connection's agent target to this conversation only.
-  sessionId: ownerSessionIdSchema.optional(),
-  // A temporary connection may reference a saved shared credential.  In that
-  // case the secret is resolved only in the service, never returned to React.
-  auth: authSchema.optional(),
-  credentialId: z.string().uuid().optional(),
-  readyTimeout: z.number().int().min(1000).max(120000).optional(),
-  // Legacy KEX opt-in for old VRP/IOS devices that only offer SHA-1 group14.
-  // Omitted → the plugin retries once automatically when the handshake fails
-  // on KEX selection; true → use the legacy set up front (no downgrade
-  // warning); false → modern algorithms only, no automatic retry.
-  legacy: z.boolean().optional(),
-  // Opt-in SSH agent forwarding: hand the local ssh-agent to the remote host
-  // so terminals opened on it can authenticate onward with the local keys.
-  // Requires a running local agent (SSH_AUTH_SOCK); the connect fails fast
-  // with an actionable message otherwise.
-  agentForward: z.boolean().optional(),
-  name: z.string().optional(),
-  hostKeyMode: hostKeyModeSchema.optional(),
-  proxyJump: z.array(z.object({
-    host: z.string().min(1),
-    port: z.number().int().min(1).max(65535).optional(),
-    username: z.string().min(1),
-    auth: authSchema,
-    readyTimeout: z.number().int().min(1000).max(120000).optional(),
-    hostKeyMode: hostKeyModeSchema.optional()
-  })).optional(),
-  proxyJumpProfileIds: z.array(z.string().uuid()).max(8).optional()
-}).refine((request) => request.auth !== undefined || request.credentialId !== undefined, {
-  message: "auth or credentialId is required"
-});
-
-/**
- * The payload of a successful connect. Exported on its own so the typert drift
- * guard can compare every wire key against the hand-written declaration
- * (`SshConnectResult`), which is how the missing legacy/banner/warning fields
- * were caught.
- */
-export const connectResultPayloadSchema = z.object({
-  connectionId: z.string(),
-  name: z.string().optional(),
-  host: z.string(),
-  port: z.number(),
-  username: z.string(),
-  // Set when the handshake needed the legacy KEX set; `warning` carries the
-  // user-facing explanation so a weakened transport is never silent.
-  legacyFallback: z.boolean().optional(),
-  // Set when the peer's identification string had to be normalized before
-  // ssh2 would accept it (see ssh-banner.js); also explained in `warning`.
-  bannerRepair: z.boolean().optional(),
-  warning: z.string().optional()
-});
-
-export const connectResultSchema = resultSchema(connectResultPayloadSchema);
-
-// ── list ────────────────────────────────────────────────────────────────────
-
-export const listRequestSchema = z.object({ sessionId: ownerSessionIdSchema.optional() });
-
-/**
- * One live terminal on a connection, with the conversation that owns it.
- * `mine` is resolved against the listing caller's session, which is what lets
- * the panel show its own terminal instead of "the first one".
- */
-const terminalInfoSchema = z.object({
-  sessionId: z.string(),
-  ownerSessionId: z.string().nullable(),
-  openedBy: z.enum(["panel", "agent"]),
-  alive: z.boolean(),
-  mine: z.boolean()
-});
-
-const connectionInfoSchema = z.object({
-  connectionId: z.string(),
-  name: z.string().optional(),
-  host: z.string(),
-  port: z.number(),
-  username: z.string(),
-  connected: z.boolean(),
-  // Kept for older panels: terminal ids only. New callers read `terminals`.
-  sessions: z.array(z.string()),
-  terminals: z.array(terminalInfoSchema),
-  // True while the connection has a live session opened by the agent
-  // (ssh_connect_profile); the browser auto-reveals the SSH surface for it.
-  agentSession: z.boolean().optional(),
-  // The same fact, scoped to the listing caller's conversation.
-  agentSessionMine: z.boolean().optional(),
-  agentRevealId: z.string().optional(),
-  // Which conversation the reveal request belongs to; absent = anonymous.
-  agentRevealOwnerSessionId: z.string().optional(),
-  // Per-conversation agent activity, independent of terminal liveness. The
-  // panel uses this to pulse the server strip while a tool is operating.
-  agentActive: z.boolean().optional(),
-  agentLastActivityAt: z.string().optional(),
-  agentActivityKind: z.string().optional()
-});
-
-// A saved SSH resource as the agent sees it: coordinates only —
-// no credentials, no credential ids, no jump chains.
-const savedResourceInfoSchema = z.object({
-  profileId: z.string(),
-  name: z.string(),
-  host: z.string(),
-  port: z.number(),
-  username: z.string(),
-  connected: z.boolean()
-});
-
-export const listResultSchema = resultSchema(
-  z.object({
-    connections: z.array(connectionInfoSchema),
-    activeConnectionId: z.string().nullable(),
-    // Present only while the operator's AI-auto-connect switch is on.
-    resources: z.array(savedResourceInfoSchema).optional()
-  })
-);
-
-// ── agent auto-connect settings (operator switch,) ────────────────
-
-// The operator-level settings RPC now carries every global switch. The
-// execution-policy fields are optional so an older panel build (which only
-// knows agentAutoConnect) still round-trips through these schemas.
-const execPolicyModeSchema = z.enum(["standard", "custom", "allowAll"]);
-const execPolicyAllowSchema = z.array(z.string()).max(32);
-
-export const agentSettingsGetRequestSchema = z.object({});
-export const featureSettingsSchema = z.object({
-  tunnelTools: z.boolean().optional(),
-  logTools: z.boolean().optional(),
-  statusTools: z.boolean().optional(),
-  showTunnels: z.boolean().optional(),
-  showSnippets: z.boolean().optional(),
-  showLogs: z.boolean().optional(),
-  showMonitor: z.boolean().optional()
-});
-export const agentSettingsResultSchema = resultSchema(z.object({
-  agentAutoConnect: z.boolean(),
-  features: featureSettingsSchema.optional(),
-  toolRestartRequired: z.boolean().optional(),
-  execPolicy: execPolicyModeSchema.optional(),
-  execPolicyAllow: execPolicyAllowSchema.optional(),
-  execPolicyExact: z.array(z.string().min(1).max(512)).max(32).optional(),
-  // Username the panel prefills into its new-server form; null = "root".
-  defaultUsername: z.string().max(128).nullable().optional(),
-  // The custom tier's checklist as served by the host (single source of truth).
-  categories: z.array(z.object({ key: z.string(), label: z.string() })).optional()
-}));
-export const agentSettingsSaveRequestSchema = z.object({
-  agentAutoConnect: z.boolean().optional(),
-  features: featureSettingsSchema.optional(),
-  execPolicy: execPolicyModeSchema.optional(),
-  execPolicyAllow: execPolicyAllowSchema.optional(),
-  execPolicyExact: z.array(z.string().min(1).max(512)).max(32).optional(),
-  // Optional: absent keeps the stored value, null clears it back to "root".
-  defaultUsername: z.string().max(128).nullable().optional()
-});
-
-// ── execution policy (session-scoped switching; operator-only RPC) ──────────
-
-const dshPermissionSchema = z.object({
-  preset: z.string().nullable(),
-  sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"]).nullable(),
-  approval: z.enum(["ask", "never"]).nullable(),
-  ceiling: z.enum(["auto", "allowAll", "standard", "readOnly"]),
-  source: z.enum(["dsh-auto", "dsh-full-access", "dsh-workspace-write", "dsh-read-only"])
-});
-
-export const execPolicyGetRequestSchema = z.object({ connectionId: z.string().optional(), sessionId: ownerSessionIdSchema.optional() });
-export const execPolicyGetResultSchema = resultSchema(z.object({
-  // The tier in force for this connection right now.
-  effective: execPolicyModeSchema,
-  // Where it came from: an operator session switch, the resource field, the
-  // global setting, or the built-in default (no storage / nothing stored).
-  source: z.enum(["session", "profile", "global", "default"]),
-  // The custom tier's released-category keys (from the global setting).
-  allow: z.array(z.string()),
-  // Raw settings so the panel can render where each layer points.
-  global: z.object({ policy: execPolicyModeSchema, allow: z.array(z.string()) }),
-  profileOverride: execPolicyModeSchema.nullable(),
-  // The DSH session ceiling, when the host composed permission presets. Absent
-  // on older hosts and for callers without a conversation id.
-  dsh: dshPermissionSchema.optional(),
-  approval: z.enum(["ask", "never"]).optional()
-}));
-export const execPolicySetRequestSchema = z.object({ connectionId: z.string(), policy: execPolicyModeSchema, sessionId: ownerSessionIdSchema.optional() });
-export const execPolicySetResultSchema = execPolicyGetResultSchema;
-
-// ── interface language (operator choice; null = follow DSH's own language) ──
-
-const languageValueSchema = z.enum(["zh", "en"]);
-export const languageGetRequestSchema = z.object({});
-export const languageResultSchema = resultSchema(z.object({
-  language: z.enum(["zh", "en"]).nullable(),
-  // When false, the plugin never follows (or writes back) the host language:
-  // the stored `language` value is authoritative. Absent means "true" (follow
-  // the host), matching the behaviour of installs written before this field.
-  autoApplySystemLanguage: z.boolean().optional()
-}));
-export const languageSaveRequestSchema = z.object({
-  // Absent leaves the stored choice untouched; null clears it (back to follow).
-  language: languageValueSchema.nullable().optional(),
-  // Absent leaves the follow switch untouched. false pins the stored language:
-  // the plugin then never adopts (or writes back) the host language again.
-  autoApplySystemLanguage: z.boolean().optional()
-});
-
-// ── saved SSH resources ────────────────────────────────────────────────────
-
-const profileIdSchema = z.string().uuid();
-const groupIdSchema = z.string().uuid();
-const credentialIdSchema = z.string().uuid();
-export const resourceBackupExportRequestSchema = z.object({ password: z.string().min(12).max(1024) });
-export const resourceBackupExportResultSchema = resultSchema(z.object({ archive: z.string() }));
-export const resourceBackupImportRequestSchema = z.object({ password: z.string().min(12).max(1024), archive: z.string().max(64 * 1024 * 1024), skipDuplicates: z.boolean().optional() });
-export const profileConnectionStatusResultSchema = resultSchema(z.object({ profileIds: z.array(z.string().uuid()) }));
-const openSshPreviewEntrySchema = z.object({
-  name: z.string(), host: z.string(), username: z.string(), port: z.number().int(),
-  hops: z.array(z.string()), issues: z.array(z.string()), unsupported: z.boolean(), existing: z.boolean(), authKind: z.enum(["key", "password"]),
-  // The IdentityFile resolved on the host: its path and whether a usable key
-  // sits there. Only the status crosses the wire — never the key itself.
-  keyPath: z.string().max(4096).nullable(),
-  keyStatus: z.enum(["ready", "passphrase", "missing", "unreadable", "invalid"]).nullable()
-});
-export const openSshImportRequestSchema = z.object({
-  selection: z.object({
-    fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-    names: z.array(z.string().min(1).max(120)).min(1).max(500),
-    groupId: z.string().uuid().nullable()
-  }).optional()
-});
-export const openSshImportResultSchema = resultSchema(z.union([
-  z.object({ preview: z.object({ fingerprint: z.string(), entries: z.array(openSshPreviewEntrySchema).max(500) }) }),
-  z.object({ imported: z.object({
-    created: z.number().int(),
-    // Keys copied from IdentityFile during this import; those profiles open
-    // without a second manual step.
-    keysImported: z.number().int(),
-    // Imported profiles whose key needs a passphrase before it can connect.
-    passphraseRequired: z.array(z.string()).max(500),
-    skipped: z.array(z.string()),
-    failed: z.array(z.string()),
-    details: z.array(z.object({ name: z.string(), reason: z.enum(["unsupported", "cycle", "repeated", "missing", "save", "key"]), items: z.array(z.string()) }))
-  }) })
-]));
-export const resourceBackupImportResultSchema = resultSchema(z.object({ profiles: z.number().int(), groups: z.number().int(), credentials: z.number().int(), duplicates: z.array(z.string()).max(5000).optional(), skipped: z.number().int().optional(), retained: z.array(z.string()).max(5000).optional() }));
-const profileAuthKindSchema = z.enum(["password", "key"]);
-// A saved project directory is deliberately an absolute POSIX path.  It is
-// passed to SFTP and to the guarded `changeDirectory` RPC, so accepting shell
-// syntax, relative paths, or control characters here would create two subtly
-// different meanings for one saved value.
-const projectDirectorySchema = z.string().min(1).max(1024).refine(
-  (path) => path.startsWith("/") && !/[\x00-\x1f\x7f]/.test(path),
-  "项目目录必须是绝对路径，且不能包含控制字符" // i18n-ignore: schema-time message, frozen by design
-);
-// A saved login command replaces the resource's login shell for terminal
-// sessions (exec + pty): `bash -l` drops into bash on a zsh-default server.
-// Single line only — a saved value containing a newline would make it
-// ambiguous what actually runs in the exec request.
-const loginCommandSchema = z.string().min(1).max(1024).refine(
-  (command) => !/[\x00-\x1f\x7f]/.test(command),
-  "登录命令必须是单行命令，不能包含控制字符" // i18n-ignore: schema-time message, frozen by design
-);
-const legacySavedJumpSchema = z.object({
-  host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535).default(22),
-  username: z.string().min(1).max(128), authKind: z.enum(["credential", "password", "key"]).default("credential"), credentialId: credentialIdSchema.optional(),
-  hostKeyMode: hostKeyModeSchema.optional()
-});
-const savedJumpSchema = z.union([z.object({ profileId: profileIdSchema }), legacySavedJumpSchema]);
-
-const profileMetadataSchema = z.object({
-  name: z.string().min(1).max(120),
-  host: z.string().min(1).max(255),
-  port: z.number().int().min(1).max(65535).default(22),
-  username: z.string().min(1).max(128),
-  authKind: profileAuthKindSchema,
-  hostKeyMode: hostKeyModeSchema.default("accept-new"),
-  // SSH agent forwarding (resolved false for records saved before this
-  // field existed): forward the local ssh-agent so a terminal on this server
-  // can authenticate onward with the local keys.
-  agentForward: z.boolean().default(false)
-});
-
-export const profileSaveRequestSchema = profileMetadataSchema.extend({
-  // The stored record carries these defaults; the request must not invent
-  // them. A default here turns "this caller did not send hostKeyMode" into
-  // "accept-new", which silently downgrades a resource pinned to `verify` on
-  // every partial save. profileMetadataSchema keeps its defaults for the
-  // *output* shape, where a record saved before a field existed must still
-  // read back as a complete object.
-  hostKeyMode: hostKeyModeSchema.optional(),
-  agentForward: z.boolean().optional(),
-  profileId: profileIdSchema.optional(),
-  groupId: groupIdSchema.nullable().optional(),
-  credentialId: credentialIdSchema.nullable().optional(),
-  proxyJump: z.array(savedJumpSchema).max(8).optional(),
-  defaultProjectPath: projectDirectorySchema.nullable().optional(),
-  loginCommand: loginCommandSchema.nullable().optional(),
-  // Execution policy override for this resource (null = follow the global
-  // setting). Only the tier travels here; the custom tier's released-category
-  // set stays a single global list in harbor_settings.
-  execPolicy: execPolicyModeSchema.nullable().optional()
-});
-
-const profileCredentialRefsSchema = z.object({
-  password: z.string(),
-  privateKey: z.string(),
-  passphrase: z.string(),
-  proxyJumpPasswords: z.array(z.string()).optional(),
-  proxyJumpPrivateKeys: z.array(z.string()).optional(),
-  proxyJumpPassphrases: z.array(z.string()).optional()
-});
-
-export const profileInfoSchema = profileMetadataSchema.extend({
-  profileId: profileIdSchema,
-  groupId: groupIdSchema.nullable(),
-  groupName: z.string().nullable(),
-  credentialConfigured: z.boolean(),
-  passphraseConfigured: z.boolean(),
-  // Optional second factor (dual-factor auth): whether the opposite-kind
-  // secret is also configured. Resolved to false for records saved before
-  // dual-factor support existed.
-  secondaryConfigured: z.boolean(),
-  connected: z.boolean()
- ,credentialId: credentialIdSchema.nullable(),
-  credentialName: z.string().nullable(),
-  proxyJump: z.array(savedJumpSchema),
-  defaultProjectPath: projectDirectorySchema.nullable(),
-  loginCommand: loginCommandSchema.nullable(),
-  execPolicy: execPolicyModeSchema.nullable()
-});
-
-const credentialInfoSchema = z.object({ credentialId: credentialIdSchema, name: z.string(), authKind: profileAuthKindSchema, credentialConfigured: z.boolean(), passphraseConfigured: z.boolean(), secondaryConfigured: z.boolean() });
-export const credentialListRequestSchema = z.object({});
-export const credentialListResultSchema = resultSchema(z.object({ credentials: z.array(credentialInfoSchema) }));
-export const credentialSaveRequestSchema = z.object({ credentialId: credentialIdSchema.optional(), name: z.string().min(1).max(120), authKind: profileAuthKindSchema });
-export const credentialSaveResultSchema = resultSchema(z.object({ credential: credentialInfoSchema, credentialRefs: profileCredentialRefsSchema }));
-export const credentialDeleteRequestSchema = z.object({ credentialId: credentialIdSchema });
-export const credentialDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean() }));
-
-export const profileSaveResultSchema = resultSchema(
-  z.object({
-    profile: profileInfoSchema,
-    credentialRefs: profileCredentialRefsSchema
-  })
-);
-
-export const profileListRequestSchema = z.object({});
-export const profileListResultSchema = resultSchema(
-  z.object({ profiles: z.array(profileInfoSchema) })
-);
-
-// ── remote workspaces ───────────────────────────────────────────
-//
-// A workspace stays a host directory; only its *file work* is redirected to a
-// saved SSH resource. `workspacePath` is the canonical directory DSH stores for
-// the Workspace, so it doubles as the row identity.
-const remoteWorkspaceBindingSchema = z.object({
-  workspacePath: z.string().min(1),
-  remotePath: z.string().min(1),
-  profileId: profileIdSchema,
-  profileName: z.string(),
-  host: z.string(),
-  port: z.number().int(),
-  username: z.string(),
-  autoConnect: z.boolean(),
-  // Whether the bound resource currently holds a live connection.
-  connected: z.boolean(),
-  // The binding points at a resource that was deleted.
-  missingResource: z.boolean().optional()
-});
-
-const remoteWorkspaceCandidateSchema = z.object({
-  path: z.string().min(1),
-  title: z.string()
-});
-
-export const remoteWorkspaceListRequestSchema = z.object({});
-export const remoteWorkspaceListResultSchema = resultSchema(z.object({
-  bindings: z.array(remoteWorkspaceBindingSchema),
-  workspaces: z.array(remoteWorkspaceCandidateSchema)
-}));
-
-export const remoteWorkspaceSaveRequestSchema = z.object({
-  workspacePath: z.string().min(1),
-  profileId: profileIdSchema,
-  remotePath: z.string().min(1),
-  autoConnect: z.boolean().optional()
-});
-export const remoteWorkspaceSaveResultSchema = resultSchema(z.object({ binding: remoteWorkspaceBindingSchema }));
-
-export const remoteWorkspaceDeleteRequestSchema = z.object({ workspacePath: z.string().min(1) });
-export const remoteWorkspaceDeleteResultSchema = resultSchema(z.object({ removed: z.boolean() }));
-
-export const profileDeleteRequestSchema = z.object({ profileId: profileIdSchema });
-export const profileDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean() }));
-
-export const profileDisconnectRequestSchema = z.object({ profileId: profileIdSchema });
-export const profileDisconnectResultSchema = resultSchema(z.object({ disconnected: z.number().int().min(0) }));
-
-export const profileConnectRequestSchema = z.object({
-  profileId: profileIdSchema,
-  /** Join an already-live connection for this saved server when possible. */
-  reuseExisting: z.boolean().optional(),
-  /** UI connects pass a shorter handshake budget and zero retries to fail fast. */
-  readyTimeout: z.number().int().positive().max(120000).optional(),
-  retries: z.number().int().min(0).max(5).optional(),
-  /** When supplied, override this saved resource's jump chain for one connect only. */
-  proxyJumpProfileIds: z.array(profileIdSchema).max(8).optional(),
-  /** Binds the agent target to this conversation instead of the shared pointer. */
-  sessionId: ownerSessionIdSchema.optional()
-});
-export const profileConnectResultSchema = connectResultSchema;
-
-export const cancelProfileConnectRequestSchema = z.object({ profileId: profileIdSchema.optional() });
-export const cancelProfileConnectResultSchema = resultSchema(z.object({ cancelled: z.number().int().min(0) }));
-
-const groupInfoSchema = z.object({
-  groupId: groupIdSchema,
-  name: z.string(),
-  profileCount: z.number().int().nonnegative()
-});
-export const groupListRequestSchema = z.object({});
-export const groupListResultSchema = resultSchema(z.object({ groups: z.array(groupInfoSchema) }));
-export const groupSaveRequestSchema = z.object({ groupId: groupIdSchema.optional(), name: z.string().min(1).max(80) });
-export const groupSaveResultSchema = resultSchema(z.object({ group: groupInfoSchema }));
-export const groupDeleteRequestSchema = z.object({ groupId: groupIdSchema });
-export const groupDeleteResultSchema = resultSchema(z.object({ deleted: z.boolean(), movedProfiles: z.number().int().nonnegative() }));
-
-// ── select the connection the agent operates on ─────────────────────────────
-
-export const selectConnectionRequestSchema = z.object({
-  connectionId: z.string().min(1),
-  // Binds only this conversation; absent keeps the shared compatibility pointer.
-  sessionId: ownerSessionIdSchema.optional()
-});
-
-export const selectConnectionResultSchema = resultSchema(z.object({
-  activeConnectionId: z.string().nullable()
-}));
-
-// ── open shell session ──────────────────────────────────────────────────────
-
-export const openSessionRequestSchema = z.object({
-  connectionId: z.string().min(1),
-  cols: z.number().int().min(2).max(500).optional(),
-  rows: z.number().int().min(1).max(200).optional(),
-  openedBy: z.enum(["panel", "agent"]).optional(),
-  // The conversation that will own the terminal. Absent opens an anonymous
-  // terminal, which the first conversation that asks may adopt.
-  sessionId: ownerSessionIdSchema.optional(),
-  // false refuses to adopt this connection's single anonymous terminal.
-  adopt: z.boolean().optional(),
-  // Open a fresh shell even when this conversation already owns one here. The
-  // panel re-requests its terminal on every layout change, so reuse is the
-  // default; this exists for the "the person took the shell over" path and for
-  // callers that really need a second PTY.
-  forceNew: z.boolean().optional()
-});
-
-const sessionInfoSchema = z.object({
-  sessionId: z.string(),
-  connectionId: z.string(),
-  cols: z.number(),
-  rows: z.number(),
-  alive: z.boolean(),
-  ownerSessionId: z.string().nullable(),
-  // true when an existing terminal was returned rather than created.
-  reused: z.boolean(),
-  // true when an anonymous terminal was claimed instead of created.
-  adopted: z.boolean().optional()
-});
-
-export const openSessionResultSchema = resultSchema(sessionInfoSchema);
-
-// ── write ───────────────────────────────────────────────────────────────────
-
-export const writeRequestSchema = z.object({
-  sessionId: z.string().min(1),
-  data: z.string()
-});
-
-export const writeResultSchema = resultSchema(
-  z.object({ written: z.number() })
-);
-
-// ── known-hosts management (operator only) ──────────────────────────────────
-
-const knownHostInfoSchema = z.object({
-  host: z.string(),
-  port: z.number().int(),
-  algorithm: z.string(),
-  fingerprint: z.string(),
-  firstSeenAt: z.string(),
-  lastSeenAt: z.string()
-});
-
-export const listKnownHostsRequestSchema = z.object({});
-export const listKnownHostsResultSchema = resultSchema(
-  z.object({ hosts: z.array(knownHostInfoSchema) })
-);
-
-export const forgetHostKeyRequestSchema = z.object({
-  host: z.string().min(1),
-  port: z.number().int().min(1).max(65535).default(22)
-});
-export const forgetHostKeyResultSchema = resultSchema(z.object({ forgotten: z.boolean() }));
-
-// ── read ────────────────────────────────────────────────────────────────────
-
-export const readRequestSchema = z.object({
-  sessionId: z.string().min(1),
-  timeoutMs: z.number().int().min(0).max(60000).optional(),
-  after: z.number().int().nonnegative().safe().optional()
-});
-
-// Stream push: one sessionId, endless item stream. Each yielded item reuses
-// the read() envelope so the client render path stays identical.
-export const terminalStreamRequestSchema = z.object({
-  sessionId: z.string().min(1),
-  after: z.number().int().nonnegative().safe().optional()
-});
-
-export const changeDirectoryRequestSchema = z.object({
-  sessionId: z.string().min(1),
-  path: z.string().min(1).max(4096).refine((path) => path.startsWith("/") && !/[\x00-\x1f\x7f]/.test(path))
-});
-
-export const readResultSchema = resultSchema(
-  z.object({
-    data: z.string(),
-    startOffset: z.number().int().nonnegative().optional(),
-    offset: z.number().int().nonnegative().optional(),
-    exit: z.union([z.object({ code: z.number(), signal: z.number().optional(), reason: z.enum(["remote-exit", "remote-signal", "channel-closed", "channel-error", "transport-lost", "operator-close", "session-closed"]).optional() }), z.null()])
-  })
-);
-
-// ── resize ──────────────────────────────────────────────────────────────────
-
-export const resizeRequestSchema = z.object({
-  sessionId: z.string().min(1),
-  cols: z.number().int().min(2).max(500),
-  rows: z.number().int().min(1).max(200)
-});
-
-export const resizeResultSchema = resultSchema(
-  z.object({ cols: z.number(), rows: z.number() })
-);
-
-// ── close session ───────────────────────────────────────────────────────────
-
-export const closeSessionRequestSchema = z.object({
-  sessionId: z.string().min(1)
-});
-
-export const closeSessionResultSchema = resultSchema(
-  z.object({ closed: z.boolean() })
-);
-
-// ── disconnect ──────────────────────────────────────────────────────────────
-
-export const disconnectRequestSchema = z.object({
-  connectionId: z.string().min(1)
-});
-
-export const disconnectResultSchema = resultSchema(
-  z.object({ disconnected: z.boolean() })
-);
-
-// ── SFTP ────────────────────────────────────────────────────────────────────
-
-// The attributes a listing entry and a stat result share. `name` is
-// deliberately not one of them: `sftpStat` answers "what is at this path", and
-// its caller already knows the path it asked about, so requiring a `name` here
-// made every stat result fail the strict codec.
-const sftpAttributesSchema = z.object({
-  isDirectory: z.boolean(),
-  size: z.number(),
-  mtime: z.number(),
-  mode: z.number()
-});
-
-const sftpEntrySchema = z.object({ name: z.string(), ...sftpAttributesSchema.shape });
-
-export const sftpListRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  path: z.string().optional()
-});
-
-export const sftpListResultSchema = resultSchema(
-  z.object({ path: z.string(), entries: z.array(sftpEntrySchema) })
-);
-
-export const sftpStatRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  path: z.string().min(1)
-});
-
-export const sftpStatResultSchema = resultSchema(z.object({ path: z.string(), ...sftpAttributesSchema.shape }));
-
-export const sftpReadRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  path: z.string().min(1),
-  maxBytes: z.number().int().min(1024).max(16 * 1024 * 1024).optional()
-});
-
-export const sftpReadResultSchema = resultSchema(
-  // `bytes` is the length of the returned content (min(file size, maxBytes)),
-  // so it is only the file size when `truncated` is false.
-  z.object({ path: z.string(), data: z.string(), truncated: z.boolean(), bytes: z.number() })
-);
-
-export const sftpWriteRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  path: z.string().min(1),
-  data: z.string()
-});
-
-export const sftpWriteResultSchema = resultSchema(
-  z.object({ path: z.string(), bytes: z.number() })
-);
-
-export const sftpEditorSaveRequestSchema = z.object({
-  connectionId: z.string().optional(), path: z.string().min(1),
-  expected: z.string().max(14 * 1024 * 1024), data: z.string().max(14 * 1024 * 1024)
-});
-export const sftpEditorSaveResultSchema = resultSchema(z.object({ bytes: z.number() }));
-
-// ── SCP fallback (single-file upload/download only) ─────────────────────────
-
-export const scpReadRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  path: z.string().min(1),
-  maxBytes: z.number().int().min(1024).max(16 * 1024 * 1024).optional()
-});
-
-export const scpReadResultSchema = resultSchema(
-  z.object({ path: z.string(), data: z.string(), truncated: z.boolean(), bytes: z.number() })
-);
-
-export const scpWriteRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  path: z.string().min(1),
-  data: z.string()
-});
-
-export const scpWriteResultSchema = resultSchema(
-  z.object({ path: z.string(), bytes: z.number() })
-);
-
-export const sftpMkdirRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  path: z.string().min(1)
-});
-
-export const sftpMkdirResultSchema = resultSchema(
-  z.object({ path: z.string() })
-);
-
-export const sftpDeleteRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  path: z.string().min(1)
-});
-
-export const sftpDeleteResultSchema = resultSchema(
-  z.object({ path: z.string(), isDirectory: z.boolean() })
-);
-
-export const sftpRenameRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  from: z.string().min(1),
-  to: z.string().min(1)
-});
-
-export const sftpRenameResultSchema = resultSchema(
-  z.object({ from: z.string(), to: z.string() })
-);
-
-export const sftpTransferListRequestSchema = z.object({ connectionId: z.string().min(1) });
-export const sftpTransferListResultSchema = resultSchema(z.object({ transfers: z.array(z.object({
-  id: z.string(), connectionId: z.string(), source: z.string(), target: z.string(),
-  status: z.enum(["running", "done", "failed", "cancelled"]), total: z.number(), sent: z.number(), error: z.string()
-})) }));
-export const sftpTransferCancelRequestSchema = z.object({ connectionId: z.string().min(1), id: z.string().min(1) });
-export const sftpTransferCancelResultSchema = resultSchema(z.object({ cancelled: z.boolean() }));
-export const sftpTransferDiscardResultSchema = resultSchema(z.object({ discarded: z.boolean() }));
-
-
-// ── Port forwarding ──────────────────────────────────────────────────────────
-
-export const tunnelStartLocalRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  bindAddr: z.string().optional(),
-  bindPort: z.number().int().min(0).max(65535).optional(),
-  remoteHost: z.string().min(1),
-  remotePort: z.number().int().min(1).max(65535)
-});
-
-export const tunnelStartDynamicRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  bindAddr: z.string().optional(),
-  bindPort: z.number().int().min(0).max(65535).optional()
-});
-
-export const tunnelStartDynamicResultSchema = resultSchema(
-  z.object({
-    tunnelId: z.string(),
-    kind: z.literal("dynamic"),
-    bindAddr: z.string(),
-    bindPort: z.number()
-  })
-);
-
-export const tunnelStartLocalResultSchema = resultSchema(
-  z.object({
-    tunnelId: z.string(),
-    kind: z.literal("local"),
-    bindAddr: z.string(),
-    bindPort: z.number(),
-    remoteHost: z.string(),
-    remotePort: z.number()
-  })
-);
-
-export const tunnelStartRemoteRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  bindAddr: z.string().optional(),
-  bindPort: z.number().int().min(0).max(65535).optional(),
-  remoteHost: z.string().min(1),
-  remotePort: z.number().int().min(1).max(65535),
-  targetHost: z.string().min(1),
-  targetPort: z.number().int().min(1).max(65535)
-});
-
-export const tunnelStartRemoteResultSchema = resultSchema(
-  z.object({
-    tunnelId: z.string(),
-    kind: z.literal("remote"),
-    bindAddr: z.string(),
-    bindPort: z.number(),
-    remoteHost: z.string(),
-    remotePort: z.number(),
-    targetHost: z.string(),
-    targetPort: z.number()
-  })
-);
-
-export const tunnelStopRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  tunnelId: z.string().min(1)
-});
-
-export const tunnelStopResultSchema = resultSchema(
-  z.object({ tunnelId: z.string(), stopped: z.boolean() })
-);
-
-export const tunnelListRequestSchema = z.object({
-  connectionId: z.string().optional()
-});
-
-export const tunnelListResultSchema = resultSchema(
-  z.object({
-    tunnels: z.array(z.object({
-      tunnelId: z.string(),
-      kind: z.string(),
-      bindAddr: z.string(),
-      bindPort: z.number(),
-      remoteHost: z.string().optional(),
-      remotePort: z.number().optional(),
-      targetHost: z.string().optional(),
-      targetPort: z.number().optional(),
-      /** Dynamic tunnels only: accepted client connections right now. */
-      connections: z.number().int().nonnegative().optional(),
-      active: z.boolean()
-    }))
-  })
-);
-
-// ── session logs (recording) ─────────────────────────────────────────────────
-
-const sessionLogInfoSchema = z.object({
-  sessionId: z.string(),
-  connectionId: z.string().nullable(),
-  name: z.string().nullable(),
-  host: z.string().nullable(),
-  port: z.number().nullable(),
-  openedBy: z.string().nullable(),
-  startedAt: z.string(),
-  endedAt: z.string().nullable(),
-  exitCode: z.number().nullable(),
-  bytes: z.number(),
-  truncated: z.boolean()
-});
-
-export const sessionLogListRequestSchema = z.object({});
-export const sessionLogListResultSchema = resultSchema(
-  z.object({ enabled: z.boolean(), logs: z.array(sessionLogInfoSchema) })
-);
-
-export const sessionLogReadRequestSchema = z.object({
-  sessionId: z.string().min(1),
-  offset: z.number().int().min(0).optional(),
-  maxBytes: z.number().int().min(1).max(4194304).optional()
-});
-export const sessionLogReadResultSchema = resultSchema(
-  z.object({
-    sessionId: z.string(),
-    data: z.string(),
-    startOffset: z.number(),
-    nextOffset: z.number(),
-    eof: z.boolean(),
-    size: z.number()
-  })
-);
-
-export const sessionLogSearchRequestSchema = z.object({
-  sessionId: z.string().min(1),
-  query: z.string().min(1),
-  maxHits: z.number().int().min(1).max(1000).optional()
-});
-export const sessionLogSearchResultSchema = resultSchema(
-  z.object({
-    sessionId: z.string(),
-    hits: z.array(z.object({ offset: z.number(), line: z.string() })),
-    scannedBytes: z.number(),
-    stoppedEarly: z.boolean()
-  })
-);
-
-export const sessionLogDeleteRequestSchema = z.object({ sessionId: z.string().min(1).optional() });
-export const sessionLogDeleteResultSchema = resultSchema(
-  z.object({ deleted: z.number(), remaining: z.number() })
-);
-
-// ── batch exec (profile-selected, operator-confirmed) ────────────────────────
-
-export const batchPlanRequestSchema = z.object({
-  command: z.string().min(1),
-  timeoutMs: z.number().int().min(1000).max(120000).optional()
-});
-
-const batchTaskSchema = z.object({
-  batchId: z.string(),
-  command: z.string(),
-  timeoutMs: z.number(),
-  dangerous: z.boolean(),
-  reason: z.string().nullable(),
-  createdAt: z.string()
-});
-
-export const batchPlanResultSchema = resultSchema(z.object({ task: batchTaskSchema }));
-
-export const batchTaskListRequestSchema = z.object({});
-export const batchTaskListResultSchema = resultSchema(z.object({ tasks: z.array(batchTaskSchema) }));
-
-export const batchRunRequestSchema = z.object({
-  batchId: z.string(),
-  profileIds: z.array(z.string()).min(1)
-});
-
-/**
- * One per-host outcome row.
- *
- * `ok` means the command reached an exit status. A command killed by the
- * per-host deadline reports ok:false with timedOut:true and keeps the output
- * that arrived first; `truncated` says the tail was cut by the output cap.
- * Every field has to be declared here: the codec strips what it does not
- * know, which is how a killed command used to reach the panel looking exactly
- * like a clean success.
- */
-export const batchRunRowSchema = z.object({
-  profileId: z.string(),
-  name: z.string(),
-  host: z.string(),
-  ok: z.boolean(),
-  timedOut: z.boolean(),
-  truncated: z.boolean(),
-  exitCode: z.union([z.number(), z.null()]),
-  stdout: z.string(),
-  stderr: z.string(),
-  error: z.string().nullable()
-});
-
-export const batchRunResultSchema = resultSchema(z.object({ results: z.array(batchRunRowSchema) }));
-
-export const batchCancelRequestSchema = z.object({ batchId: z.string() });
-export const batchCancelResultSchema = resultSchema(z.object({ cancelled: z.boolean() }));
-
-// ── system monitor (read-only status panel + ssh_status) ─────────────────────
-
-/**
- * connectionId is optional: the host resolves the caller's current connection
- * when it is omitted, exactly like the agent tools do. The panel always sends
- * one, so a stale panel can never silently sample a different server.
- */
-export const systemStatsRequestSchema = z.object({
-  connectionId: z.string().min(1).max(128).optional(),
-  refresh: z.boolean().optional()
-});
-
-const statBytes = z.number().min(0);
-const statPercent = z.number().min(0).max(100).nullable();
-
-const systemStatsHostSchema = z.object({
-  hostname: z.string().optional(),
-  os: z.string().optional(),
-  kernel: z.string().optional(),
-  arch: z.string().optional(),
-  cores: z.number().int().min(1).optional(),
-  cpuModel: z.string().optional(),
-  uptimeSeconds: z.number().min(0).optional()
-});
-
-const systemStatsCpuSchema = z.object({
-  usagePercent: statPercent,
-  perCore: z.array(statPercent).nullable(),
-  iowaitPercent: statPercent.optional(),
-  stealPercent: statPercent.optional(),
-  load: z.tuple([z.number(), z.number(), z.number()]).nullable(),
-  cores: z.number().int().min(1).nullable().optional(),
-  model: z.string().nullable().optional()
-});
-
-const systemStatsMemorySchema = z.object({
-  totalBytes: statBytes,
-  freeBytes: statBytes,
-  availableBytes: statBytes,
-  buffersBytes: statBytes,
-  cachedBytes: statBytes,
-  swapTotalBytes: statBytes,
-  swapFreeBytes: statBytes
-});
-
-const systemStatsGpuSchema = z.object({
-  index: z.number().int().min(0),
-  name: z.string(),
-  utilizationPercent: statPercent,
-  memoryUsedBytes: statBytes.nullable(),
-  memoryTotalBytes: statBytes.nullable(),
-  temperatureC: z.number().nullable(),
-  powerW: z.number().nullable()
-});
-
-const systemStatsDiskSchema = z.object({
-  mount: z.string(),
-  device: z.string(),
-  totalBytes: statBytes,
-  usedBytes: statBytes,
-  availableBytes: statBytes,
-  usePercent: z.number().min(0).max(100)
-});
-
-const systemStatsDiskIoSchema = z.object({
-  readBytesPerSec: z.number().min(0),
-  writeBytesPerSec: z.number().min(0)
-});
-
-const systemStatsNetworkSchema = z.object({
-  name: z.string(),
-  rxBytesPerSec: z.number().min(0).nullable(),
-  txBytesPerSec: z.number().min(0).nullable(),
-  rxTotalBytes: statBytes,
-  txTotalBytes: statBytes
-});
-
-const systemStatsProcessSchema = z.object({
-  pid: z.number().int().min(0),
-  name: z.string(),
-  cpuPercent: z.number().min(0),
-  memPercent: z.number().min(0)
-});
-
-const systemStatsProcessesSchema = z.object({
-  total: z.number().int().nullable(),
-  running: z.number().int().nullable(),
-  top: z.array(systemStatsProcessSchema)
-});
-
-const systemStatsCapabilitiesSchema = z.object({
-  processes: z.boolean(),
-  gpu: z.boolean(),
-  disks: z.boolean(),
-  io: z.boolean()
-});
-
-export const systemStatsResultSchema = resultSchema(
-  z.object({
-    sampledAt: z.string(),
-    sampleMs: z.number().min(0),
-    platform: z.enum(["linux", "other"]),
-    platformName: z.string().optional(),
-    supported: z.boolean(),
-    // Machine-readable, so the panel owns the wording (and an older panel can
-    // fall back to a generic sentence instead of showing a raw code).
-    reason: z.enum(["no-posix-shell", "no-procfs", "probe-empty"]).optional(),
-    warmingUp: z.boolean().optional(),
-    host: systemStatsHostSchema.optional(),
-    cpu: systemStatsCpuSchema.optional(),
-    memory: systemStatsMemorySchema.optional(),
-    gpu: z.array(systemStatsGpuSchema),
-    disks: z.array(systemStatsDiskSchema),
-    diskIo: systemStatsDiskIoSchema.nullable(),
-    network: z.array(systemStatsNetworkSchema),
-    processes: systemStatsProcessesSchema.nullable(),
-    capabilities: systemStatsCapabilitiesSchema,
-    warnings: z.array(z.string())
-  })
-);
-
+export {
+  okSchema,
+  resultSchema,
+  sshErrorSchema,
+} from "./schemas/common.js";
+
+export {
+  authSchema,
+} from "./schemas/auth.js";
+
+export {
+  connectRequestSchema,
+  connectResultPayloadSchema,
+  connectResultSchema,
+  disconnectRequestSchema,
+  disconnectResultSchema,
+  forgetHostKeyRequestSchema,
+  forgetHostKeyResultSchema,
+  listKnownHostsRequestSchema,
+  listKnownHostsResultSchema,
+  listRequestSchema,
+  listResultSchema,
+  selectConnectionRequestSchema,
+  selectConnectionResultSchema,
+} from "./schemas/connections.js";
+
+export {
+  cancelProfileConnectRequestSchema,
+  cancelProfileConnectResultSchema,
+  groupDeleteRequestSchema,
+  groupDeleteResultSchema,
+  groupListRequestSchema,
+  groupListResultSchema,
+  groupSaveRequestSchema,
+  groupSaveResultSchema,
+  openSshImportRequestSchema,
+  openSshImportResultSchema,
+  profileConnectRequestSchema,
+  profileConnectResultSchema,
+  profileConnectionStatusResultSchema,
+  profileDeleteRequestSchema,
+  profileDeleteResultSchema,
+  profileDisconnectRequestSchema,
+  profileDisconnectResultSchema,
+  profileInfoSchema,
+  profileListRequestSchema,
+  profileListResultSchema,
+  profileSaveRequestSchema,
+  profileSaveResultSchema,
+  resourceBackupExportRequestSchema,
+  resourceBackupExportResultSchema,
+  resourceBackupImportRequestSchema,
+  resourceBackupImportResultSchema,
+} from "./schemas/resources.js";
+
+export {
+  credentialDeleteRequestSchema,
+  credentialDeleteResultSchema,
+  credentialListRequestSchema,
+  credentialListResultSchema,
+  credentialSaveRequestSchema,
+  credentialSaveResultSchema,
+} from "./schemas/credentials.js";
+
+export {
+  remoteWorkspaceDeleteRequestSchema,
+  remoteWorkspaceDeleteResultSchema,
+  remoteWorkspaceListRequestSchema,
+  remoteWorkspaceListResultSchema,
+  remoteWorkspaceSaveRequestSchema,
+  remoteWorkspaceSaveResultSchema,
+} from "./schemas/workspaces.js";
+
+export {
+  scpReadRequestSchema,
+  scpReadResultSchema,
+  scpWriteRequestSchema,
+  scpWriteResultSchema,
+  sftpDeleteRequestSchema,
+  sftpDeleteResultSchema,
+  sftpEditorSaveRequestSchema,
+  sftpEditorSaveResultSchema,
+  sftpListRequestSchema,
+  sftpListResultSchema,
+  sftpMkdirRequestSchema,
+  sftpMkdirResultSchema,
+  sftpReadRequestSchema,
+  sftpReadResultSchema,
+  sftpRenameRequestSchema,
+  sftpRenameResultSchema,
+  sftpStatRequestSchema,
+  sftpStatResultSchema,
+  sftpTransferCancelRequestSchema,
+  sftpTransferCancelResultSchema,
+  sftpTransferDiscardResultSchema,
+  sftpTransferListRequestSchema,
+  sftpTransferListResultSchema,
+  sftpWriteRequestSchema,
+  sftpWriteResultSchema,
+} from "./schemas/files.js";
+
+export {
+  changeDirectoryRequestSchema,
+  closeSessionRequestSchema,
+  closeSessionResultSchema,
+  openSessionRequestSchema,
+  openSessionResultSchema,
+  readRequestSchema,
+  readResultSchema,
+  resizeRequestSchema,
+  resizeResultSchema,
+  terminalStreamRequestSchema,
+  writeRequestSchema,
+  writeResultSchema,
+} from "./schemas/terminal.js";
+
+export {
+  agentSettingsGetRequestSchema,
+  agentSettingsResultSchema,
+  agentSettingsSaveRequestSchema,
+  execPolicyGetRequestSchema,
+  execPolicyGetResultSchema,
+  execPolicySetRequestSchema,
+  execPolicySetResultSchema,
+  featureSettingsSchema,
+  languageGetRequestSchema,
+  languageResultSchema,
+  languageSaveRequestSchema,
+} from "./schemas/settings.js";
+
+export {
+  systemStatsRequestSchema,
+  systemStatsResultSchema,
+} from "./schemas/monitor.js";
+
+export {
+  batchCancelRequestSchema,
+  batchCancelResultSchema,
+  batchPlanRequestSchema,
+  batchPlanResultSchema,
+  batchRunRequestSchema,
+  batchRunResultSchema,
+  batchRunRowSchema,
+  batchTaskListRequestSchema,
+  batchTaskListResultSchema,
+} from "./schemas/batch.js";
+
+export {
+  sessionLogDeleteRequestSchema,
+  sessionLogDeleteResultSchema,
+  sessionLogListRequestSchema,
+  sessionLogListResultSchema,
+  sessionLogReadRequestSchema,
+  sessionLogReadResultSchema,
+  sessionLogSearchRequestSchema,
+  sessionLogSearchResultSchema,
+} from "./schemas/logs.js";
+
+export {
+  tunnelListRequestSchema,
+  tunnelListResultSchema,
+  tunnelStartDynamicRequestSchema,
+  tunnelStartDynamicResultSchema,
+  tunnelStartLocalRequestSchema,
+  tunnelStartLocalResultSchema,
+  tunnelStartRemoteRequestSchema,
+  tunnelStartRemoteResultSchema,
+  tunnelStopRequestSchema,
+  tunnelStopResultSchema,
+} from "./schemas/tunnels.js";
