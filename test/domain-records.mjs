@@ -8,7 +8,7 @@
 // Credentials are driven through their real save methods on a
 // partially-constructed service (same style as test/project-directory.mjs);
 // known hosts are driven through the real KnownHosts writer
-// (src/host/hostkey.js).
+// (src/host/ssh/hostkey.js).
 import assert from "node:assert/strict";
 import { Service } from "@deepseek-ai/cordis";
 import HarborService, {

@@ -22,7 +22,7 @@ test("every preview stub names a method the client API really serves", () => {
   const stubs = Object.keys(createMockApi());
   assert.ok(stubs.length > 20, `expected the preview to stub real screens, saw ${stubs.length} stubs`);
   const unknown = stubs.filter((name) => !served.has(name));
-  assert.deepEqual(unknown, [], `preview/mock-api.js stubs methods src/client/api.js does not serve: ${unknown.join(", ")}`);
+  assert.deepEqual(unknown, [], `preview/mock-api.js stubs methods src/client/core/api.js does not serve: ${unknown.join(", ")}`);
 });
 
 test("an unstubbed method degrades to the benign default instead of throwing", async () => {

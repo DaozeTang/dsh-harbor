@@ -16,7 +16,7 @@
  *      busy / ambiguous / non-interactive cases contradicted the module's own
  *      contract.
  *
- * This file reads the *real* whitelist out of src/host/exec-cwd.js (no second copy
+ * This file reads the *real* whitelist out of src/host/exec/cwd.js (no second copy
  * to drift), mirrors `__dsh_find_shell` in plain JS, and asserts the script's
  * degradation branches structurally. Everything here runs on any platform.
  */
@@ -33,7 +33,7 @@ const SOURCE = readFileSync(new URL('../src/host/exec/cwd.js', import.meta.url),
 
 // ---- the authoritative argv whitelist, taken from the script under test ----
 const whitelistMatch = SOURCE.match(/case \$__dsh_arg in ([^)]*)\) ;; \*\) __dsh_valid=no/);
-assert.ok(whitelistMatch, 'the argv whitelist must stay discoverable in src/host/exec-cwd.js');
+assert.ok(whitelistMatch, 'the argv whitelist must stay discoverable in src/host/exec/cwd.js');
 // `case` patterns are either a quoted shell word (`''`) or a bare option word
 // (`-i`, `--login`); both spellings must stay acceptable.
 const WHITELIST = whitelistMatch[1].split('|').map((raw) => {

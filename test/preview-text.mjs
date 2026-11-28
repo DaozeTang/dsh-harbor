@@ -3,7 +3,7 @@
  * dialog will color. Its seed text therefore has to demonstrate every built-in
  * classification, not just a few, and it has to include CJK characters because
  * the matcher maps them back to terminal cell widths. The text is fixed in
- * src/client/terminal-display/preview-text.js, so this test guards it from
+ * src/client/features/terminal-display/preview-text.js, so this test guards it from
  * drifting when rules change.
  */
 import { test } from "node:test";
