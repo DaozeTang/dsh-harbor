@@ -20,10 +20,10 @@
 
 import { shellQuote } from "./safety.js";
 
-export const TRASH_DIR = "$HOME/.dsh-trash";
-export const TRASH_MARKER = "__DSH_TRASH_V1__";
+const TRASH_DIR = "$HOME/.dsh-trash";
+const TRASH_MARKER = "__DSH_TRASH_V1__";
 export const TRASH_RETENTION_MS = 24 * 60 * 60 * 1000;
-export const TRASH_MANIFEST = "manifest.tsv";
+const TRASH_MANIFEST = "manifest.tsv";
 
 const DELETE_PROGRAMS = new Set(["rm", "unlink", "rmdir"]);
 // Bundles of these short flags are understood; anything else (long options,
@@ -190,6 +190,8 @@ function quoteTarget(target) {
  * parsed targets. The script:
  *   1. creates `$HOME/.dsh-trash/`,
  *   2. purges manifest entries older than `retentionMs` (no cron/at needed),
+ *      keeping the row of any copy whose removal failed — an index entry is
+ *      the only handle back to those bytes,
  *   3. moves each existing target into the trash under `<epoch>-<basename>`,
  *   4. appends a manifest line (name, original absolute path, epoch, ISO time),
  *   5. reports one `__DSH_TRASH_V1__` line per target for host-side parsing.
@@ -204,20 +206,30 @@ export function buildTrashCommand(targets, { retentionMs = TRASH_RETENTION_MS } 
     `__dsh_t="${TRASH_DIR}"`,
     'mkdir -p "$__dsh_t" || { printf \'__DSH_TRASH_V1__\\terror\\ttrash-dir\\n\'; exit 0; }',
     "__dsh_n=$(date +%s)",
-    '__dsh_m="$__dsh_t/manifest.tsv"',
+    `__dsh_m="$__dsh_t/${TRASH_MANIFEST}"`,
     "if [ -f \"$__dsh_m\" ]; then",
     `  __dsh_cut=$((__dsh_n - ${retentionSec}))`,
     '  __dsh_tmp="$__dsh_t/.purge.$$"',
     "  awk -F'\\t' -v c=\"$__dsh_cut\" '$3+0 > 0 && $3+0 < c { print $1 }' \"$__dsh_m\" > \"$__dsh_tmp\" 2>/dev/null || : > \"$__dsh_tmp\"",
+    '  __dsh_keep="$__dsh_t/.keep.$$"',
+    '  : > "$__dsh_keep"',
     '  __dsh_purged=0',
     '  while IFS= read -r __dsh_x; do',
     '    case "$__dsh_x" in ""|"."|".."|*/*) continue ;; esac',
-    '    if rm -rf "$__dsh_t/$__dsh_x"; then __dsh_purged=$((__dsh_purged + 1)); fi',
+    // A copy that could not be removed (permissions, an immutable flag, a
+    // busy mount) keeps its row: dropping it would leave the bytes on the
+    // server with no index and no way to delete them later.
+    '    rm -rf "$__dsh_t/$__dsh_x" 2>/dev/null || :',
+    '    if [ -e "$__dsh_t/$__dsh_x" ] || [ -L "$__dsh_t/$__dsh_x" ]; then',
+    '      printf \'%s\\n\' "$__dsh_x" >> "$__dsh_keep"',
+    '    else',
+    '      __dsh_purged=$((__dsh_purged + 1))',
+    '    fi',
     '  done < "$__dsh_tmp"',
     '  if [ "$__dsh_purged" -gt 0 ]; then',
-    "    awk -F'\\t' -v c=\"$__dsh_cut\" '!($3+0 > 0 && $3+0 < c)' \"$__dsh_m\" > \"$__dsh_tmp\" 2>/dev/null && cat \"$__dsh_tmp\" > \"$__dsh_m\"",
+    "    awk -F'\\t' -v c=\"$__dsh_cut\" 'NR==FNR { keep[$1] = 1; next } ($3+0 > 0 && $3+0 < c) && !($1 in keep) { next } { print }' \"$__dsh_keep\" \"$__dsh_m\" > \"$__dsh_tmp\" 2>/dev/null && cat \"$__dsh_tmp\" > \"$__dsh_m\"",
     '  fi',
-    '  rm -f "$__dsh_tmp"',
+    '  rm -f "$__dsh_tmp" "$__dsh_keep"',
     `  printf '${TRASH_MARKER}\\tpurged\\t%d\\n' "$__dsh_purged"`,
     "fi",
     "__dsh_i=0",
@@ -271,76 +283,4 @@ export function parseTrashOutput(stdout) {
     }
   }
   return { events, stdout: kept.join("\n") };
-}
-
-/**
- * Parse a manifest.tsv body. Malformed lines are skipped; each entry keeps
- * its raw line because restore/purge rewrite the file by exact-line match.
- */
-export function parseTrashManifest(text) {
-  const entries = [];
-  for (const raw of String(text ?? "").split("\n")) {
-    if (raw.length === 0) continue;
-    const parts = raw.split("\t");
-    if (parts.length < 4 || parts[0].length === 0 || parts[1].length === 0) continue;
-    const epoch = Number(parts[2]);
-    if (!Number.isFinite(epoch) || epoch <= 0) continue;
-    if (parts[0].includes("/") || parts[0] === "." || parts[0] === "..") continue;
-    entries.push({ name: parts[0], original: parts[1], epoch, iso: parts[3], raw });
-  }
-  return entries;
-}
-
-
-function manifestFilterCommand(entry) {
-  // Exact-line removal keeps every other entry byte-for-byte intact.
-  return `grep -v -F -x -- ${shellQuote(entry.raw)}`;
-}
-
-/**
- * Build a remote script that moves one trash entry back to its recorded
- * original path (never overwriting an existing file) and drops the manifest
- * line. `entry` comes from parseTrashManifest.
- */
-export function buildRestoreCommand(entry) {
-  if (!entry || typeof entry.name !== "string" || typeof entry.original !== "string") return null;
-  const parent = entry.original.replace(/\/+[^/]*$/, "") || "/";
-  return [
-    `__dsh_f="${TRASH_DIR}/"${shellQuote(entry.name)}`,
-    'if [ ! -e "$__dsh_f" ] && [ ! -L "$__dsh_f" ]; then echo "trash entry not found: $__dsh_f" >&2; exit 1; fi',
-    `if [ -e ${shellQuote(entry.original)} ] || [ -L ${shellQuote(entry.original)} ]; then printf '%s\\n' ${shellQuote("restore target already exists: " + entry.original)} >&2; exit 1; fi`,
-    `mkdir -p ${shellQuote(parent)} || exit 1`,
-    `if mv "$__dsh_f" ${shellQuote(entry.original)}; then`,
-    `  __dsh_m="${TRASH_DIR}/"${shellQuote(TRASH_MANIFEST)}`,
-    // grep -v exits 1 when it selects nothing (last line removed), so the
-    // rewrite must not hang off its exit status — an empty result is valid.
-    '  if [ -f "$__dsh_m" ]; then ' + manifestFilterCommand(entry) + ' "$__dsh_m" > "$__dsh_m.r" 2>/dev/null; cat "$__dsh_m.r" > "$__dsh_m" 2>/dev/null; rm -f "$__dsh_m.r"; fi',
-    '  echo restored',
-    'else',
-    '  echo "restore move failed" >&2',
-    '  exit 1',
-    'fi'
-  ].join("\n");
-}
-
-/**
- * Build a remote script that permanently deletes the given trash entries and
- * rewrites the manifest without them. This is the one place where a real
- * `rm -rf` is acceptable: it only ever touches paths inside the trash.
- */
-export function buildPurgeCommand(entries) {
-  if (!Array.isArray(entries) || entries.length === 0) return null;
-  const lines = [
-    `__dsh_m="${TRASH_DIR}/"${shellQuote(TRASH_MANIFEST)}`
-  ];
-  for (const entry of entries) {
-    if (!entry || typeof entry.name !== "string" || entry.name.includes("/") || entry.name === "." || entry.name === "..") continue;
-    lines.push(`if rm -rf "${TRASH_DIR}/"${shellQuote(entry.name)}; then echo purged; fi`);
-    if (typeof entry.raw === "string" && entry.raw.length > 0) {
-      // grep -v exits 1 when it selects nothing (last line removed); the
-      // rewrite must still happen, so no && chaining here either.
-      lines.push(`if [ -f "$__dsh_m" ]; then ` + manifestFilterCommand(entry) + ` "$__dsh_m" > "$__dsh_m.p" 2>/dev/null; cat "$__dsh_m.p" > "$__dsh_m" 2>/dev/null; rm -f "$__dsh_m.p"; fi`);
-    }
-  }
-  return lines.join("\n");
 }

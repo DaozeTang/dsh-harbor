@@ -3,10 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  parseSimpleDeleteCommand, buildTrashCommand, parseTrashOutput,
-  parseTrashManifest, buildRestoreCommand, buildPurgeCommand, TRASH_RETENTION_MS
-} from "../src/host/trash.js";
+import { parseSimpleDeleteCommand, buildTrashCommand, parseTrashOutput, TRASH_RETENTION_MS } from "../src/host/trash.js";
 
 // The parser/serialiser halves run anywhere, but the end-to-end half executes
 // the generated scripts through /bin/sh in a sandbox with HOME overrides and
@@ -15,6 +12,14 @@ import {
 if (process.platform === "win32") {
   console.log("trash: skipped on Windows (end-to-end half requires /bin/sh sandbox semantics)");
   process.exit(0);
+}
+
+/** Manifest rows (name, original, epoch, iso), parsed here so the test pins the format itself. */
+function manifestRows(text) {
+  return String(text)
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => line.split("\t"));
 }
 
 // ── parser ───────────────────────────────────────────────────────────────────
@@ -107,14 +112,6 @@ for (const command of rejected) {
   }
 }
 
-// A restore refusal must not re-interpret a path in its message either.
-{
-  const entry = { name: "1700000000-x", original: "/tmp/x$(reboot)", epoch: 1700000000, iso: "20231114T221320Z", raw: "1700000000-x\t/tmp/x$(reboot)\t1700000000\t20231114T221320Z" };
-  const script = buildRestoreCommand(entry);
-  assert.match(script, /printf '%s\\n' 'restore target already exists: \/tmp\/x\$\(reboot\)'/, "the message path is a quoted argument, never part of the format string");
-  assert.doesNotMatch(script, /echo "restore target already exists/);
-}
-
 // ── output parsing ───────────────────────────────────────────────────────────
 
 {
@@ -129,24 +126,15 @@ for (const command of rejected) {
   assert.equal(parsed.stdout, "__DSH_CWD_MARK__\nsome output\n", "protocol lines must be stripped from visible output");
 }
 
-// ── manifest parsing ─────────────────────────────────────────────────────────
-
-{
-  const text = "1700000000-x\t/tmp/x\t1700000000\t20231114T221320Z\ngarbage line\nbad\t\t123\tiso\n../evil\t/tmp/evil\t1700000000\tiso\n1700000001-y\t/tmp/y\t1700000001\t20231114T221321Z";
-  const entries = parseTrashManifest(text);
-  assert.equal(entries.length, 2, "malformed and path-traversal lines must be skipped");
-  assert.equal(entries[0].name, "1700000000-x");
-  assert.equal(entries[0].original, "/tmp/x");
-  assert.equal(entries[1].name, "1700000001-y");
-}
-
 // ── end-to-end with a real /bin/sh ───────────────────────────────────────────
 
 function runInSandbox(script, sandbox) {
   return spawnSync("/bin/sh", ["-c", script], {
     encoding: "utf8",
     cwd: sandbox.cwd,
-    env: { ...process.env, HOME: sandbox.home, PATH: process.env.PATH }
+    // `PATH` is overridable so a case can put a refusing `rm` first, the way a
+    // permission/immutable/mount failure refuses a purge in the field.
+    env: { ...process.env, HOME: sandbox.home, PATH: sandbox.PATH ?? process.env.PATH }
   });
 }
 
@@ -187,29 +175,10 @@ function runInSandbox(script, sandbox) {
   // Manifest records absolute originals; the relative one resolved to the
   // physical cwd (pwd -P), which differs from the logical path on macOS.
   const manifest = readFileSync(join(trashDir, "manifest.tsv"), "utf8");
-  const listed = parseTrashManifest(manifest);
+  const listed = manifestRows(manifest);
   assert.equal(listed.length, 3);
   const physicalCwd = realpathSync(cwd);
-  assert.deepEqual(listed.map((e) => e.original).sort(), [join(home, "data/logs"), join(home, "data/db.sqlite"), join(physicalCwd, "relative.txt")].sort());
-
-  // Restore one entry: file comes back, manifest line disappears.
-  const relEntry = listed.find((e) => e.original.endsWith("relative.txt"));
-  const restoreRun = runInSandbox(buildRestoreCommand(relEntry), sandbox);
-  assert.equal(restoreRun.status, 0, `restore failed: ${restoreRun.stderr}`);
-  assert.equal(readFileSync(join(cwd, "relative.txt"), "utf8"), "rel");
-  assert.equal(parseTrashManifest(readFileSync(join(trashDir, "manifest.tsv"), "utf8")).length, 2);
-  // A second restore must fail one way or another (the entry is gone, and
-  // even if it were not, the target now exists).
-  const restoreAgain = runInSandbox(buildRestoreCommand(relEntry), sandbox);
-  assert.notEqual(restoreAgain.status, 0);
-  assert.match(restoreAgain.stderr, /not found|already exists/);
-
-  // Purge the rest: entries and manifest lines disappear together.
-  const rest = parseTrashManifest(readFileSync(join(trashDir, "manifest.tsv"), "utf8"));
-  const purgeRun = runInSandbox(buildPurgeCommand(rest), sandbox);
-  assert.equal(purgeRun.status, 0, `purge failed: ${purgeRun.stderr}`);
-  assert.equal(purgeRun.stdout.match(/purged/g).length, 2);
-  assert.equal(parseTrashManifest(readFileSync(join(trashDir, "manifest.tsv"), "utf8")).length, 0);
+  assert.deepEqual(listed.map((row) => row[1]).sort(), [join(home, "data/logs"), join(home, "data/db.sqlite"), join(physicalCwd, "relative.txt")].sort());
 
   rmSync(base, { recursive: true, force: true });
 }
@@ -234,12 +203,58 @@ function runInSandbox(script, sandbox) {
 
   assert.equal(existsSync(join(trashDir, `${oldEpoch}-old`)), false, "expired entry must be purged");
   assert.equal(existsSync(join(trashDir, "fresh.txt")), false, "the new target must be moved");
-  const listed = parseTrashManifest(readFileSync(join(trashDir, "manifest.tsv"), "utf8"));
+  const listed = manifestRows(readFileSync(join(trashDir, "manifest.tsv"), "utf8"));
   assert.equal(listed.length, 1);
-  assert.match(listed[0].name, /-fresh\.txt$/, "the fresh manifest line survives the purge");
-  assert.equal(listed[0].original, join(realpathSync(home), "fresh.txt"));
+  assert.match(listed[0][0], /-fresh\.txt$/, "the fresh manifest line survives the purge");
+  assert.equal(listed[0][1], join(realpathSync(home), "fresh.txt"));
 
   rmSync(base, { recursive: true, force: true });
+}
+
+// A copy the purge cannot remove must keep its manifest row. Rewriting the
+// manifest for every expired row dropped the index entry of data that was
+// still on disk: those bytes then had no listing and no way to be reclaimed.
+{
+  const base = mkdtempSync(join(tmpdir(), "dsh-trash-stuck-"));
+  try {
+    const home = join(base, "home");
+    const trashDir = join(home, ".dsh-trash");
+    mkdirSync(trashDir, { recursive: true });
+    const oldEpoch = Math.floor(Date.now() / 1000) - Math.floor(TRASH_RETENTION_MS / 1000) - 120;
+    const removable = `${oldEpoch}-gone`;
+    const stuck = `${oldEpoch}-stuck`;
+    mkdirSync(join(trashDir, removable), { recursive: true });
+    writeFileSync(join(trashDir, removable, "f"), "x");
+    mkdirSync(join(trashDir, stuck), { recursive: true });
+    writeFileSync(join(trashDir, stuck, "f"), "x");
+    writeFileSync(join(trashDir, "manifest.tsv"), [
+      `${removable}\t/home/gone\t${oldEpoch}\told`, 
+      `${stuck}\t/home/stuck\t${oldEpoch}\told`,
+      ""
+    ].join("\n"));
+    // A `rm` that refuses one entry, the way a permission, immutable or busy-
+    // mount failure does in the field.
+    const fakeBin = join(base, "bin");
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(join(fakeBin, "rm"), `#!/bin/sh
+case "$*" in *${stuck}*) exit 1 ;; esac
+exec /bin/rm "$@"
+`, { mode: 0o755 });
+    const parsed = parseSimpleDeleteCommand("rm gone.txt");
+    const run = runInSandbox(buildTrashCommand(parsed.targets), {
+      home,
+      cwd: home,
+      PATH: `${fakeBin}:${process.env.PATH}`
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /__DSH_TRASH_V1__\tpurged\t1/, "only the removable copy counts as purged");
+    assert.equal(existsSync(join(trashDir, removable)), false, "the removable copy is gone");
+    assert.equal(existsSync(join(trashDir, stuck)), true, "the stuck copy is still on disk");
+    const listed = manifestRows(readFileSync(join(trashDir, "manifest.tsv"), "utf8"));
+    assert.deepEqual(listed.map((row) => row[0]), [stuck], "the stuck copy keeps its manifest row");
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 }
 
 // Edge cases: missing target reported, symlink moved, broken symlink moved,
@@ -263,10 +278,10 @@ function runInSandbox(script, sandbox) {
   const moved = events.filter((e) => e.event === "moved");
   assert.equal(moved.length, 3, `quoted and symlink targets must move: ${run.stdout}`);
 
-  const listed = parseTrashManifest(readFileSync(join(home, ".dsh-trash", "manifest.tsv"), "utf8"));
+  const listed = manifestRows(readFileSync(join(home, ".dsh-trash", "manifest.tsv"), "utf8"));
   const physicalHome = realpathSync(home);
-  assert.ok(listed.some((e) => e.original === join(physicalHome, `a b'c`)), "single-quote path must land in the manifest verbatim");
-  assert.ok(listed.some((e) => e.original === join(physicalHome, "broken-link")));
+  assert.ok(listed.some((row) => row[1] === join(physicalHome, `a b'c`)), "single-quote path must land in the manifest verbatim");
+  assert.ok(listed.some((row) => row[1] === join(physicalHome, "broken-link")));
 
   // A quoted `~/x` is a literal path — it moves a directory literally named
   // "~" relative to the cwd, never the real home.
@@ -289,12 +304,12 @@ function runInSandbox(script, sandbox) {
   const parsed = parseSimpleDeleteCommand("rm d1/same.txt d2/same.txt");
   const run = runInSandbox(buildTrashCommand(parsed.targets), sandbox);
   assert.equal(run.status, 0, run.stderr);
-  const listed = parseTrashManifest(readFileSync(join(home, ".dsh-trash", "manifest.tsv"), "utf8"));
+  const listed = manifestRows(readFileSync(join(home, ".dsh-trash", "manifest.tsv"), "utf8"));
   assert.equal(listed.length, 2, "both copies must be recorded");
-  const names = new Set(listed.map((e) => e.name));
+  const names = new Set(listed.map((row) => row[0]));
   assert.equal(names.size, 2, "trash names must not collide");
 
   rmSync(base, { recursive: true, force: true });
 }
 
-console.log("trash: parser, builder, manifest, restore/purge and retention cases passed");
+console.log("trash: parser, builder, manifest and retention cases passed");

@@ -59,7 +59,7 @@ export class RemoteWorkspacePathError extends Error {
 }
 
 /** Reject every C0 control byte plus DEL, matching the operator documentation. */
-function assertNoControlCharacters(value) {
+export function assertNoControlCharacters(value) {
   if (/[\x00-\x1f\x7f]/.test(value)) {
     throw new RemoteWorkspacePathError("remote path must not contain control characters", REMOTE_WORKSPACE_OUTSIDE);
   }

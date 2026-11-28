@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import HarborService from "../src/index.js";
 import { profileSaveRequestSchema, profileInfoSchema } from "../src/rpc/schemas.js";
+import { fakeTable } from "./support/fake-table.mjs";
 
 // ── schema: single line, bounded, no control characters ──
 {
@@ -17,16 +18,6 @@ import { profileSaveRequestSchema, profileInfoSchema } from "../src/rpc/schemas.
   assert.equal(profileSaveRequestSchema.safeParse({ ...base, loginCommand: "bash\x00 -l" }).success, false, "control characters rejected");
   assert.equal(profileSaveRequestSchema.safeParse({ ...base, loginCommand: "x".repeat(1025) }).success, false, "length cap");
   assert.equal(profileInfoSchema.safeParse({ ...base, hostKeyMode: "accept-new", secondaryConfigured: false, credentialConfigured: true, passphraseConfigured: false, connected: false, profileId: "00000000-0000-0000-0000-000000000000", groupId: null, groupName: null, credentialId: null, credentialName: null, proxyJump: [], defaultProjectPath: null, agentForward: false, loginCommand: "bash -l", execPolicy: null }).success, true);
-}
-
-function fakeTable(entries = []) {
-  const map = new Map(entries);
-  return {
-    get: (id) => map.get(id),
-    put: (id, record) => { map.set(id, record); },
-    delete: (id) => { map.delete(id); },
-    entries: () => [...map.entries()]
-  };
 }
 
 // ── profileSave round-trip: persist, preserve on omission, clear on null ──

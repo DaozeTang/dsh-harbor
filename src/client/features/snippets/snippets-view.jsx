@@ -17,7 +17,7 @@ import { harborUiSetError } from "../../store.js";
 import { resolvePaneTerminal } from "../../session-terminals.js";
 import { t } from "../../../i18n/core.js";
 
-export function SnippetsView({ api, active, sessionId, profiles, groups, onFilled }) {
+export function SnippetsView({ api, active, sessionId, profiles, groups, onFilled, shown = false }) {
   const [items, setItems] = useState(loadCommandSnippets);
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState(null);
@@ -31,10 +31,14 @@ export function SnippetsView({ api, active, sessionId, profiles, groups, onFille
     return () => window.removeEventListener("dsh-harbor-command-snippets", sync);
   }, []);
 
+  // Every tab stays mounted and inactive ones are hidden with CSS, so the
+  // mount-time autofocus ran against a `display:none` element and, having no
+  // effect, never ran again: arriving at the tab left the search box unfocused.
   useEffect(() => {
+    if (!shown) return undefined;
     const frame = requestAnimationFrame(() => searchRef.current?.focus());
     return () => cancelAnimationFrame(frame);
-  }, []);
+  }, [shown]);
 
   // Type into THIS conversation's terminal. `sessionId` is the DSH conversation
   // id — a PTY id only looks similar. Passing it straight to api.write meant
@@ -267,7 +271,7 @@ function SnippetParameterForm({ draft, onCancel, onFill }) {
  )}
         <div className="hb-inline">
           <span className="hb-spacer" />
-          <Button type="submit" variant="primary" size="sm" icon="paper-plane-outline" busy={busy} disabled={preview === null}>{t("填入终端")}</Button>
+          <Button type="submit" variant="primary" size="sm" icon="terminal" busy={busy} disabled={preview === null}>{t("填入终端")}</Button>
         </div>
       </div>
     </form>

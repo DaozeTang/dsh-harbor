@@ -6,13 +6,13 @@ import { StringDecoder } from "node:string_decoder";
 import { extractCliPrompt, promptReturned, cliPageRequested, stripCliOutput, sanitizeCliCommand } from "../network-cli.js";
 import { assessShellCommand, CATEGORY_DELETE_FILES } from "../safety.js";
 import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from "../trash.js";
-import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, execEchoWarning, extractExecCwd, posixLoginShell } from "../exec-cwd.js";
+import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, censusPidFor, execEchoWarning, extractExecCwd, posixLoginShell } from "../exec-cwd.js";
 import { processTerminalInput } from "../terminal-input.js";
 import { anonymousSessions, pickOwnerSession } from "../terminal-owner.js";
 import { fail } from "../envelope.js";
 import { t } from "../../i18n/core.js";
 import { appendCapped, tailCapped, normalizeTerminalEol } from "./text.js";
-import { OPERATOR_APPROVAL_TTL_MS } from "./constants.js";
+import { LOGIN_SHELL_PROBE_RETRY_MS, OPERATOR_APPROVAL_TTL_MS } from "./constants.js";
 
 export const withExec = (Base) => class extends Base {
   // ── Agent-facing helpers (called directly by tools, not over the wire) ────
@@ -24,25 +24,52 @@ export const withExec = (Base) => class extends Base {
    * ssh_exec path (mirrored into the panel terminal).
    */
   async collectExecOutput(client, command, timeoutMs) {
-    const stream = await new Promise((resolve, reject) => {
-      client.exec(command, { pty: false }, (error, s) => {
-        if (error) reject(error);
-        else resolve(s);
-      });
-    });
+    const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30000;
+    // One budget covers the whole operation: the channel-open round trip and
+    // the command itself. ssh2 puts no timer on the exec request, so a peer
+    // that accepts the packet but never opens the channel used to leave this
+    // await pending forever — and every caller (ssh_exec, the monitor probe,
+    // the login-shell probe, batch) hung on a promise that could never settle.
+    const deadline = Date.now() + budget;
     const state = { exitCode: null, stdout: "", stderr: "", truncated: false, timedOut: false };
-    // Settling is local-first: the timeout resolves NOW and only then tries
-    // to close the channel. Settling via the 'close' event alone would depend
-    // on the peer answering CHANNEL_CLOSE — a device that never responded to
-    // the exec request will not respond to the close either, and the caller
-    // would hang forever (#33). resolve() is idempotent, so a later close
-    // event is harmless.
-    let settle = () => {};
-    const timer = setTimeout(() => {
+    const stream = await new Promise((resolve, reject) => {
+      let settled = false;
+      const openTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(null);
+      }, budget);
+      const opened = (error, openedStream) => {
+        if (settled) {
+          // The peer answered after the deadline: the channel belongs to
+          // nobody now, so give it back instead of adopting it. destroy() is
+          // end+close in ssh2; a bare close() would wait on the same silent
+          // peer that just missed the deadline.
+          try {
+            if (typeof openedStream?.destroy === "function") openedStream.destroy();
+            else openedStream?.close?.();
+          } catch {}
+          return;
+        }
+        settled = true;
+        clearTimeout(openTimer);
+        if (error) reject(error);
+        else resolve(openedStream);
+      };
+      try {
+        client.exec(command, { pty: false }, opened);
+      } catch (error) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(openTimer);
+        reject(error);
+      }
+    });
+    if (stream === null || stream === undefined) {
       state.timedOut = true;
-      settle();
-      try { stream.close(); } catch {}
-    }, timeoutMs);
+      state.openTimedOut = true;
+      return state;
+    }
     // One decoder per pipe: an SSH packet boundary can fall inside a UTF-8
     // sequence, and decoding each chunk on its own turned both halves into
     // U+FFFD (most visible with Chinese and emoji output).
@@ -57,25 +84,42 @@ export const withExec = (Base) => class extends Base {
       collect("stdout", stdoutDecoder, stdoutDecoder.end());
       collect("stderr", stderrDecoder, stderrDecoder.end());
     };
-    try {
-      await new Promise((resolve) => {
-        settle = resolve;
-        stream.on("data", (chunk) => {
-          collect("stdout", stdoutDecoder, stdoutDecoder.write(chunk));
-        });
-        stream.stderr.on("data", (chunk) => {
-          collect("stderr", stderrDecoder, stderrDecoder.write(chunk));
-        });
-        stream.on("close", (code) => {
-          flushDecoders();
-          state.exitCode = typeof code === "number" ? code : null;
-          settle();
-        });
-        stream.on("error", () => { flushDecoders(); state.streamError = true; settle(); });
-      });
-    } finally {
+    let settle = () => {};
+    let settled = false;
+    let timer;
+    const onStdout = (chunk) => { collect("stdout", stdoutDecoder, stdoutDecoder.write(chunk)); };
+    const onStderr = (chunk) => { collect("stderr", stderrDecoder, stderrDecoder.write(chunk)); };
+    const onClose = (code) => {
+      state.exitCode = typeof code === "number" ? code : null;
+      finish(false);
+    };
+    const onError = () => { state.streamError = true; finish(true); };
+    const cleanup = () => {
       clearTimeout(timer);
-    }
+      stream.removeListener?.("data", onStdout);
+      stream.removeListener?.("close", onClose);
+      stream.removeListener?.("error", onError);
+      stream.stderr?.removeListener?.("data", onStderr);
+    };
+    // Settling is local-first. `destroy()` is end+close in ssh2 and is what
+    // releases the local channel bookkeeping and both data listeners; a bare
+    // close() waits for a peer that just proved it does not answer.
+    const finish = (destroy) => {
+      if (settled) return;
+      settled = true;
+      flushDecoders();
+      cleanup();
+      if (destroy) { try { stream.destroy(); } catch {} }
+      settle();
+    };
+    const finished = new Promise((resolve) => { settle = resolve; });
+    stream.on("data", onStdout);
+    stream.stderr?.on?.("data", onStderr);
+    stream.on("close", onClose);
+    stream.on("error", onError);
+    const remaining = Math.max(1, deadline - Date.now());
+    timer = setTimeout(() => { state.timedOut = true; finish(true); }, remaining);
+    await finished;
     return state;
   }
 
@@ -101,27 +145,59 @@ export const withExec = (Base) => class extends Base {
    */
   resolveLoginShell(conn) {
     if (conn.loginShell !== undefined) return Promise.resolve(conn.loginShell);
-    if (conn.loginShellProbe === undefined) {
-      conn.loginShellProbe = this.collectExecOutput(conn.client, "echo $SHELL", 10000)
- .then((state) => {
-          const name = state.stdout.trim().split("/").pop() ?? "";
-          // This probe is the authoritative exec-channel test in BOTH
-          // directions: a timeout with nothing back is the network-device
-          // signature (#33) — the channel opened but the device never answers
-          // it — while a shell name coming back proves the channel works, so a
-          // stall remembered earlier (a slow, silent command that timed out)
-          // is cleared instead of downgrading a healthy host for good.
-          if (state.timedOut && state.stdout === "" && state.exitCode === null) conn.execStalled = true;
-          else if (name.length > 0) conn.execStalled = false;
-          conn.loginShell = name.length > 0 ? name.toLowerCase() : null;
-        })
- .catch(() => {
-          // Leave loginShell undefined: the next exec re-probes once the
-          // transport is healthy again. This call keeps the plain behavior.
-          conn.loginShellProbe = undefined;
-        });
+    if (conn.loginShellProbe !== undefined) return conn.loginShellProbe;
+    // A silent probe is retried later, not turned into a permanent fact: a
+    // slow NFS home or a temporarily full MaxSessions looks exactly like a
+    // network device, and caching "no shell" for the record's lifetime routed
+    // every later exec through the interactive terminal with no way back.
+    if (typeof conn.loginShellRetryAt === "number" && Date.now() < conn.loginShellRetryAt) {
+      return Promise.resolve(null);
     }
-    return conn.loginShellProbe.then(() => conn.loginShell);
+    const probe = this.collectExecOutput(conn.client, "echo $SHELL", 10000)
+      .then((state) => {
+        const name = state.stdout.trim().split("/").pop() ?? "";
+        // This probe is the authoritative exec-channel test in BOTH directions:
+        // a timeout with nothing back may be the network-device signature (#33)
+        // — or a healthy host having a bad minute — while a shell name coming
+        // back proves the channel works, so a stall remembered earlier is
+        // cleared instead of downgrading a healthy host for good.
+        if (state.timedOut && state.stdout === "" && state.exitCode === null) {
+          conn.execStalled = true;
+          // Back off geometrically: a real network device would otherwise get
+          // one fresh exec channel every minute for the life of the process.
+          const failures = (conn.loginShellProbeFailures ?? 0) + 1;
+          conn.loginShellProbeFailures = failures;
+          const delay = Math.min(60 * 60 * 1000, LOGIN_SHELL_PROBE_RETRY_MS * 2 ** Math.min(failures - 1, 5));
+          conn.loginShellRetryAt = Date.now() + delay;
+          return null;
+        }
+        conn.execStalled = false;
+        conn.loginShellProbeFailures = 0;
+        conn.loginShellRetryAt = undefined;
+        conn.loginShell = name.length > 0 ? name.toLowerCase() : null;
+        return conn.loginShell;
+      })
+      .catch(() => {
+        // Leave loginShell undefined: the next exec re-probes once the
+        // transport is healthy again. This call keeps the plain behavior.
+        return null;
+      });
+    conn.loginShellProbe = probe;
+    const clear = () => { if (conn.loginShellProbe === probe) conn.loginShellProbe = undefined; };
+    probe.then(clear, clear);
+    return probe;
+  }
+
+  /**
+   * A real exec channel completed. Whatever made the login-shell probe time
+   * out is no longer true, so stop routing this connection to the terminal.
+   * The cached shell name is left alone — an empty `$SHELL` is a fact about
+   * the server, not a failure — only the probe backoff and the stall flag go.
+   */
+  markExecChannelHealthy(conn) {
+    conn.execStalled = false;
+    conn.loginShellProbeFailures = 0;
+    conn.loginShellRetryAt = undefined;
   }
 
   /**
@@ -152,7 +228,7 @@ export const withExec = (Base) => class extends Base {
     return this.claimTerminal(conn, anonymous[0], ownerSessionId);
   }
 
-  async execOnConnection(connectionId, command, timeoutMs = 30000, _retried = false, approvalToken, ownerSessionId) {
+  async execOnConnection(connectionId, command, timeoutMs = 30000, approvalToken, ownerSessionId) {
     const policy = this.resolveExecPolicy(connectionId, ownerSessionId);
     const decision = assessShellCommand(command, policy);
     let trashScript = null;
@@ -200,7 +276,7 @@ export const withExec = (Base) => class extends Base {
       return this.cliExecOnConnection(conn, command, timeoutMs, ownerSessionId);
     }
     const result = await this.runPreparedExec(connectionId, command, command, false, timeoutMs, ownerSessionId);
-    if (conn && result.ok && !result.value.timedOut) conn.execStalled = false;
+    if (conn && result.ok && !result.value.timedOut) this.markExecChannelHealthy(conn);
     return result;
   }
 
@@ -243,9 +319,13 @@ export const withExec = (Base) => class extends Base {
       return { ok: false, error: fail("cli-invalid-command", t(`无法在终端执行该命令：${screened.reason}`)) };
     }
     const cliCommand = screened.value;
-    const promptLine = extractCliPrompt(session.buffer.slice(-1500));
+    const promptLine = extractCliPrompt(this.terminalOutput(session).tail(1500));
     if (!promptLine) {
       return { ok: false, error: fail("cli-prompt-unrecognized", t("未能在终端尾部识别网络 CLI 提示符（支持 VRP/Comware 的 <主机名> 与 [视图名]，Cisco 的 主机名> 与 主机名#）。请确认终端空闲并停在提示符上后重试。")) };
+    }
+    const stream = session.stream;
+    if (stream === null || stream === undefined || session.exited !== null) {
+      return { ok: false, error: fail("cli-terminal-closed", "the SSH terminal channel is closed") };
     }
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
@@ -258,15 +338,19 @@ export const withExec = (Base) => class extends Base {
     const maxBytes = this.config.maxCommandOutputBytes;
     let collected = "";
     let truncated = false;
+    // One decoder for the whole exchange: an SSH packet boundary inside a
+    // multi-byte character would otherwise show up as U+FFFD and break prompt
+    // matching on the collected tail.
+    const decoder = new StringDecoder("utf8");
     const onData = (chunk) => {
-      const next = collected + chunk.toString("utf8");
+      const next = collected + decoder.write(chunk);
       if (Buffer.byteLength(next, "utf8") > maxBytes) truncated = true;
       collected = tailCapped(next, maxBytes);
     };
     try {
-      session.stream.on("data", onData);
+      stream.on("data", onData);
       // Clear any half-typed operator line, then submit the command.
-      session.stream.write(`\x15${cliCommand}\r`);
+      stream.write(`\x15${cliCommand}\r`);
       session.inputLine = "";
       session.inputKnown = true;
       const deadline = startedAtMs + timeoutMs;
@@ -284,7 +368,7 @@ export const withExec = (Base) => class extends Base {
             return { ok: false, error: fail("cli-paging-loop", t("终端分页请求超过 200 次，查询已中止")) };
           }
           pages += 1;
-          session.stream.write(" ");
+          stream.write(" ");
           continue;
         }
         if (Date.now() >= deadline) {
@@ -325,7 +409,10 @@ export const withExec = (Base) => class extends Base {
         }
       };
     } finally {
-      session.stream.removeListener("data", onData);
+      // The transport-loss path nulls session.stream while this loop runs; the
+      // channel captured above is still the object the listener was attached
+      // to, so detach from it instead of dereferencing a null field.
+      try { stream.removeListener("data", onData); } catch {}
       session.cliBusy = false;
     }
   }
@@ -344,7 +431,7 @@ export const withExec = (Base) => class extends Base {
     // one shell" no longer exists, so the prologue targets the learned tty.
     const ownerSession = this.ownerTerminalFor(connectionId, ownerSessionId);
     const shell = await this.resolveLoginShell(conn);
-    const sent = posixLoginShell(shell) ? buildCwdAwareCommand(prepared, { tty: ownerSession?.tty ?? null }) : prepared;
+    const sent = posixLoginShell(shell) ? buildCwdAwareCommand(prepared, { tty: ownerSession?.tty ?? null, pid: censusPidFor(conn, ownerSession?.tty) }) : prepared;
     const commandId = randomUUID();
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();

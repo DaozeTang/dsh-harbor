@@ -29,7 +29,7 @@ export function getHarborUiSnapshot() {
   return snapshot;
 }
 
-export function subscribeHarborUi(listener) {
+function subscribeHarborUi(listener) {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
@@ -86,20 +86,28 @@ export function harborUiSetConnections(connections) {
  *   reveals, oldest connection first; callers open the surface only when this
  *   is non-empty.
  */
+/**
+ * One entry per conversation: connectionId → the announcement id last acted
+ * on. The set used to be keyed by `connectionId:announcementId` and only ever
+ * grew — every agent reveal left another string behind for the life of the
+ * conversation. The only question ever asked is "is this connection's
+ * CURRENT announcement one I already handled", which a per-connection value
+ * answers in constant space.
+ */
 const announcedAgentConnections = new Map();
 
-function announcedSet(sessionId) {
+function announcedFor(sessionId) {
   const key = sessionId ?? "";
   let seen = announcedAgentConnections.get(key);
   if (seen === undefined) {
-    seen = new Set();
+    seen = new Map();
     announcedAgentConnections.set(key, seen);
   }
   return seen;
 }
 
 export function harborUiAnnounceAgentConnections(connections, { sessionId = null } = {}) {
-  const seen = announcedSet(sessionId);
+  const seen = announcedFor(sessionId);
   const fresh = [];
   for (const connection of connections) {
     if (connection?.agentRevealId === undefined && connection?.agentSession !== true) continue;
@@ -112,9 +120,10 @@ export function harborUiAnnounceAgentConnections(connections, { sessionId = null
       if (owner === null && connection.agentRevealId === undefined && connection.agentSessionMine !== true) continue;
     }
     const announcementId = connection.agentRevealId ?? `agent-session:${owner ?? "any"}`;
-    const key = `${connection.connectionId}:${announcementId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    // A NEW reveal id on the same connection is a new event (the host stamps
+    // one per reveal); the same id means "already opened for this".
+    if (seen.get(connection.connectionId) === announcementId) continue;
+    seen.set(connection.connectionId, announcementId);
     fresh.push({ connectionId: connection.connectionId, ownerSessionId: owner ?? sessionId });
   }
   for (const entry of fresh) requestPaneOpen(entry.connectionId, { ownerSessionId: entry.ownerSessionId });

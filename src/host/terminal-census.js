@@ -110,23 +110,3 @@ export function pickNewTty(before, after) {
   if (fresh.length !== 1) return null;
   return isPtyPath(fresh[0].tty) ? fresh[0].tty : null;
 }
-
-/**
- * Best-effort fallback when the diff is ambiguous (two channels opened at
- * once): the newest shell not already claimed by another terminal of this
- * connection. `startTime` is jiffies since boot, so a later shell sorts later;
- * equal ticks fall back to the pid, which is also monotone in practice.
- * @param {{tty: string, pid: number, startTime: number}[]} rows - census rows.
- * @param {Set<string>} taken - ttys already recorded for other terminals.
- * @returns {string|null} the candidate tty, or null.
- */
-export function newestUnclaimedTty(rows, taken) {
-  let best = null;
-  for (const row of rows ?? []) {
-    if (!isPtyPath(row.tty) || taken?.has(row.tty)) continue;
-    if (best === null || row.startTime > best.startTime || (row.startTime === best.startTime && row.pid > best.pid)) {
-      best = row;
-    }
-  }
-  return best === null ? null : best.tty;
-}

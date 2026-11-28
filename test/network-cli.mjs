@@ -59,11 +59,10 @@ function fakeDeviceStream(script) {
   };
 }
 
-function makeSession(bufferTail) {
-  const session = {
-    id: "s1", exited: null, stream: null,
-    buffer: bufferTail, inputLine: "", inputKnown: true
-  };
+function makeSession(service, bufferTail) {
+  const session = { id: "s1", exited: null, stream: null, inputLine: "", inputKnown: true };
+  // The prompt the device left on screen lives in the session's output journal.
+  service.terminalOutput(session).append(bufferTail);
   return session;
 }
 
@@ -81,7 +80,7 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
     if (!written.includes("display clock")) return null;
     return "display clock\r\n2026-10-15 12:00:00 Wednesday\r\n<S12712>";
   });
-  const session = makeSession(VRP_TAIL);
+  const session = makeSession(service, VRP_TAIL);
   session.stream = stream;
   const conn = fakeConn([session]);
   service.sessions.set(session.id, session);
@@ -94,6 +93,57 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
   assert.equal(result.value.timedOut, false);
   assert.deepEqual(stream.writes[0], "\x15display clock\r", "the line is cleared then submitted");
   assert.equal(session.cliBusy, false, "the busy flag is released");
+}
+
+
+// ── paging keeps the line the marker interrupted ─────────────────────────────
+// A device paints "---- More ----" at the END of the output line it interrupts,
+// erases it with one backspace per character when the page advances, and then
+// continues the same line. Dropping every line that mentioned the marker threw
+// away one real output line per page (and left the raw \b bytes in the rest).
+{
+  const marker = "---- More ----";
+  const interrupted = "second half of the output" + marker + "\b".repeat(marker.length) + " continues here";
+  const collected = "<S12712>display log\r\nfirst line\r\n" + interrupted + "\r\n<S12712>";
+  const stripped = stripCliOutput(collected, "<S12712>", "display log");
+  assert.equal(stripped, "first line\nsecond half of the output continues here",
+    "the data on both sides of the marker survives and rejoins on one line");
+  assert.equal(stripped.includes("More"), false, "the marker itself is chrome");
+  assert.equal(stripped.includes("\b"), false, "no backspace byte reaches the agent");
+
+  // A marker the device never erased (the host's pager repaints differently,
+  // or the page was the last one) still carries no data of its own.
+  assert.equal(stripCliOutput("<S12712>display log\r\npage one\r\n---- More ----\r\npage two\r\n<S12712>", "<S12712>", "display log"),
+    "page one\npage two");
+  // A page that was never continued keeps its line; only the chrome goes.
+  assert.equal(stripCliOutput("<S12712>display log\r\nkept ---- More ----", "<S12712>", "display log", { timedOut: true }),
+    "kept");
+}
+
+// ── paging, end to end: the interrupted line is the one that must survive ────
+{
+  const service = makeService();
+  const marker = "---- More ----";
+  let pages = 0;
+  const stream = fakeDeviceStream((_written, chunk) => {
+    if (chunk === " ") {
+      if (pages === 1) { pages = 2; return "\b".repeat(marker.length) + " end of the line\r\n<S12712>"; }
+      return null;
+    }
+    if (pages !== 0) return null;
+    pages = 1;
+    return "display log\r\nvalue twenty thirty forty" + marker;
+  });
+  const session = makeSession(service, VRP_TAIL);
+  session.stream = stream;
+  const conn = fakeConn([session]);
+  service.sessions.set(session.id, session);
+
+  const result = await service.cliExecOnSession(conn, session, "display log", 5000);
+  assert.equal(result.ok, true, result.error?.message);
+  assert.equal(result.value.stdout, "value twenty thirty forty end of the line",
+    "the line the page break interrupted is not dropped");
+  assert.equal(stream.writes.filter((w) => w === " ").length, 1, "exactly one paging space was sent");
 }
 
 // ── paging: the device stops at ---- More ----, a space advances it ─────────
@@ -109,7 +159,7 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
     if (pages === 0) { pages = 1; return "display log\r\npage one\r\n---- More ----"; }
     return null;
   });
-  const session = makeSession(VRP_TAIL);
+  const session = makeSession(service, VRP_TAIL);
   session.stream = stream;
   const conn = fakeConn([session]);
   service.sessions.set(session.id, session);
@@ -124,7 +174,7 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
 {
   const service = makeService();
   const stream = fakeDeviceStream((written) => (written.includes("display log") ? "display log\r\nstill scrolling" : null));
-  const session = makeSession(VRP_TAIL);
+  const session = makeSession(service, VRP_TAIL);
   session.stream = stream;
   const conn = fakeConn([session]);
   service.sessions.set(session.id, session);
@@ -141,7 +191,7 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
   service.config.maxCommandOutputBytes = 1024;
   const flood = "x".repeat(64 * 1024);
   const stream = fakeDeviceStream((written) => (written.includes("display huge") ? `display huge\r\n${flood}\r\n<S12712>` : null));
-  const session = makeSession(VRP_TAIL);
+  const session = makeSession(service, VRP_TAIL);
   session.stream = stream;
   const conn = fakeConn([session]);
   service.sessions.set(session.id, session);
@@ -160,7 +210,7 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
 {
   const service = makeService();
   const stream = fakeDeviceStream(() => null);
-  const session = makeSession(VRP_TAIL);
+  const session = makeSession(service, VRP_TAIL);
   session.stream = stream;
   const conn = fakeConn([session]);
   service.sessions.set(session.id, session);
@@ -172,7 +222,7 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
   assert.equal(busy.error.code, "cli-busy");
   session.cliBusy = false;
 
-  const bare = makeSession("random scrolling output\r\nnothing prompt-like");
+  const bare = makeSession(service, "random scrolling output\r\nnothing prompt-like");
   bare.stream = fakeDeviceStream(() => null);
   const noPrompt = await service.cliExecOnSession(conn, bare, "display clock");
   assert.equal(noPrompt.error.code, "cli-prompt-unrecognized", "refuse rather than guess (#33 expectation 4)");
@@ -247,16 +297,63 @@ const VRP_TAIL = "Info: The max number of VTY users is 10.\r\n<S12712>";
 // ── P0: a stalled exec channel settles locally on timeout, never hangs ──────
 {
   const service = makeService();
-  let closed = false;
+  let destroyed = false;
+  const listeners = new Map();
   const stream = {
-    on() {},
-    stderr: { on() {} },
-    close() { closed = true; }
+    on(event, fn) { const list = listeners.get(event) ?? []; list.push(fn); listeners.set(event, list); },
+    removeListener(event, fn) { const list = listeners.get(event) ?? []; const at = list.indexOf(fn); if (at >= 0) list.splice(at, 1); },
+    stderr: { on() {}, removeListener() {} },
+    destroy() { destroyed = true; }
   };
   const client = { exec: (cmd, opts, cb) => cb(null, stream) };
   const state = await service.collectExecOutput(client, "echo $SHELL", 50);
   assert.equal(state.timedOut, true, "the deadline resolves the call locally (#33)");
-  assert.equal(closed, true, "the channel close is still attempted");
+  assert.equal(destroyed, true, "the channel is destroyed (end+close), not left half-closed");
+  assert.equal(listeners.get("data")?.length, 0, "timeout detaches the data listener");
+  assert.equal(listeners.get("close")?.length, 0, "timeout detaches the close listener");
+  assert.equal(listeners.get("error")?.length, 0, "timeout detaches the error listener");
+}
+
+// ── the channel-open round trip is bounded too ──────────────────────────────
+{
+  const service = makeService();
+  // The peer accepts the exec request and never calls back. ssh2 puts no timer
+  // on that request, so without a deadline here every caller hung forever.
+  const client = { exec() {} };
+  const started = Date.now();
+  const state = await service.collectExecOutput(client, "echo hi", 40);
+  assert.equal(state.timedOut, true);
+  assert.equal(state.openTimedOut, true, "the open timeout is distinguishable from a silent command");
+  assert.ok(Date.now() - started < 1000, "the open deadline settles locally");
+}
+
+// ── a silent login-shell probe is retried, never cached as "no shell" ───────
+{
+  const service = makeService();
+  const conn = { loginShell: undefined, execStalled: false };
+  let probes = 0;
+  service.collectExecOutput = async () => { probes += 1; return { timedOut: true, stdout: "", exitCode: null }; };
+  assert.equal(await service.resolveLoginShell(conn), null);
+  assert.equal(conn.execStalled, true, "a silent probe marks the connection as possibly CLI");
+  assert.equal(conn.loginShell, undefined, "the timeout is not cached as a non-POSIX shell");
+  assert.equal(await service.resolveLoginShell(conn), null, "the retry window answers without touching the wire");
+  assert.equal(probes, 1, "no second probe inside the backoff window");
+
+  conn.loginShellRetryAt = 0;
+  service.collectExecOutput = async () => { probes += 1; return { timedOut: false, stdout: "/bin/bash\n", exitCode: 0 }; };
+  assert.equal(await service.resolveLoginShell(conn), "bash", "the retry recovers the shell name");
+  assert.equal(conn.execStalled, false);
+  assert.equal(conn.loginShell, "bash");
+  assert.equal(probes, 2);
+}
+
+// ── a healthy exec clears the probe backoff ─────────────────────────────────
+{
+  const service = makeService();
+  const conn = { execStalled: true, loginShellRetryAt: Date.now() + 60000 };
+  service.markExecChannelHealthy(conn);
+  assert.equal(conn.execStalled, false);
+  assert.equal(conn.loginShellRetryAt, undefined, "a completed exec proves the channel works");
 }
 
 console.log("network cli: prompts, stripping, paging, guards, routing, P0 settle: passed");

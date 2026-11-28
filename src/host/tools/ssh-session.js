@@ -10,13 +10,7 @@ import { parseSimpleDeleteCommand } from "../trash.js";
 import { t } from "../../i18n/core.js";
 import { OPERATOR_APPROVAL_TIMEOUT_MS } from "../service/constants.js";
 import { processTerminalInput } from "../terminal-input.js";
-
-/** Human name for an execution-policy tier, for agent-facing notices. */
-export function execPolicyLabel(mode) {
-  if (mode === "custom") return t("自定义放行");
-  if (mode === "allowAll") return t("全部放行");
-  return t("标准");
-}
+import { execPolicyLabel } from "../../shared/exec-policy-label.js";
 
 /** Whole seconds a prompt waits before Harbor withdraws it, for operator-facing copy. */
 export function approvalTimeoutSeconds(timeoutMs) {
@@ -195,9 +189,17 @@ export function registerSshSessionTools(ctx, service) {
             : t("本次对话的 DSH 审批策略已关闭（never），无法请求授权，危险命令未执行。请勿重试；如确需执行，请让操作者在 DSH 权限选择器中切换模式，或直接在终端执行。")
         };
       }
+      // Only ssh_exec has a rewrite point: its body replaces an approved
+      // literal delete with a trash move. terminal_send types the line into a
+      // live PTY, so promising a trash move there would be false — warn
+      // instead, and point at the tool that can make the delete reversible.
       let trashNote = "";
-      if (decision.category === CATEGORY_DELETE_FILES && parseSimpleDeleteCommand(assessedCommand)) {
-        trashNote = t("（批准后实际执行的是移入回收站的可逆操作，不会真删）");
+      if (decision.category === CATEGORY_DELETE_FILES) {
+        if (name === "ssh_exec" && parseSimpleDeleteCommand(assessedCommand)) {
+          trashNote = t("（批准后实际执行的是移入回收站的可逆操作，不会真删）");
+        } else if (name === "terminal_send") {
+          trashNote = t("（注意：这条命令会在远端 shell 中原样执行，不会移入回收站；如需可逆删除，请改用 ssh_exec）");
+        }
       }
       const host = target.connection?.host ?? "";
       const timeoutMs = service.config?.approvalPromptTimeoutMs ?? OPERATOR_APPROVAL_TIMEOUT_MS;
@@ -302,9 +304,9 @@ export function registerSshSessionTools(ctx, service) {
         else lines.push(...value.connections.map((connection) => {
           const others = otherCount(connection);
           const own = mine(connection);
-          // Naming the session id saves the agent a terminal_list round trip
-          // and makes "the terminal already exists" explicit after ssh_connect.
-          const terminalNote = own.length > 0 ? ` (your terminal open: ${own[0].sessionId}${own.length > 1 ? ` +${own.length - 1}` : ""})` : "";
+          // The id in this listing belongs to the panel PTY, not the persistent
+          // terminal registry; naming it invited terminal_send to reject it.
+          const terminalNote = own.length > 0 ? " (your panel terminal is open; call terminal_open with type harbor-ssh to get its registry session id)" : "";
           return `${connection.connectionId === value.activeConnectionId ? "* " : "- "}${connection.name ?? connection.host}: ${connection.username}@${connection.host}:${connection.port}${terminalNote}${others ? ` (+${others} terminal${others === 1 ? "" : "s"} in other conversations)` : ""}`;
         }));
         if (value.resources !== undefined) {
@@ -325,7 +327,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_connect",
-    description: "Connect to a remote server over SSH, open it in Harbor's side panel, and make it the current connection for later SSH tools. This also opens THIS conversation's terminal on the new connection, so ssh_exec output is visible in the panel; use terminal_list to get its session id and terminal_send/read to type in it. Do not call terminal_open just to regain this terminal unless the user took it over or you need a second shell.",
+    description: "Connect to a remote server over SSH, open it in Harbor's side panel, and make it the current connection for later SSH tools. This also opens THIS conversation's panel terminal on the new connection, so ssh_exec output is visible in the panel. That panel terminal is not a persistent-terminal registry session: to drive it with terminal_send/terminal_read, call terminal_open with type \"harbor-ssh\"; it reuses the same PTY unless the person has taken it over (then it opens a fresh shell) and returns the registry session id. Call terminal_open again only after the person has taken that terminal over (a fresh shell is opened then); while one of this conversation's terminals is alive the call is refused, so use terminal_send with its session id, or terminal_close it first.",
     parameters: {
       host: { type: "string", required: true, description: "Remote hostname or IP address." },
       port: { type: "integer", description: "SSH port, defaults to 22." },
@@ -358,7 +360,6 @@ export function registerSshSessionTools(ctx, service) {
           legacyFallback: { type: "boolean" },
           bannerRepair: { type: "boolean" },
           terminalOpened: { type: "boolean" },
-          terminalSessionId: { type: "string" },
           terminalWarning: { type: "string" },
           warning: { type: "string" }
         }
@@ -369,8 +370,8 @@ export function registerSshSessionTools(ctx, service) {
         // Anything unusual about the handshake must be visible in the tool
         // result, not only in the host log — a weakened transport or a rewritten
         // banner is something the operator has to know about to act on it.
-        const terminal = conn.terminalSessionId
-          ? `\nHarbor is showing this conversation's terminal (${conn.terminalSessionId}); use terminal_send/terminal_read with that id.`
+        const terminal = conn.terminalOpened === true
+          ? "\nHarbor opened this conversation's panel terminal. To type in it with the host terminal tools, call terminal_open with type \"harbor-ssh\"; it reuses that PTY unless the person has taken it over (then it opens a fresh shell) and returns the registry session id for terminal_send/terminal_read."
           : conn.terminalOpened === false && conn.terminalWarning
             ? `\nThe connection is open, but the side-panel terminal could not be opened: ${conn.terminalWarning}`
             : "";
@@ -400,9 +401,11 @@ export function registerSshSessionTools(ctx, service) {
       });
       const value = { ...result.value };
       if (visibility?.ok === true) {
-        const sessionId = visibility.value?.terminalSessionId;
-        value.terminalOpened = sessionId !== undefined;
-        if (sessionId !== undefined) value.terminalSessionId = sessionId;
+        // The panel terminal id stays internal: terminal_send/terminal_read
+        // address the persistent-terminal registry, whose ids are minted only
+        // by terminal_open. Returning the panel id here made the model hand it
+        // to terminal_send, which cannot resolve it.
+        value.terminalOpened = visibility.value?.panelTerminalId !== undefined;
         if (visibility.value?.warning !== undefined) value.terminalWarning = visibility.value.warning;
       } else {
         value.terminalOpened = false;
@@ -414,7 +417,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_connect_profile",
-    description: "Connect to one of the operator's saved SSH resources by name (Settings → Harbor) and make it the active connection: later ssh_exec and terminal tools without connection_id target it for THIS conversation, and a terminal owned by this conversation opens in the right-side panel so the operator can see which machine you are on. Use terminal_list to get that terminal's session id and terminal_send/terminal_read to work in it; do not call terminal_open just to regain it. Only works when the operator enabled AI auto-connect in Harbor's settings; with the switch off the call fails — then ask the operator to connect the server, and NEVER fall back to ssh_connect with credentials you gathered from conversation. Reuses an already-open connection for the same resource instead of connecting twice.",
+    description: "Connect to one of the operator's saved SSH resources by name (Settings → Harbor) and make it the active connection: later ssh_exec and terminal tools without connection_id target it for THIS conversation, and a panel terminal owned by this conversation opens in the right-side panel so the operator can see which machine you are on. That panel terminal is not a registry session; call terminal_open with type \"harbor-ssh\" to reuse it and get the session id for terminal_send/terminal_read. Only works when the operator enabled AI auto-connect in Harbor's settings; with the switch off the call fails — then ask the operator to connect the server, and NEVER fall back to ssh_connect with credentials you gathered from conversation. Reuses an already-open connection for the same resource instead of connecting twice.",
     parameters: {
       resource: { type: "string", required: true, description: "The saved resource's name as shown by ssh_list (e.g. 'dev', 'prod'), or its profile id. A unique partial name is accepted; unknown or ambiguous names fail with the list of available resources." }
     },
@@ -436,7 +439,10 @@ export function registerSshSessionTools(ctx, service) {
       },
       render(_args, value) {
         const base = t(`已连接保存的服务器「${value.name}」（${value.username}@${value.host}:${value.port}，id: ${value.connectionId}），并已设为当前 SSH 连接，后续 ssh_exec 等工具默认作用于这台机器。${value.reused ? t("复用了该服务器已有的连接。") : ""}${value.terminalOpened ? t("已为它打开终端会话（可在右侧 SSH 面板查看该机器）。") : ""}`);
-        return [{ type: "text", text: value.warning ? `${base}\n⚠️ ${value.warning}` : base }];
+        const hint = value.terminalOpened
+          ? "\n" + t("需要交互时，调用 terminal_open（type 为 harbor-ssh）复用这条面板终端（若你已接管则新开一条）并取得 registry session id；terminal_list 只列出 registry 会话。")
+          : "";
+        return [{ type: "text", text: (value.warning ? `${base}\n⚠️ ${value.warning}` : base) + hint }];
       }
     },
     async execute(args, exec) {
@@ -448,7 +454,7 @@ export function registerSshSessionTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "ssh_exec",
-    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes; command output is mirrored into YOUR conversation's terminal, not into other chats'. If this conversation has no terminal on the target, one is opened automatically so the operator can see the command and its output in Harbor. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; use terminal_send in the conversation's terminal instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux/POSIX hosts the dedicated exec channel starts in YOUR conversation's terminal's verified current directory. A busy or ambiguous terminal falls back to the login directory (the result's first line reports the cwd actually used); a terminal whose directory cannot be read rejects the command instead of guessing. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands follow the conversation's DSH permission mode: a Harbor approval prompt waits 120 seconds and then refuses; under Auto review or full access the session's own gate applies; read-only refuses them. Never retry or route around a refusal. The command and output are also shown in the terminal panel.",
+    description: "Run a normal SSH command on the server currently open in the right-side SSH terminal and return its output. This runs one non-interactive command and returns when it finishes; command output is mirrored into YOUR conversation's terminal, not into other chats'. If this conversation has no terminal on the target, one is opened automatically so the operator can see the command and its output in Harbor. Tasks that need terminal interaction — switching users (sudo -i / su), entering a container (docker exec -it), or connecting onward to another machine (ssh) — do not fit here; call terminal_open with type \"harbor-ssh\" and then use terminal_send in the conversation's terminal instead. Omit connection_id when the user means the current server; do not call ssh_list first. On Linux/POSIX hosts the dedicated exec channel starts in YOUR conversation's terminal's verified current directory. A busy or ambiguous terminal falls back to the login directory (the result's first line reports the cwd actually used); a terminal whose directory cannot be read rejects the command instead of guessing. SSH configuration, package changes, service reloads, and config edits are allowed and remain subject to DSH permissions. Explicitly destructive or irreversible commands follow the conversation's DSH permission mode: a Harbor approval prompt waits 120 seconds and then refuses; under Auto review or full access the session's own gate applies; read-only refuses them. Never retry or route around a refusal. The command and output are also shown in the terminal panel.",
     parameters: {
       connection_id: { type: "string", description: "Optional. Omit to target the current right-side SSH connection." },
       command: { type: "string", required: true, description: "The shell command to execute." },

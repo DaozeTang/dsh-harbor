@@ -8,13 +8,13 @@
  * the port that was actually bound, which is the only value worth copying.
  */
 import * as React from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Badge, Button, Dialog, Dot, EmptyState, ErrorNote, Field, Icon, IconButton, Row, SegmentedControl, TextInput, toast
 } from "../../ui/kit.jsx";
 import { t } from "../../../i18n/core.js";
 
-export function TunnelsPane({ api, connectionId }) {
+export function TunnelsPane({ api, connectionId, active = true }) {
   const [tunnels, setTunnels] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -24,24 +24,39 @@ export function TunnelsPane({ api, connectionId }) {
     bindAddr: "127.0.0.1", bindPort: "", remoteHost: "", remotePort: "", targetHost: "127.0.0.1", targetPort: ""
   });
 
+  // Only the newest request for the newest connection may commit state: a
+  // slow list from server A must not land in the pane now showing server B.
+  const loadSeq = useRef(0);
   const load = async () => {
     if (!connectionId) return;
+    const seq = ++loadSeq.current;
     try {
       const value = await api.tunnelList(connectionId);
+      if (seq !== loadSeq.current) return;
       setTunnels(Array.isArray(value?.tunnels) ? value.tunnels : []);
       setError(null);
     } catch (cause) {
+      if (seq !== loadSeq.current) return;
       setError(cause?.message ?? String(cause));
       setTunnels([]);
     }
   };
 
   useEffect(() => {
+    loadSeq.current += 1;
     setTunnels(null);
-    if (connectionId) void load();
-    const timer = connectionId ? setInterval(() => { void load(); }, 4000) : null;
-    return () => { if (timer !== null) clearInterval(timer); };
-  }, [connectionId]);
+    if (!connectionId || !active) return undefined;
+    void load();
+    // The pane is keep-alive: an inactive view does not need a list every
+    // four seconds, and an occluded window can wait for the next visible tick.
+    const timer = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") void load();
+    }, 4000);
+    return () => {
+      loadSeq.current += 1;
+      clearInterval(timer);
+    };
+  }, [connectionId, active]);
 
   const isDynamic = kind === "dynamic";
   // Dynamic only needs an optional bind port (empty = OS-assigned); local and

@@ -4,13 +4,16 @@ Harbor lives inside DeepSeek Harness. It shares the document, the theme, the fon
 
 ## Rules
 
-1. **No literal design values.** No hex colours, no `px` radii, no font sizes outside the kit. Everything resolves through the `--hb-*` tokens declared at the top of `src/client/ui/styles/app.css`, which in turn point at the host's semantic tokens (`--dsw-alias-*`). A value no token can express is a design question, not a CSS shortcut.
+1. **No literal design values.** No hex colours and no `px` radii in component rules; type sizes come from the six-step scale in the token block. Colours and radii resolve through the `--hb-*` tokens declared at the top of `src/client/ui/styles/app.css`, which point at the host's semantic tokens (`--dsw-alias-*`); `--hb-text-11` … `--hb-text-18` are the only place a font size is written. A value no token can express is a design question, not a CSS shortcut.
+   - The only exceptions, and nothing else:
+     - the `--dsh-harbor-*` migration bridge and the host-chrome nodes — the sidebar body and the header action — both declared at the bottom of `app.css`: old variables aliased onto `--hb-*` for surfaces not yet rebuilt, and host tokens carrying the literal fallbacks the sheet already declares;
+     - the terminal-appearance sheet (`src/client/terminal-display/TerminalDisplaySettings.jsx`), a pre-migration surface with its own `dsh-*` namespace, inline style objects and literal radii/sizes. It is the one outstanding migration, not a precedent: a new surface is not written this way.
 2. **One primary action per surface.** Everything else is `secondary` (bordered) or `ghost` (text). Destructive actions are `danger` / `danger-solid` and ask before they run.
 3. **Every surface renders one of four states**: content; an empty state that says what to do next; an error note with the cause; or a disabled control that explains itself in a tooltip.
 4. **Icons carry no meaning alone.** An icon-only button always has an accessible `label` (used as tooltip and `aria-label`). Icon + text beats icon-only unless it repeats a pattern directly above.
 5. **Density**: 32px buttons, 34px text fields, 28px icon buttons (22px in dense toolbars), 12px labels, 13px body. Rows are 28–32px; a two-line row (title + meta) settles around 48–52px. A pane that needs smaller text uses `.hb-mono` at 12px for data, never for prose.
 6. **Motion is feedback, not decoration.** Transitions are ≤200ms on hover and focus only; `prefers-reduced-motion` is respected globally in the sheet.
-7. **Scoped styles.** Every rule sits under `.hb` or `.hb-portal`. A plugin never restyles host nodes it does not own.
+7. **Scoped styles.** Every rule sits under `.hb` or `.hb-portal`, except the two host-chrome nodes above (the sidebar body the workbench is mounted into, and the header action rendered into the host's slot). A plugin never restyles other host nodes it does not own.
 8. **Copy**: Chinese is the source language and the default; every user-facing string goes through `t()`. Wording stays short and concrete, sentence case in English ("Connect", "Saved servers") — never shouting.
 
 ## Layout
@@ -40,25 +43,10 @@ Harbor lives inside DeepSeek Harness. It shares the document, the theme, the fon
 
 ## Icons
 
-`Icon name={...}` reads from `src/client/ui/icons.js`, whose geometry comes from the host's own icon sprite. Names follow the sprite's vocabulary:
-
-`terminal server key tunnel file save-outline search-outline
-eye-outline globe-outline settings-outline ellipsis-outline plus-outline
-check-outline branch-outline chevron-down-outline chevron-left-outline
-chevron-right-outline chevron-up-outline close-outline copy-outline
-refresh-outline edit-outline trash-outline warning-outline
-warning-triangle-outline check-circle-fill stop-fill loading-outline
-download-outline upload-outline play-outline pause-outline
-folder-open-outline folder-close gauge-outline shield-outline info-outline
-queue-outline checklist-outline sliders-two-outline archive-outline pin-outline
-list-pen-outline sparkle apps-add-outline compare-split-outline`
+`Icon name={...}` reads from `src/client/ui/icons.js`, whose geometry comes from the host's own icon sprite. That file is the list: it carries only glyphs the product actually uses, so its keys are the canonical names and no doc copy can drift from them.
 
 Adding a glyph means taking it from the host sprite (see `docs/icon-pipeline.md`), not drawing a near-miss of your own.
 
 ## Tokens and previews
 
-The host palette is read at build time, never copied by hand:
-
-- `npm run theme:snapshot -- <dsh-ui-theme>/src/styles` (or `DSH_THEME_CSS_DIR`) rewrites `preview/theme-fallback.css` from the installed `@deepseek-ai/dsh-client-ui-theme`. The snapshot keeps both host scopes — light under `body`, dark under `body[data-ds-dark-theme]` — and refuses to write if either lost its semantic aliases.
-- `npm run preview:ui` builds offline pages against that snapshot, or against a live `DSH_THEME_CSS_DIR` when set. Add `?capture` for a full-height surface screenshot and `?bare` to hide only the preview header.
-- `test/theme-snapshot.mjs` guards the snapshot shape and fails when the plugin references a host token the snapshot does not declare, so a renamed token cannot silently degrade to a CSS fallback.
+The host palette is read at build time, never copied by hand. `preview/theme-fallback.css` is regenerated from the installed `@deepseek-ai/dsh-client-ui-theme` and keeps both host scopes — light under `body`, dark under `body[data-ds-dark-theme]`; generation refuses to write if either lost its semantic aliases. The offline pages build against that snapshot, or against a live `DSH_THEME_CSS_DIR` when set; `?capture` renders a full-height surface screenshot and `?bare` hides only the preview header. Commands, arguments and the snapshot test are documented once in [INSTALL.md](../INSTALL.md) and `test/theme-snapshot.mjs`.

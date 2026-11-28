@@ -1,4 +1,4 @@
-import { acquireTestMatcher } from "./helpers/highlight-worker.mjs";
+import { acquireTestMatcher } from "./support/highlight-worker.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import xterm from "@xterm/xterm";
@@ -8,7 +8,8 @@ import { DARK_THEME, LIGHT_THEME } from "../src/client/terminal-display/theme.js
 import { OutputHighlightAddon } from "../src/client/terminal-display/addon.js";
 import { getDisplaySettings, setDisplaySettings } from "../src/client/terminal-display/settings.js";
 
-import { normalizeCustomRules, compileCustomRules, MAX_CUSTOM_RULES } from "../src/client/terminal-display/custom-rules.js";
+import { normalizeCustomRules, MAX_CUSTOM_RULES } from "../src/client/terminal-display/custom-rules.js";
+import { getScheme, compileScheme } from "../src/client/terminal-display/scheme.js";
 
 const write = (term, text) => new Promise((resolve) => term.write(text, resolve));
 function colorAt(text, target) {
@@ -210,16 +211,37 @@ test("resize, font zoom, scroll and disposal retain buffer content and release r
   } finally { term.dispose(); }
 });
 
+// Stored legacy customRules reach the terminal through the colour scheme: the
+// panel normalizes them into settings, scheme.js maps each rule to a scheme
+// entry, and compileScheme produces the matcher's rules. This block used to
+// call compileCustomRules — a second compiler that no production path ever
+// ran — so it could (and did) drift from what the terminal really highlights.
+// It now drives the shipping path end to end.
+function customScheme(rules) {
+  return compileScheme(getScheme({ builtinEnabled: false, customRules: rules }, "dark"));
+}
+
 test("literal custom rules handle punctuation, Unicode words, case and priority", () => {
-  const custom = (text, options = {}) => compileCustomRules([{ id: "custom", text, color: "success", ...options }]);
-  assert.deepEqual(matchText("a+b axb", custom("a+b")), [{ start: 0, end: 3, color: COLORS.success }]);
-  assert.deepEqual(matchText("(a+)+$", custom("(a+)+$")), [{ start: 0, end: 6, color: COLORS.success }]);
-  assert.equal(matchText("WARN warning preWARN WARN_", custom("WARN", { match: "word" })).length, 1);
-  assert.equal(matchText("timeout TIMEOUT", custom("timeout", { caseSensitive: true })).length, 1);
-  assert.equal(matchText("timeout TIMEOUT", custom("timeout")).length, 2);
-  assert.equal(matchText("失败 失败了 未失败", custom("失败", { match: "word" })).length, 1);
-  assert.equal(matchText('"ERROR"', [...custom("ERROR"), ...HIGHLIGHT_RULES]).find((span) => span.start === 1)?.color, COLORS.success);
-  assert.deepEqual(compileCustomRules([{ id: "off", text: "ERROR", color: "error", enabled: false }]), []);
+  // normalizeCustomRules always persists `match`, so a stored rule carries one;
+  // the loose reader defaults to "regex" for hand-written settings only.
+  const compile = (text, options = {}) => customScheme([{ id: "custom", text, color: "success", match: "contains", ...options }]);
+  const customColor = (compiled) => compiled.colors["custom:custom"];
+  const spans = (haystack, compiled) => matchText(haystack, compiled.rules, compiled.colors);
+
+  const punctuation = compile("a+b");
+  assert.deepEqual(spans("a+b axb", punctuation), [{ start: 0, end: 3, color: customColor(punctuation) }]);
+  const metacharacters = compile("(a+)+$");
+  assert.deepEqual(spans("(a+)+$", metacharacters), [{ start: 0, end: 6, color: customColor(metacharacters) }]);
+  assert.equal(spans("WARN warning preWARN WARN_", compile("WARN", { match: "word" })).length, 1);
+  assert.equal(spans("timeout TIMEOUT", compile("timeout", { caseSensitive: true })).length, 1);
+  assert.equal(spans("timeout TIMEOUT", compile("timeout")).length, 2);
+  assert.equal(spans("失败 失败了 未失败", compile("失败", { match: "word" })).length, 1);
+
+  const priority = compile("ERROR");
+  const merged = matchText('"ERROR"', [...priority.rules, ...HIGHLIGHT_RULES], { ...COLORS, ...priority.colors });
+  assert.equal(merged.find((span) => span.start === 1)?.color, customColor(priority), "user patterns precede the built-in classes");
+
+  assert.deepEqual(customScheme([{ id: "off", text: "ERROR", color: "error", enabled: false }]).rules, []);
 });
 
 test("stored custom rules reject invalid fields and remain bounded", () => {

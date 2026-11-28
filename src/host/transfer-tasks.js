@@ -9,6 +9,55 @@ function ownerIsActive(record) {
   try { process.kill(record.ownerPid, 0); return true; } catch (error) { return error.code !== "ESRCH"; }
 }
 
+/**
+ * Read the journal lock's owner.
+ *
+ * New locks are JSON ({pid, token, at}); older builds wrote only the pid. A
+ * malformed lock has no live owner and is reclaimable, but an unreadable one
+ * (EACCES) is not silently deleted.
+ * @returns {Promise<{pid: number|null, token: string|null}|null>} null when the lock is gone.
+ */
+async function readLockOwner(lock) {
+  let content;
+  try { content = await readFile(lock, "utf8"); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  const trimmed = content.trim();
+  if (trimmed === "") return { pid: null, token: null };
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed !== null && typeof parsed === "object") {
+      return {
+        pid: Number.isSafeInteger(parsed.pid) ? parsed.pid : null,
+        token: typeof parsed.token === "string" ? parsed.token : null
+      };
+    }
+  } catch {}
+  const pid = Number(trimmed);
+  return { pid: Number.isSafeInteger(pid) && pid > 0 ? pid : null, token: null };
+}
+
+function lockOwnerIsAlive(owner) {
+  if (owner === null || !Number.isSafeInteger(owner.pid)) return false;
+  if (owner.pid === process.pid) {
+    // Same process: only a live TransferTasks token proves ownership. A
+    // tokenless lock is a legacy/foreign file, not a write of this build.
+    return owner.token !== null && activeOwners.has(owner.token);
+  }
+  try { process.kill(owner.pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; }
+}
+
+/** Move a stale lock aside before deleting it, so two reclaimers cannot delete each other's fresh lock. */
+async function reclaimStaleLock(lock) {
+  const owner = await readLockOwner(lock);
+  if (owner === null) return true;
+  if (lockOwnerIsAlive(owner)) return false;
+  const stale = `${lock}.stale-${randomUUID()}`;
+  try { await rename(lock, stale); }
+  catch (error) { if (error.code === "ENOENT") return true; throw error; }
+  await rm(stale, { force: true });
+  return true;
+}
+
 /** Stable identity only; no credential or SSH secret is persisted. */
 export function transferConnectionIdentity(connection) {
   if (typeof connection?.host !== "string" || !connection.host || typeof connection.username !== "string" || !connection.username) return null;
@@ -46,10 +95,21 @@ export class TransferTasks {
     this.writeQueue = this.writeQueue.catch(() => {}).then(async () => {
       await mkdir(dirname(this.journalPath), { recursive: true });
       const lock = `${this.journalPath}.lock`;
+      const token = this.ownerToken;
       let acquired = false;
       for (let attempt = 0; attempt < 60; attempt += 1) {
-        try { await writeFile(lock, String(process.pid), { mode: 0o600, flag: "wx" }); acquired = true; break; }
-        catch (error) { if (error.code !== "EEXIST") throw error; await new Promise((resolve) => setTimeout(resolve, 50)); }
+        try {
+          await writeFile(lock, JSON.stringify({ pid: process.pid, token, at: Date.now() }), { mode: 0o600, flag: "wx" });
+          acquired = true;
+          break;
+        } catch (error) {
+          if (error.code !== "EEXIST") throw error;
+          // A killed process used to leave this file forever, and every later
+          // upload failed on persist(). Reclaim only when the recorded owner is
+          // provably gone; a live lock keeps its 3-second wait.
+          if (await reclaimStaleLock(lock)) continue;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
       }
       if (!acquired) throw new Error(`Transfer journal is locked; check for another DSH process or a stale lock at ${lock}`);
       try {
@@ -80,7 +140,14 @@ export class TransferTasks {
           const task = this.entries.get(id);
           if (!task || task.status !== "running") this.ownedIds.delete(id);
         }
-      } finally { await rm(lock, { force: true }); }
+      } finally {
+        // Remove only the lock this write still owns: a stale-lock reclaimer
+        // may have replaced it while this write was running.
+        try {
+          const owner = await readLockOwner(lock);
+          if (owner?.token === token) await rm(lock, { force: true });
+        } catch {}
+      }
     });
     return this.writeQueue;
   }
@@ -108,6 +175,11 @@ export class TransferTasks {
   cancel(id, connectionId) {
     const task = this.entries.get(id);
     if (!task || task.connectionId !== connectionId || task.status !== "running") return false;
+    // Committing: the verified partial is already being renamed over the
+    // target. Aborting cannot undo a rename that is in flight, and answering
+    // "cancelled" for an upload that lands is exactly the lie the caller acts
+    // on (it then offers to discard a partial that no longer exists).
+    if (task.committing === true) return false;
     task.controller.abort(new Error("Upload cancelled"));
     return true;
   }

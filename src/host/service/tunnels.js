@@ -3,7 +3,7 @@
  */
 import net from "node:net";
 import { randomUUID } from "node:crypto";
-import { attachSocks5 } from "../socks5.js";
+import { attachSocks5, SOCKS_HANDSHAKE_TIMEOUT_MS } from "../socks5.js";
 import { fail } from "../envelope.js";
 
 /**
@@ -14,6 +14,25 @@ import { fail } from "../envelope.js";
  */
 function isPortNumber(value) {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 65535;
+}
+
+/**
+ * The address a local listener actually binds.
+ *
+ * An absent value, an empty string and whitespace all mean "not given" — and
+ * an empty string is NOT the same as 127.0.0.1: `net.Server#listen(port, "")`
+ * binds the wildcard address, so a caller (or model) that sends
+ * `bind_addr: ""` would turn a loopback forward into a listener on every
+ * interface. The exposure gate cannot catch that either, because it judges the
+ * request before this layer sees it. Normalizing HERE — the last point before
+ * `listen()` — is what makes the gate's "empty means loopback" reading true.
+ *
+ * @param {unknown} value - requested bind address.
+ * @returns {string} a non-empty address safe to pass to listen().
+ */
+export function normalizeBindAddress(value) {
+  const text = value === undefined || value === null ? "" : String(value).trim();
+  return text === "" ? "127.0.0.1" : text;
 }
 
 export const withTunnels = (Base) => class extends Base {
@@ -32,9 +51,25 @@ export const withTunnels = (Base) => class extends Base {
       return { ok: false, error: fail("connection-lost", `connection "${conn.id}" is down and could not be re-established`) };
     }
     const tunnelId = `tun-${randomUUID().slice(0, 8)}`;
-    const bindAddr = request.bindAddr ?? "127.0.0.1";
+    const bindAddr = normalizeBindAddress(request.bindAddr);
     const bindPort = request.bindPort ?? 0;
-    const net = await import("node:net");
+    // The target is validated BEFORE the listener exists, for the same reason
+    // the remote forward validates its own: a missing host or an out-of-range
+    // port made net.connect/forwardOut throw once per accepted connection,
+    // inside the accept callback, while the call had already reported success.
+    // The tunnel then looked started and silently failed every connection,
+    // with no error anywhere the operator could see.
+    if (!isPortNumber(bindPort)) {
+      return { ok: false, error: fail("tunnel-invalid-listen-port", `local listen port must be an integer between 0 and 65535, got ${JSON.stringify(request.bindPort ?? null)}`) };
+    }
+    const targetHost = typeof request.remoteHost === "string" ? request.remoteHost.trim() : "";
+    if (targetHost.length === 0) {
+      return { ok: false, error: fail("tunnel-invalid-target", "local forward needs a remote_host: the server-side host every accepted connection is forwarded to") };
+    }
+    const targetPort = request.remotePort;
+    if (!isPortNumber(targetPort) || targetPort === 0) {
+      return { ok: false, error: fail("tunnel-invalid-target", `local forward needs a remote_port between 1 and 65535, got ${JSON.stringify(targetPort ?? null)}`) };
+    }
     try {
       const server = net.createServer((socket) => {
         // A late accept after the transport died must only cost this socket,
@@ -64,7 +99,7 @@ export const withTunnels = (Base) => class extends Base {
           channel?.destroy?.();
         });
         try {
-          conn.client.forwardOut(bindAddr, bindPort, request.remoteHost, request.remotePort, (error, late) => {
+          conn.client.forwardOut(bindAddr, bindPort, targetHost, targetPort, (error, late) => {
             // A channel arriving for a socket that is already gone is
             // discarded instead of piped into a dead object.
             if (error || socketFailed || socket.destroyed) {
@@ -94,11 +129,21 @@ export const withTunnels = (Base) => class extends Base {
         kind: "local",
         bindAddr,
         bindPort: actualPort,
-        remoteHost: request.remoteHost,
-        remotePort: request.remotePort,
+        remoteHost: targetHost,
+        remotePort: targetPort,
         server,
         active: true
       });
+      // Registered before this check, because the check answers a race that
+      // registration creates: if the transport died while listen() was in
+      // flight, closeConnectionTunnels() already ran and a listener recorded
+      // afterwards would be closed by nobody — the port stays bound, forwards
+      // nowhere, and never appears in the panel's list to be stopped.
+      if (conn.dead === true || conn.closing === true) {
+        conn.tunnels.delete(tunnelId);
+        try { server.close(() => {}); } catch {}
+        return { ok: false, error: fail("connection-lost", `connection "${conn.id}" went down while starting the local forward`) };
+      }
       return {
         ok: true,
         value: {
@@ -106,12 +151,12 @@ export const withTunnels = (Base) => class extends Base {
           kind: "local",
           bindAddr,
           bindPort: actualPort,
-          remoteHost: request.remoteHost,
-          remotePort: request.remotePort
+          remoteHost: targetHost,
+          remotePort: targetPort
         }
       };
     } catch (error) {
-      return { ok: false, error: fail("tunnel-start-failed", `local ${bindAddr}:${bindPort} -> ${request.remoteHost}:${request.remotePort}: ${error.message}`) };
+      return { ok: false, error: fail("tunnel-start-failed", `local ${bindAddr}:${bindPort} -> ${targetHost}:${targetPort}: ${error.message}`) };
     }
   }
 
@@ -135,8 +180,7 @@ export const withTunnels = (Base) => class extends Base {
     // remoteHost/remotePort are the endpoint the SERVER listens on (the ssh -R
     // "bind" side) and targetHost/targetPort are the local target. bindAddr/
     // bindPort are accepted only as a fallback for older callers.
-    const rawListenAddr = request.remoteHost ?? request.bindAddr ?? "127.0.0.1";
-    const listenAddr = String(rawListenAddr).trim() || "127.0.0.1";
+    const listenAddr = normalizeBindAddress(request.remoteHost ?? request.bindAddr);
     const listenPort = request.remotePort ?? request.bindPort ?? 0;
     // Both ports are validated HERE, before forwardIn opens anything: the
     // bridge runs inside ssh2's own 'tcp connection' dispatch, where a throw
@@ -245,14 +289,16 @@ export const withTunnels = (Base) => class extends Base {
       return { ok: false, error: fail("connection-lost", `connection "${conn.id}" is down and could not be re-established`) };
     }
     const tunnelId = `tun-${randomUUID().slice(0, 8)}`;
-    const bindAddr = request.bindAddr ?? "127.0.0.1";
+    const bindAddr = normalizeBindAddress(request.bindAddr);
     const bindPort = request.bindPort ?? 0;
-    const net = await import("node:net");
     const record = { id: tunnelId, kind: "dynamic", bindAddr, bindPort, active: true, connections: 0 };
     try {
       const server = net.createServer((socket) => {
         record.connections += 1;
         attachSocks5(socket, {
+          // A client that connects and then says nothing must not hold this
+          // socket (and its counter slot) for the life of the process.
+          handshakeTimeoutMs: this.config?.socksHandshakeTimeoutMs ?? SOCKS_HANDSHAKE_TIMEOUT_MS,
           // forwardOut throws synchronously ('Not connected') once the
           // transport is gone (#32); routed through the callback it becomes
           // an ordinary SOCKS failure reply instead of a host crash.
@@ -276,6 +322,14 @@ export const withTunnels = (Base) => class extends Base {
       record.bindPort = typeof address === "object" && address !== null ? address.port : bindPort;
       record.server = server;
       conn.tunnels.set(tunnelId, record);
+      // Same race as the local forward: a transport lost while listen() was in
+      // flight has already run closeConnectionTunnels(), so this listener must
+      // close itself instead of staying bound and invisible.
+      if (conn.dead === true || conn.closing === true) {
+        conn.tunnels.delete(tunnelId);
+        try { server.close(() => {}); } catch {}
+        return { ok: false, error: fail("connection-lost", `connection "${conn.id}" went down while starting the dynamic forward`) };
+      }
       return { ok: true, value: { tunnelId, kind: "dynamic", bindAddr, bindPort: record.bindPort } };
     } catch (error) {
       return { ok: false, error: fail("tunnel-start-failed", error.message) };

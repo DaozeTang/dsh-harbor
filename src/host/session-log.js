@@ -26,6 +26,32 @@ export const SESSION_LOG_LIMITS = Object.freeze({
 const META_SUFFIX = ".json";
 const LOG_SUFFIX = ".log";
 
+/** Bytes in the UTF-8 sequence introduced by `byte` (1 when it is not a lead byte). */
+function sequenceBytes(byte) {
+  if (byte < 0x80) return 1;
+  if ((byte & 0xe0) === 0xc0) return 2;
+  if ((byte & 0xf0) === 0xe0) return 3;
+  if ((byte & 0xf8) === 0xf0) return 4;
+  return 1;
+}
+
+/**
+ * Length of the longest prefix of `buf` that ends on a character boundary.
+ *
+ * A page (or a per-session cap) that lands inside a multi-byte character used
+ * to decode that character as U+FFFD and advance past it: the panel showed a
+ * replacement glyph, the reader could never see the real bytes, and a resize
+ * or a rebuild of the page produced different text for the same offset.
+ * Callers hand the whole character to the next page instead.
+ */
+function utf8PrefixLength(buf) {
+  let lead = buf.length;
+  while (lead > 0 && (buf[lead - 1] & 0xc0) === 0x80) lead -= 1;
+  if (lead === 0) return buf.length;
+  const start = lead - 1;
+  return start + sequenceBytes(buf[start]) <= buf.length ? buf.length : start;
+}
+
 /** Filesystem-safe session id (ids are generated internally, but never trust that here). */
 function safeId(sessionId) {
   return String(sessionId).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 96);
@@ -129,8 +155,12 @@ export class SessionLogStore {
       entry.truncated = true;
       return;
     }
-    const slice = Buffer.byteLength(chunk, "utf8") > remaining
-      ? Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8")
+    const bytes = Buffer.from(chunk, "utf8");
+    // The cap is a byte budget, so it can land mid-character; cut on a
+    // boundary and the last line of a capped log is text, not a replacement
+    // glyph (same rule as the page boundaries below).
+    const slice = bytes.length > remaining
+      ? bytes.subarray(0, utf8PrefixLength(bytes.subarray(0, remaining))).toString("utf8")
  : chunk;
     entry.bytes += Buffer.byteLength(slice, "utf8");
     if (entry.bytes >= this.limits.maxSessionBytes) entry.truncated = true;
@@ -266,19 +296,26 @@ export class SessionLogStore {
       return { ok: true, data: "", startOffset: start, nextOffset: start, eof: true, size };
     }
     const chunks = [];
-    let read = 0;
     await new Promise((resolve) => {
       const stream = createReadStream(path, { start, end: Math.min(size, start + length) - 1 });
-      stream.on("data", (chunk) => { chunks.push(chunk); read += chunk.length; });
+      stream.on("data", (chunk) => { chunks.push(chunk); });
       stream.on("error", () => resolve());
       stream.on("end", resolve);
     });
+    const buf = Buffer.concat(chunks);
+    // Only a page that stops before the end of the file can split a character;
+    // when it does, the whole character belongs to the next page.
+    const atEof = start + buf.length >= size;
+    let end = atEof ? buf.length : utf8PrefixLength(buf);
+    // A page shorter than one character would otherwise make no progress at all;
+    // the decoding below is the lesser evil for that degenerate request.
+    if (end === 0) end = buf.length;
     return {
       ok: true,
-      data: Buffer.concat(chunks).toString("utf8"),
+      data: buf.subarray(0, end).toString("utf8"),
       startOffset: start,
-      nextOffset: start + read,
-      eof: start + read >= size,
+      nextOffset: start + end,
+      eof: start + end >= size,
       size
     };
   }
@@ -349,16 +386,30 @@ export class SessionLogStore {
     this.streams.get(sessionId)?.destroy();
     this.streams.delete(sessionId);
     this.entries.delete(sessionId);
+    const existed = await stat(this.logPath(sessionId)).then(() => true, () => false);
     await rm(this.logPath(sessionId), { force: true }).catch(() => {});
     await rm(this.metaPath(sessionId), { force: true }).catch(() => {});
-    return { ok: true, deleted: true };
+    return { ok: true, deleted: existed };
   }
 
-  /** Delete every recorded session. */
+  /**
+   * Delete every recorded session that has finished.
+   *
+   * A session that is still recording has no sidecar of its own yet — list()
+   * merges the open entry — and its stream is the only copy of output the panel
+   * is showing. Removing it would delete the log file under a live writer: the
+   * session keeps running and appends nothing, silently, for the rest of its
+   * life. "Clear all" therefore clears history, not the recording in progress.
+   */
   async removeAll() {
     const entries = await this.list();
-    for (const entry of entries) await this.remove(entry.sessionId);
-    return { ok: true, deleted: entries.length };
+    const removed = [];
+    for (const entry of entries) {
+      if (this.entries.has(entry.sessionId)) continue;
+      await this.remove(entry.sessionId);
+      removed.push(entry.sessionId);
+    }
+    return { ok: true, deleted: removed.length };
   }
 
   /**
@@ -372,6 +423,11 @@ export class SessionLogStore {
     const removed = [];
     for (const entry of entries.slice(1)) {
       if (remaining <= this.limits.maxTotalBytes) break;
+      // Never reclaim a session that is still recording. prune() runs after
+      // every natural exit, so a long-lived session coexists with the pruner
+      // for its whole life; treating its merged live entry as history would
+      // destroy the write stream (see removeAll).
+      if (this.entries.has(entry.sessionId)) continue;
       remaining -= Number(entry.bytes) || 0;
       await this.remove(entry.sessionId);
       removed.push(entry.sessionId);

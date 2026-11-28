@@ -14,7 +14,6 @@ import {
   delegationDepth,
   indexOwner,
   isLiveSession,
-  isOwnedBy,
   normalizeOwner,
   ownerKey,
   ownerSessionIds,
@@ -75,8 +74,6 @@ import {
   const conn = { sessions: new Set(["s0"]) };
   indexOwner(conn, "s0", null);
   assert.deepEqual(anonymousSessions(sessions, conn), [anon]);
-  assert.equal(isOwnedBy(anon, null), true);
-  assert.equal(isOwnedBy(anon, "conv-a"), false);
 
   // A connection restored without an index (older shape, or a test double):
   // the answer is derived from the sessions, never a silent "no terminal".

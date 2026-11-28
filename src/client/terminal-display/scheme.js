@@ -2,14 +2,13 @@
 //
 // 本文件为整文件重写的独立设计产物：默认方案的配色与匹配文本来自新
 // rules.js（独立推导），不携带任何旧实现的默认文本常量；用户自己的数据
-//（显式改过/新增的颜色、匹配文本、自定义规则、背景）按 MIGRATION.md §1.3
-// 原样保留。
+//（显式改过/新增的颜色、匹配文本、自定义规则、背景）在迁移时原样保留。
 
 import { COLORS, HIGHLIGHT_RULES, colorsForTheme } from "./rules.js";
 import { DEFAULT_BACKGROUNDS } from "./theme.js";
 
 // ---------------------------------------------------------------------------
-// 常量（INTERFACES §4）
+// 常量
 // ---------------------------------------------------------------------------
 
 export const MAX_SCHEME_ENTRIES = 43; // 32 条自定义 + 11 条内置
@@ -28,7 +27,7 @@ const BUILTIN_IDS = Object.freeze(Object.keys(COLORS));
 const isBuiltinId = (id) => BUILTIN_IDS.includes(id);
 
 // ---------------------------------------------------------------------------
-// 默认匹配文本：由新内置规则集生成（每行一条模式的正则源，SPEC §6）
+// 默认匹配文本：由内置规则集生成（每行一条模式的正则源）
 // ---------------------------------------------------------------------------
 
 const DEFAULT_TEXTS = Object.freeze(
@@ -66,7 +65,7 @@ export function defaultScheme(theme) {
 }
 
 // ---------------------------------------------------------------------------
-// 模式文本工具（INTERFACES §4）
+// 模式文本工具
 // ---------------------------------------------------------------------------
 
 export function splitPatterns(text) {
@@ -101,7 +100,7 @@ export function patternProblem(source) {
 }
 
 // ---------------------------------------------------------------------------
-// 归一化（INTERFACES §4：未知输入 → undefined；合法 → 冻结条目数组）
+// 归一化（未知输入 → undefined；合法 → 冻结条目数组）
 // ---------------------------------------------------------------------------
 
 function normalizeEntry(raw) {
@@ -141,7 +140,7 @@ export function normalizeScheme(value) {
 }
 
 // ---------------------------------------------------------------------------
-// 用户配置迁移（MIGRATION.md §1.3）
+// 用户配置迁移
 // ---------------------------------------------------------------------------
 
 function sanitizeColorOverrides(colors) {
@@ -155,7 +154,7 @@ function sanitizeColorOverrides(colors) {
   return out;
 }
 
-// word 模式的文本转为等价整词正则（MIGRATION.md §1.3 归一化为 regex 条目）。
+// word 模式的文本归一化为等价的整词 regex 条目。
 // 整词边界必须用 Unicode 感知的前后查找：CJK 不在 \w 内，\b 永远不匹配其边缘。
 const wordLineToRegex = (line) => `(?<![\\p{L}\\p{N}_])(?:${escapeRegExp(line)})(?![\\p{L}\\p{N}_])`;
 function wordTextToRegex(text) {
@@ -178,7 +177,7 @@ function normalizeLegacyMode(entry) {
   return entry;
 }
 
-// 按 INTERFACES §8 契约消费 custom-rules 形状的数据（不读其源码，宽松校验）
+// 消费 custom-rules 形状的数据（不读其源码，宽松校验）
 function normalizeCustomRuleLoose(raw) {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   if (typeof raw.id !== "string" || raw.id.length === 0 || raw.id.length > 64) return undefined;
@@ -257,7 +256,7 @@ export function getScheme(settings, theme) {
 }
 
 // ---------------------------------------------------------------------------
-// 编译（INTERFACES §4：条目数组 → matcher 消费对象）
+// 编译（条目数组 → matcher 消费对象）
 // ---------------------------------------------------------------------------
 
 function compileEntryPattern(entry) {
@@ -319,7 +318,7 @@ export function compileScheme(entries) {
 }
 
 // ---------------------------------------------------------------------------
-// 导入导出（SPEC §6 / MIGRATION §1.4：format 标识 + version 2 往返一致）
+// 导入导出（format 标识 + version 2 往返一致）
 // ---------------------------------------------------------------------------
 
 export function exportScheme(settings, theme) {

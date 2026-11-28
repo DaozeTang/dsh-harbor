@@ -35,7 +35,13 @@ const TICK = [
   "echo \"#gpu\"",
   "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits 2>/dev/null; fi",
   "echo \"#procs\"",
-  "ps -e -o pid=,pcpu=,pmem=,comm= 2>/dev/null | head -n 200"
+  // Sorted REMOTELY, before the cap. ps lists processes in pid order, so
+  // `| head -n 200` kept the 200 lowest pids and the parse then picked the
+  // busiest of those: on a host with more processes than the cap, the top-CPU
+  // list showed long-running daemons and missed whatever was actually busy
+  // (a recent process almost always has the highest pid). The field order is
+  // pinned by parsePs: pid, %cpu, %mem, command.
+  "ps -e -o pid=,pcpu=,pmem=,comm= 2>/dev/null | sort -k2,2rn -k3,3rn | head -n 200"
 ].join("\n");
 
 /** Identity of the machine: static enough to fetch once per inventory refresh. */

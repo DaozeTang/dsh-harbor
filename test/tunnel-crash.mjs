@@ -305,6 +305,85 @@ async function readExactly(stream, bytes) {
   assert.equal(typeof bridge, "function");
 }
 
+// ── 9. local forward: an unusable target is refused before the listener ────
+// forwardOut/net.connect threw once per accepted socket while the call had
+// already reported success, so the tunnel looked started and silently failed
+// every connection — with the error only in the accept callback's catch.
+{
+  const service = makeService();
+  const client = {};
+  const conn = fakeConn(service, client);
+
+  // A free port we can watch from the outside.
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const port = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+
+  const refused = [
+    ["an empty remoteHost", { remoteHost: "", remotePort: 22 }],
+    ["a missing remoteHost", { remotePort: 22 }],
+    ["remotePort 0", { remoteHost: "10.9.9.9", remotePort: 0 }],
+    ["remotePort 70000", { remoteHost: "10.9.9.9", remotePort: 70000 }],
+    ["remotePort as a string", { remoteHost: "10.9.9.9", remotePort: "5432" }]
+  ];
+  for (const [label, request] of refused) {
+    const result = await service.tunnelStartLocal({ connectionId: "c1", bindAddr: "127.0.0.1", bindPort: port, ...request });
+    assert.equal(result.ok, false, `${label} is refused`);
+    assert.equal(result.error.code, "tunnel-invalid-target", `${label} has its own error code`);
+    assert.match(result.error.message, /remote_(host|port)/, `${label} names the field`);
+    assert.equal(conn.tunnels.size, 0, `${label} records no tunnel`);
+  }
+  const badListen = await service.tunnelStartLocal({ connectionId: "c1", bindAddr: "127.0.0.1", bindPort: 70000, remoteHost: "10.9.9.9", remotePort: 22 });
+  assert.equal(badListen.ok, false, "an invalid listen port is refused too");
+  assert.equal(badListen.error.code, "tunnel-invalid-listen-port");
+
+  // Nothing was bound anywhere, so the port is still free.
+  const attempt = net.connect(port, "127.0.0.1");
+  const outcome = await new Promise((resolve) => {
+    attempt.once("connect", () => resolve("connected"));
+    attempt.once("error", (error) => resolve(error.code));
+  });
+  attempt.destroy();
+  assert.equal(outcome, "ECONNREFUSED", "a refused forward never binds the listen port");
+
+  // A valid request trims its host and reports the validated target.
+  const started = await service.tunnelStartLocal({ connectionId: "c1", bindAddr: "127.0.0.1", bindPort: 0, remoteHost: "  10.9.9.9  ", remotePort: 5432 });
+  assert.equal(started.ok, true, started.error?.message);
+  assert.equal(started.value.remoteHost, "10.9.9.9", "the host is trimmed before it is used");
+  assert.equal(started.value.remotePort, 5432);
+  assert.equal(conn.tunnels.get(started.value.tunnelId).remotePort, 5432, "the validated target travels with the record");
+}
+
+// ── 10. a listener that outlives its transport is closed, not orphaned ──────
+// listen() is asynchronous, and closeConnectionTunnels() runs when the
+// transport dies. A tunnel registered AFTER that sweep was closed by nobody:
+// the port stayed bound, forwarded nowhere, and never appeared in the list the
+// operator could stop it from.
+{
+  const service = makeService();
+  const conn = fakeConn(service, {});
+  // The transport dies while listen() is in flight: ensureAlive still answers
+  // true (it was alive when the call started) and the record is dead by the
+  // time the listener exists.
+  service.ensureAlive = async () => { conn.dead = true; return true; };
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const port = probe.address().port;
+  await new Promise((resolve) => probe.close(resolve));
+
+  const started = await service.tunnelStartLocal({ connectionId: "c1", bindAddr: "127.0.0.1", bindPort: port, remoteHost: "10.9.9.9", remotePort: 22 });
+  assert.equal(started.ok, false, "the caller is told the forward did not start");
+  assert.equal(started.error.code, "connection-lost");
+  assert.equal(conn.tunnels.size, 0, "no half-registered tunnel is left behind");
+  const attempt = net.connect(port, "127.0.0.1");
+  const outcome = await new Promise((resolve) => {
+    attempt.once("connect", () => resolve("connected"));
+    attempt.once("error", (error) => resolve(error.code));
+  });
+  attempt.destroy();
+  assert.equal(outcome, "ECONNREFUSED", "the port is released instead of staying bound invisibly");
+}
 } finally {
   const servers = [...openServers];
   for (const service of services) {
@@ -314,4 +393,4 @@ async function readExactly(stream, bytes) {
   }
   await Promise.all(servers.map((server) => new Promise((resolve) => server.close(() => resolve()))));
 }
-console.log("tunnel crash net: sync throw, RST both ways, late callbacks, teardown, SOCKS5 wrapper, list shadowing: passed");
+console.log("tunnel crash net: sync throw, RST both ways, late callbacks, teardown, SOCKS5 wrapper, list shadowing, local target validation, orphan listener: passed");

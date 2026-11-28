@@ -10,7 +10,7 @@
  */
 import assert from "node:assert/strict";
 import HarborService from "../src/index.js";
-import { listResultSchema, openSessionResultSchema, terminalContextListResultSchema } from "../src/rpc/schemas.js";
+import { listResultSchema, openSessionResultSchema } from "../src/rpc/schemas.js";
 
 const PROFILE_ID = "11111111-1111-1111-1111-111111111111";
 
@@ -133,11 +133,13 @@ const open = (service, sessionId, extra = {}) => service.openSession({ connectio
   service.resolveLoginShell = async () => "bash";
   service.collectExecOutput = async () => ({ exitCode: 0, stdout: "hello from exec\n", stderr: "", truncated: false, timedOut: false });
 
-  const result = await service.execOnConnection("c1", "echo hi", 1000, false, undefined, "conv-a");
+  const result = await service.execOnConnection("c1", "echo hi", 1000, undefined, "conv-a");
   assert.equal(result.ok, true, result.error?.message);
-  assert.match(service.sessions.get(a.value.sessionId).buffer, /hello from exec/, "the owner sees the command it asked for");
-  assert.doesNotMatch(service.sessions.get(b.value.sessionId).buffer, /hello from exec/, "the other terminal stays clean");
-  assert.match(service.sessions.get(a.value.sessionId).buffer, /\$ echo hi/, "echoed with the agent marker");
+  const seenByA = service.terminalOutput(service.sessions.get(a.value.sessionId)).read().data;
+  const seenByB = service.terminalOutput(service.sessions.get(b.value.sessionId)).read().data;
+  assert.match(seenByA, /hello from exec/, "the owner sees the command it asked for");
+  assert.doesNotMatch(seenByB, /hello from exec/, "the other terminal stays clean");
+  assert.match(seenByA, /\$ echo hi/, "echoed with the agent marker");
 }
 
 // ── agent target and selection are per conversation ─────────────────────────
@@ -170,6 +172,23 @@ const open = (service, sessionId, extra = {}) => service.openSession({ connectio
   const terminalsC2 = listedB.value.connections.find((entry) => entry.connectionId === "c2").terminals;
   assert.deepEqual(terminalsC2.map((terminal) => [terminal.ownerSessionId, terminal.mine]), [["conv-b", true]]);
   assert.ok(second.conn.sessions.size >= 1);
+
+  // A transport loss must not retarget the chat. c2 is dead-but-reconnecting
+  // (the record survives, the self-healing reconnect reuses it) while conv-a
+  // still has a terminal on c1. Dropping the binding on "dead" is what used to
+  // hand conv-b's next tool call to c1 — a command on a machine nobody asked
+  // for — and then re-bind the conversation there for good.
+  second.conn.dead = true;
+  assert.equal(service.activeConnectionFor("conv-b"), "c2", "a reconnecting connection keeps its binding");
+  const whileDead = service.resolveConnection(undefined, "conv-b");
+  assert.equal(whileDead.ok, true);
+  assert.equal(whileDead.connectionId, "c2", "a dead bound record is still the target, never another server");
+  assert.equal(service.activeConnectionByOwner.get("conv-b"), "c2", "the binding outlives the transport loss");
+
+  // Only a record that is really gone (explicit disconnect) releases it.
+  service.connections.delete("c2");
+  assert.equal(service.activeConnectionFor("conv-b"), null, "a removed connection releases the binding");
+  assert.equal(service.activeConnectionByOwner.has("conv-b"), false, "a removed connection releases it");
 }
 
 // ── ssh_exec's lazy terminal open is per conversation ───────────────────────
@@ -204,8 +223,6 @@ const open = (service, sessionId, extra = {}) => service.openSession({ connectio
   assert.equal(conn.sessions.size, 1);
   assert.equal(streams[0].ended, true);
   assert.equal(streams[1].ended, false);
-  assert.equal(service.listTerminalContexts({ sessionId: "conv-a" }).value.sessions.length, 1);
-  assert.equal(terminalContextListResultSchema.safeParse(service.listTerminalContexts({ sessionId: "conv-a" })).success, true);
 }
 
 // ── per-connection cap reports the sshd channel limit, not a mystery ────────
@@ -248,6 +265,32 @@ const open = (service, sessionId, extra = {}) => service.openSession({ connectio
   assert.equal(conn.agentRevealOwnerSessionId, "conv-b", "the reveal targets the asking conversation");
   const listed = await service.list({ sessionId: "conv-a" });
   assert.equal(listed.value.connections[0].agentSessionMine, true);
+}
+
+// ── terminal_open adopts the panel PTY that ssh_connect opened ─────────────
+{
+  const service = makeService();
+  const { streams } = attach(service);
+  const raw = await open(service, "conv-a");
+  assert.equal(raw.ok, true, raw.error?.message);
+  service.waitForTerminalReady = async () => {};
+  const prepared = await service.openAgentTerminal({ owner: { id: "conv-a" } });
+  assert.equal(prepared.session.id, raw.value.sessionId, "terminal_open reuses the same panel PTY");
+  assert.equal(prepared.reused, true);
+  assert.equal(streams.length, 1, "no second shell is opened");
+}
+
+// ── a panel PTY the person typed into is never reused ──────────────────────
+{
+  const service = makeService();
+  const { streams } = attach(service);
+  const raw = await open(service, "conv-a");
+  service.sessions.get(raw.value.sessionId).userOwned = true;
+  service.waitForTerminalReady = async () => {};
+  const prepared = await service.openAgentTerminal({ owner: { id: "conv-a" } });
+  assert.notEqual(prepared.session.id, raw.value.sessionId, "terminal_open opens a fresh shell after a takeover");
+  assert.equal(prepared.reused, false);
+  assert.equal(streams.length, 2, "the person's shell is left alone");
 }
 
 console.log("per-session terminals: ownership, adoption, isolation, exec mirror, target, lifecycle, cap: passed");

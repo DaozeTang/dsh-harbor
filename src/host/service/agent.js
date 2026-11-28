@@ -45,7 +45,7 @@ export const withAgentActions = (Base) => class extends Base {
    * output has a surface to mirror into.
    *
    * @param {{connectionId?: string, ownerSessionId?: string|null, kind?: string, ensureTerminal?: boolean}} request
-   * @returns {Promise<{ok: true, value: {connectionId: string, terminalSessionId?: string, terminalReused?: boolean, warning?: string}}|{ok: false, error: object}>}
+   * @returns {Promise<{ok: true, value: {connectionId: string, panelTerminalId?: string, panelTerminalReused?: boolean, warning?: string}}|{ok: false, error: object}>}
    */
   async touchAgentTarget({ connectionId, ownerSessionId, kind = "tool", ensureTerminal = false } = {}) {
     const owner = normalizeOwner(ownerSessionId);
@@ -72,8 +72,10 @@ export const withAgentActions = (Base) => class extends Base {
     }
     const value = { connectionId: id };
     if (terminal !== null && terminal.ok) {
-      if (terminal.value?.sessionId !== undefined) value.terminalSessionId = terminal.value.sessionId;
-      if (terminal.value?.reused !== undefined) value.terminalReused = terminal.value.reused;
+      // This is Harbor's panel PTY id, not a persistent-terminal registry id:
+      // the registry id is minted by terminal_open, which reuses this PTY.
+      if (terminal.value?.sessionId !== undefined) value.panelTerminalId = terminal.value.sessionId;
+      if (terminal.value?.reused !== undefined) value.panelTerminalReused = terminal.value.reused;
     } else if (terminal !== null && terminal.ok === false) {
       // The connection is visible even when sshd refuses another PTY; the
       // tool still runs and the operator can open a terminal manually.
@@ -300,9 +302,11 @@ export const withAgentActions = (Base) => class extends Base {
     const bound = this.activeConnectionFor(owner);
     if (bound !== null && bound !== undefined) {
       const connection = this.connections.get(bound);
-      if (connection !== undefined && !connection.dead && !connection.closing) {
-        return { ok: true, connectionId: bound, connection };
-      }
+      // The bound record wins even while its transport is down and reconnecting.
+      // Falling through on "dead" is exactly how a chat used to end up running a
+      // command on a different server; the tool's ensureAlive now owns the
+      // decision and reports connection-lost when self-healing gives up.
+      if (connection !== undefined) return { ok: true, connectionId: bound, connection };
     }
     const withOwnTerminal = [];
     for (const [resolvedId, connection] of this.connections) {
@@ -324,7 +328,7 @@ export const withAgentActions = (Base) => class extends Base {
   async executeCommand(request) {
     const selected = this.resolveConnection(request.connectionId, request.sessionId);
     if (!selected.ok) return selected;
-    const result = await this.execOnConnection(selected.connectionId, request.command, request.timeoutMs, false, request.approvalToken, request.sessionId);
+    const result = await this.execOnConnection(selected.connectionId, request.command, request.timeoutMs, request.approvalToken, request.sessionId);
     if (result.blocked) {
       return {
         ok: true,
@@ -337,27 +341,31 @@ export const withAgentActions = (Base) => class extends Base {
       };
     }
     if (!result.ok) return result;
-    const { exitCode, stdout, stderr, cwd, commandId, startedAt, finishedAt, durationMs, truncated, timedOut } = result.value;
+    const { exitCode, stdout, stderr, cwd, commandId, startedAt, finishedAt, durationMs, truncated, timedOut, trashed } = result.value;
     const safeStdout = redactForModel(stdout);
     const safeStderr = redactForModel(stderr);
-    return {
-      ok: true,
-      value: {
-        connectionId: selected.connectionId,
-        host: selected.connection.host,
-        exitCode,
-        stdout: safeStdout.text,
-        stderr: safeStderr.text,
-        cwd,
-        commandId,
-        startedAt,
-        finishedAt,
-        durationMs,
-        truncated,
-        timedOut,
-        redacted: safeStdout.redacted || safeStderr.redacted
-      }
+    const value = {
+      connectionId: selected.connectionId,
+      host: selected.connection.host,
+      exitCode,
+      stdout: safeStdout.text,
+      stderr: safeStderr.text,
+      cwd,
+      commandId,
+      startedAt,
+      finishedAt,
+      durationMs,
+      truncated,
+      timedOut,
+      redacted: safeStdout.redacted || safeStderr.redacted
     };
+    // An approved delete runs the reversible trash move, whose script always
+    // exits 0: the per-target outcome is the ONLY evidence that something was
+    // actually moved. Rebuilding the result field by field used to drop it, so
+    // "moved", "missing" and "failed" all reached the model as exit 0 with no
+    // output — a silent success report for a delete that did not happen.
+    if (Array.isArray(trashed) && trashed.length > 0) value.trashed = trashed;
+    return { ok: true, value };
   }
 
   /**

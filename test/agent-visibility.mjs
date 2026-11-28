@@ -106,7 +106,7 @@ function execValue(overrides = {}) {
   const { conn, streams } = attach(service);
   const first = await service.touchAgentTarget({ connectionId: "c1", ownerSessionId: "conv-a", kind: "connect", ensureTerminal: true });
   assert.equal(first.ok, true, first.error?.message);
-  assert.equal(typeof first.value.terminalSessionId, "string", "the conversation gets a terminal");
+  assert.equal(typeof first.value.panelTerminalId, "string", "the conversation gets a panel terminal");
   assert.equal(conn.sessions.size, 1);
   assert.equal(streams.length, 1);
   assert.equal(conn.agentRevealOwnerSessionId, "conv-a", "the reveal is scoped to the caller");
@@ -144,8 +144,8 @@ function execValue(overrides = {}) {
   const tools = toolsFor(registerSshSessionTools, service);
   const tool = tools.find((entry) => entry.name === "ssh_connect");
   const value = await tool.execute({ host: "192.0.2.10", port: 22, username: "root", auth: { kind: "password", password: "x" } }, execution);
-  assert.equal(value.terminalOpened, true, "ssh_connect opens a terminal for visibility");
-  assert.equal(typeof value.terminalSessionId, "string");
+  assert.equal(value.terminalOpened, true, "ssh_connect opens a panel terminal for visibility");
+  assert.equal("terminalSessionId" in value, false, "the raw panel id is not exposed as a terminal_send target");
   assert.equal(conn.sessions.size, 1);
   assert.equal(streams.length, 1);
   assert.equal(conn.agentRevealOwnerSessionId, "conv-a");

@@ -61,9 +61,12 @@ export const withSessionLogs = (Base) => class extends Base {
   async sessionLogDelete(request) {
     const store = this.sessionLogStore();
     if (store === null) return { ok: true, value: { deleted: 0, remaining: 0 } };
-    const deleted = request.sessionId === undefined
-      ? (await store.removeAll()).deleted
- : ((await store.remove(request.sessionId)), 1);
+    let deleted = 0;
+    if (request.sessionId === undefined) {
+      deleted = (await store.removeAll()).deleted;
+    } else if ((await store.remove(request.sessionId)).deleted === true) {
+      deleted = 1;
+    }
     return { ok: true, value: { deleted, remaining: (await store.list()).length } };
   }
 

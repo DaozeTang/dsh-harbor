@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // check-contrast.mjs — 独立设计的终端外观对比度自检
 //
-// 用法：node tools/check-contrast.mjs
+// 用法：node test/support/contrast.mjs（test/terminal-appearance-contrast.mjs 也复用其算法）
 // 校验两套主题（dark/light）下每个内置类别的默认前景色在其主题默认终端背景上
 // 满足 WCAG AA 正文对比度 ≥ 4.5:1（WCAG 2.x 相对亮度公式）。
 // 任一类别不达标时打印明细并以非零码退出。
 
-import { COLORS, LIGHT_COLORS } from "../src/client/terminal-display/rules.js";
-import { DEFAULT_BACKGROUNDS, relativeLuminance } from "../src/client/terminal-display/theme.js";
+import { COLORS, LIGHT_COLORS } from "../../src/client/terminal-display/rules.js";
+import { DEFAULT_BACKGROUNDS, relativeLuminance } from "../../src/client/terminal-display/theme.js";
 
 export { relativeLuminance };
 
@@ -37,7 +37,7 @@ function hueOf(hex) {
   return h < 0 ? h + 360 : h;
 }
 
-export function checkPalette(colors, background, label) {
+function checkPalette(colors, background, label) {
   const rows = [];
   let ok = true;
   for (const [category, color] of Object.entries(colors)) {

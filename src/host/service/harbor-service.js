@@ -166,7 +166,12 @@ export class HarborServiceBase extends TypertRemoteService {
       // The browser half refreshes this from the live host on every load;
       // until then it is the best-known host language.
       if (this.language !== null) setLanguage(this.language);
-    } catch {}
+    } catch (error) {
+      // Keep booting on the safe defaults (auto-connect off, standard policy),
+      // but never silently: an unreadable settings record used to look exactly
+      // like "my settings were reset", with nothing written anywhere to explain it.
+      this.log(`Harbor settings could not be loaded, using defaults: ${error?.message ?? error}`);
+    }
     const workspaceDomain = await this.ctx.storageDomain.open(remoteWorkspaceDomainSpec);
     this.remoteWorkspaceTable = workspaceDomain.table("workspaces");
     this.remoteWorkspaces = new RemoteWorkspaceStore(this.remoteWorkspaceTable);
@@ -253,9 +258,16 @@ export class HarborServiceBase extends TypertRemoteService {
   }
 
   /**
-   * The connection one conversation's agent tools target, when it is still
-   * usable. A binding that points at a closed or dead transport is dropped so
-   * the caller can fall through to the other resolution steps.
+   * The connection one conversation's agent tools target.
+   *
+   * A dead-but-reconnecting record KEEPS its binding. Releasing it here is what
+   * let a network blip retarget a chat at another open server: the resolution
+   * ladder fell through to "the one connection where this conversation has a
+   * terminal". The record survives a transport loss (the reconnect reuses it),
+   * so the binding must survive too; only a record that no longer exists — an
+   * explicit disconnect, or a failed initial connect — releases it. Callers
+   * that need a usable transport check liveness themselves (ensureAlive), and
+   * that failure is reported honestly instead of silently running elsewhere.
    * @param {unknown} ownerSessionId - the calling conversation.
    * @returns {string|null} connection id, or null.
    */
@@ -265,8 +277,7 @@ export class HarborServiceBase extends TypertRemoteService {
     if (owner !== null && byOwner instanceof Map) {
       const bound = byOwner.get(owner);
       if (bound !== undefined) {
-        const connection = this.connections.get(bound);
-        if (connection !== undefined && !connection.dead && !connection.closing) return bound;
+        if (this.connections.has(bound)) return bound;
         byOwner.delete(owner);
       }
     }
@@ -293,7 +304,7 @@ export class HarborServiceBase extends TypertRemoteService {
   sshTerminalPromptText(session) {
     if (typeof this.sshTerminalBackendActive !== "function" || !this.sshTerminalBackendActive()) return "";
     const lines = [
-      "SSH terminals use the host's persistent-terminal tools. ssh_connect and ssh_connect_profile already open THIS conversation's terminal on the new connection and show it in Harbor's side panel; use terminal_list to find its session id, then terminal_send and terminal_read to work in it, terminal_signal to interrupt a foreground command, and terminal_close to remove it. Call terminal_open with type \"harbor-ssh\" only when you deliberately need another shell (for example after the person took over the existing terminal); cwd is ignored because the shell starts in its login directory. ssh_exec opens that terminal automatically when it is missing and mirrors its command and output into it. The person sees the same shell in the panel; after their first keystroke you can only read it. Harbor's destructive-command gate follows the conversation's DSH permission mode; a Harbor approval prompt is withdrawn after 120 seconds and the command is refused. Never type passwords or one-time codes into a terminal; ask the person to type them."
+      "SSH terminals use the host's persistent-terminal tools. ssh_connect and ssh_connect_profile open THIS conversation's panel terminal on the new connection and show it in Harbor's side panel. That panel terminal is not a persistent-terminal registry session yet: when you need to type, first call terminal_open with type \"harbor-ssh\"; it reuses the same PTY unless the person has taken it over (then it opens a fresh shell) and returns the registry session id, which you then drive with terminal_send and terminal_read, terminal_signal to interrupt a foreground command, and terminal_close to remove it. Call terminal_open again only when you deliberately need another shell (for example after the person took over the existing terminal); cwd is ignored because the shell starts in its login directory. ssh_exec opens that panel terminal automatically when it is missing and mirrors its command and output into it. The person sees the same shell in the panel; after their first keystroke you can only read it. Harbor's destructive-command gate follows the conversation's DSH permission mode; a Harbor approval prompt is withdrawn after 120 seconds and the command is refused. Never type passwords or one-time codes into a terminal; ask the person to type them."
     ];
     const live = [...(this.connections ?? new Map()).values()].filter((connection) => !connection.dead && !connection.closing);
     const owner = normalizeOwner(this.terminalOwner?.({ session }) ?? null);

@@ -6,39 +6,17 @@
  * a real ssh2 client, the fixed "sh -c '<script>'" command, the probe script
  * actually running on the far side, and the parser reading its real output.
  *
- * The repo's test sshd serves whatever shell the developer is on, so the
- * assertion is platform-aware: on Linux the sample must be supported and the
- * second sample must carry rates; elsewhere (macOS CI, where /proc does not
- * exist) the honest "unsupported" envelope is what must come back.
+ * The repo's test sshd serves whatever shell the machine has, so the assertion
+ * is platform-aware: on Linux (this project's CI) the sample must be supported
+ * and the second sample must carry rates; elsewhere (macOS, where /proc does
+ * not exist) the honest "unsupported" envelope is what must come back.
  */
 import assert from "node:assert/strict";
-import net from "node:net";
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { Client } from "ssh2";
+import { startTestSshd } from "./support/start-test-sshd.mjs";
 const { default: HarborService } = await import(process.env.DSH_TEST_BUILT_HOST ? "../lib/index.js" : "../src/index.js");
 
-const freePort = () => new Promise((resolve) => {
-  const probe = net.createServer();
-  probe.listen(0, "127.0.0.1", () => {
-    const { port } = probe.address();
-    probe.close(() => resolve(port));
-  });
-});
-
-const port = await freePort();
-const child = spawn(process.execPath, [
-  fileURLToPath(new URL("./support/test-sshd.mjs", import.meta.url)),
-  String(port)
-], { stdio: ["ignore", "pipe", "pipe"] });
-
-const ready = new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error("test-sshd did not start in time")), 10000);
-  child.stdout.on("data", (chunk) => {
-    if (String(chunk).includes("listening on")) { clearTimeout(timer); resolve(); }
-  });
-  child.on("exit", (code) => { clearTimeout(timer); reject(new Error("test-sshd exited early (" + code + ")")); });
-});
+const { port, child, ready } = await startTestSshd();
 
 const client = new Client();
 try {

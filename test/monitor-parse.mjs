@@ -30,6 +30,15 @@ const INTERPOLATION = "$" + "{";
   for (const marker of ["#meta", "#cpu", "#mem", "#load", "#uptime", "#net", "#gpu", "#procs", "#df", "#diskstats", "#end"]) {
     assert.ok(script.includes("echo \"" + marker + "\""), "the slow script announces " + marker);
   }
+  // ps prints in pid order, so a cap before the sort kept the 200 lowest pids
+  // and the parser then ranked those: on a host with more processes than the
+  // cap, the busiest one (usually a recent, high-pid process) was never seen.
+  const procs = script.split("\n").find((line) => line.startsWith("ps -e"));
+  assert.ok(procs !== undefined, "the fast tick reads the process table");
+  assert.ok(procs.includes("sort -k2,2rn"), "processes are ordered by cpu on the server: " + procs);
+  assert.ok(procs.indexOf("sort") < procs.indexOf("head"), "the cap applies to the sorted list, not before it");
+  assert.equal(procs.includes("'"), false, "the sort adds no single quote");
+
   const fast = buildProbeScript();
   assert.equal(fast.includes("#meta"), false, "the fast tick does not pay for the inventory");
   assert.equal(fast.includes("#df"), false, "the fast tick does not pay for the mount table (it can block on NFS)");
@@ -164,7 +173,10 @@ function linuxProbeText(extra = {}) {
 
   const procs = parsePs(PS.split("\n"));
   assert.deepEqual(procs.rows.map((row) => row.name), ["python3", "node", "nginx"], "sorted by CPU, garbage lines skipped");
-  assert.equal(procs.count, 3);
+  // `count` used to ride along here and was stripped by the RPC schema, so no
+  // caller could ever read it: the parser returns exactly what the wire carries.
+  assert.equal("count" in procs, false, "no field the wire cannot carry");
+  assert.equal(procs.rows.length, 3);
 }
 
 // ── parseProbe: section split and completeness ─────────────────────────────

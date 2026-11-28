@@ -166,7 +166,19 @@ function push(map, key, where) {
 // base dictionary plus every per-area file.
 const { en } = await import(pathToFileURL(join(root, "src/i18n/messages.en.js")).href);
 
-const dictNormalized = new Map(Object.keys(en).map((key) => [normalizeKey(key), key]));
+// Two stored entries can normalize to the SAME key: the pattern engine matches
+// on the literal segments alone, so its regexes are identical and only the first
+// entry can ever win — every later one is dead weight that may even state a
+// different wording than what renders. Report the collision instead of letting
+// a Map silently keep the last one.
+const dictNormalized = new Map();
+const colliding = [];
+for (const key of Object.keys(en)) {
+  const normalized = normalizeKey(key);
+  const winner = dictNormalized.get(normalized);
+  if (winner !== undefined) colliding.push(`${key.slice(0, 70)}  (same key as ${winner.slice(0, 70)})`);
+  else dictNormalized.set(normalized, key);
+}
 const missing = [...callKeys.entries()].filter(([key]) => !dictNormalized.has(key)).map(([key, where]) => `${where.join(", ")}  ${key.slice(0, 70)}`);
 const orphan = Object.keys(en).filter((key) => !callKeys.has(normalizeKey(key)));
 
@@ -178,6 +190,10 @@ if (unwrapped.length > 0) {
   console.error(`✖ Chinese strings not passed through t() (${unwrapped.length}):`);
   for (const line of unwrapped) console.error("  " + line);
 }
+if (colliding.length > 0) {
+  console.error(`✖ dictionary entries that resolve to the same key (${colliding.length}):`);
+  for (const line of colliding) console.error("  " + line);
+}
 if (dynamic.length > 0 && !quiet) {
   console.warn(`⚠ dynamic t() keys (not statically checkable, ${dynamic.length}):`);
   for (const line of dynamic) console.warn("  " + line);
@@ -187,6 +203,7 @@ if (orphan.length > 0 && !quiet) {
   for (const key of orphan) console.warn("  " + key.slice(0, 70));
 }
 
-const status = missing.length === 0 && unwrapped.length === 0 ? "clean" : "drift";
+const clean = missing.length === 0 && unwrapped.length === 0 && colliding.length === 0;
+const status = clean ? "clean" : "drift";
 if (!quiet) console.log(`i18n: ${callKeys.size} keys, ${Object.keys(en).length} dictionary entries — ${status}`);
-process.exitCode = missing.length === 0 && unwrapped.length === 0 ? 0 : 1;
+process.exitCode = clean ? 0 : 1;

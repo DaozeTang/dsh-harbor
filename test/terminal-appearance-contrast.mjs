@@ -1,4 +1,4 @@
-// terminal-appearance-contrast.mjs — TESTS.md §4 配色验收 + theme.js 主题契约
+// terminal-appearance-contrast.mjs — 配色验收 + theme.js 主题契约
 //
 // 覆盖：两套主题默认色 WCAG 对比度 ≥ 4.5:1、深/浅色相语义一致（各守象限）、
 // ANSI 16 色独立调色板完整性、terminalTheme 极性自适应（阈值 0.179）、
@@ -17,7 +17,7 @@ import {
   subscribeHostTheme,
   terminalTheme,
 } from "../src/client/terminal-display/theme.js";
-import { contrast, relativeLuminance } from "../tools/check-contrast.mjs";
+import { contrast, relativeLuminance } from "./support/contrast.mjs";
 
 const ANSI_NAMES = [
   "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
@@ -116,7 +116,7 @@ test("深/浅两套默认色色相语义一致（各类别守各自象限）", (
   }
 });
 
-test("所有默认色为 #rrggbb 形式，键集合 = SPEC §4.1 全部类别", () => {
+test("所有默认色为 #rrggbb 形式，键集合 = rules.js 全部类别", () => {
   const expected = ["error", "success", "warning", "info", "heading", "number", "string", "option", "command", "prompt", "debug"];
   assert.deepEqual(Object.keys(COLORS).sort(), [...expected].sort());
   assert.deepEqual(Object.keys(LIGHT_COLORS).sort(), [...expected].sort());

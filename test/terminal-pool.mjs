@@ -88,26 +88,17 @@ function makeFactory(log) {
 // ── drop forgets a dead session immediately (no-session from the host) ──
 {
   const pool = createTerminalPool({ create: makeFactory([]), max: 8 });
-  const entry = pool.acquire("s1", {});
-  pool.drop("s1");
-  assert.equal(entry.term.disposed, true, "drop disposes even though released by no one");
+  const owner = {};
+  const entry = pool.acquire("s1", owner);
+  // The mount that observed the end still holds the entry: it may dispose it
+  // before its own release, which is what XtermView does on a `no-session`.
+  pool.drop("s1", { owner });
+  assert.equal(entry.term.disposed, true, "drop disposes the terminal of the mount that reported the end");
   assert.equal(pool.get("s1"), undefined);
   assert.equal(pool.size(), 0);
   // Double drop and release-after-drop are both no-ops.
   pool.drop("s1");
   pool.release("s1", {});
-}
-
-// ── closed flag lives with the session, not the mount ──
-{
-  const pool = createTerminalPool({ create: makeFactory([]), max: 8 });
-  const owner = {};
-  pool.acquire("s1", owner);
-  pool.setClosed("s1", true);
-  assert.equal(pool.get("s1").closed, true);
-  pool.release("s1", owner);
-  assert.equal(pool.get("s1").closed, true, "closed state survives the unmount");
-  pool.disposeAll();
 }
 
 // Cursor replay dedup never removes identical output at a new position.
@@ -153,4 +144,63 @@ console.log("terminal pool: ownership, keepalive, eviction, offset replay: passe
   pool.release("session-search", owner);
   const again = pool.acquire("session-search", {});
   assert.equal(again.search, search, "and so can a mount that reuses the pooled terminal");
+}
+// ── release matches its lease by session: one mount can hold both kinds ──
+{
+  const pool = createTerminalPool({ create: makeFactory([]), max: 8 });
+  const ownerA = {};
+  const ownerB = {};
+  const ownerC = {};
+  pool.acquire("s-a", ownerA);                  // A owns the pooled entry
+  const lease = pool.acquire("s-a", ownerB);    // B can only borrow: it gets a lease
+  const again = pool.acquire("s-a", ownerB);    // a re-run acquire must not stack leases
+  assert.equal(again.term, lease.term, "the lease it already holds is reused");
+  const own = pool.acquire("s-b", ownerB);       // B also owns the pooled entry of s-b
+  pool.release("s-b", ownerB);
+  assert.equal(own.term.disposed, false, "the pooled entry survives its mount");
+  assert.equal(lease.term.disposed, false, "releasing s-b must not dispose s-a's lease");
+  // The s-b entry must be free again, not orphaned as 'owned by B'.
+  const reused = pool.acquire("s-b", ownerC);
+  assert.equal(reused.term, own.term, "a later mount reuses the released entry");
+  pool.release("s-b", ownerC);
+  pool.release("s-a", ownerB);
+  assert.equal(lease.term.disposed, true, "releasing the leased session disposes it");
+  pool.release("s-a", ownerA);
+  pool.disposeAll();
+}
+
+// ── drop: immediate when unowned, deferred (and never reused) when owned ──
+{
+  const pool = createTerminalPool({ create: makeFactory([]), max: 8 });
+  const owner = {};
+  const entry = pool.acquire("s-dead", owner);
+  pool.release("s-dead", owner);
+  pool.drop("s-dead");
+  assert.equal(entry.term.disposed, true, "an unowned dead session is disposed at once");
+  assert.equal(pool.size(), 0, "and leaves the pool");
+}
+{
+  const pool = createTerminalPool({ create: makeFactory([]), max: 8 });
+  const owner = {};
+  const entry = pool.acquire("s-live", owner);
+  pool.drop("s-live");
+  assert.equal(entry.term.disposed, false, "a mounted terminal is not disposed under the view");
+  pool.release("s-live", owner);
+  assert.equal(entry.term.disposed, true, "its own release disposes it");
+  assert.equal(pool.size(), 0, "the dead entry does not linger for LRU");
+}
+{
+  const pool = createTerminalPool({ create: makeFactory([]), max: 8 });
+  const ownerA = {};
+  const ownerB = {};
+  const pooled = pool.acquire("s-x", ownerA);
+  pool.drop("s-x");                       // dead, but A still draws it
+  const fresh = pool.acquire("s-x", ownerB);
+  assert.notEqual(fresh.term, pooled.term, "a dead pooled terminal is never handed out");
+  assert.equal(fresh.reused, false);
+  assert.equal(fresh.pooled, false, "the new mount runs unpooled instead of stealing the element");
+  pool.release("s-x", ownerB);
+  pool.release("s-x", ownerA);
+  assert.equal(pooled.term.disposed, true, "the deferred entry is disposed by its owner's release");
+  pool.disposeAll();
 }

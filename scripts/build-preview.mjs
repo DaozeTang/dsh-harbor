@@ -81,7 +81,6 @@ const page = (theme, entry) => `<!doctype html>
   html.bare [data-preview-chrome] { display: none; }
   html.cap #root { max-width: none; }
   html.cap #root > .hb { padding: 0 !important; }
-  html.cap [data-preview-chrome] { display: none; }
   /* Capture mode shows one surface at full viewport height: no preview
      header, no fixed frame height, no padding fade at the bottom. */
   html.cap [data-preview-frame] { height: 100vh !important; border: 0 !important; border-radius: 0 !important; }

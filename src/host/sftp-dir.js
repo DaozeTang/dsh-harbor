@@ -17,12 +17,13 @@
  * Pure with respect to I/O: `run` does the actual transfer, everything here
  * is unit-testable with fake tasks.
  */
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { resolve } from "node:path";
+import { isLocalPathInside } from "./local-path-guard.js";
 
 /** Max in-flight small-file transfers. */
 export const SFTP_DIR_SMALL_CONCURRENCY = 6;
 /** Files larger than this take the exclusive lane. */
-export const SFTP_DIR_BIG_FILE_BYTES = 512 * 1024;
+const SFTP_DIR_BIG_FILE_BYTES = 512 * 1024;
 
 /**
  * Run transfer tasks under the scheduling policy. Returns
@@ -127,17 +128,79 @@ export function assertSafeEntryName(name) {
 export function assertLocalPathInside(root, target, description = "local path") {
   const base = resolve(String(root));
   const candidate = resolve(String(target));
-  const rel = relative(base, candidate);
-  // Only a leading ".." SEGMENT escapes: `relative()` returns "..env" for a
-  // sibling literally named `..env`, which `startsWith("..")` used to refuse.
-  if (rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) return candidate;
+  // The containment math has exactly one implementation (local-path-guard.js);
+  // this is only the throwing wrapper the transfer paths use.
+  if (isLocalPathInside(base, candidate)) return candidate;
   throw new Error(`${description} escapes ${base}: ${candidate}`);
 }
 
-/** Posix path join for remote SFTP paths (no Windows semantics). */
+/**
+ * Posix path join for remote SFTP paths (no Windows semantics).
+ *
+ * An empty base used to mean "/", so a request with no `remote_path` (or an
+ * empty one) quietly re-rooted a whole tree at the remote filesystem root —
+ * next to /etc instead of in the operator's home directory. An empty base is
+ * not a synonym for either: every caller knows which directory it means, and
+ * a caller that does not must fail instead of writing to the filesystem root.
+ *
+ * @param {string} base - normalized absolute remote directory.
+ * @param {string} name - one entry name or a "/"-joined relative path.
+ * @returns {string} the joined absolute remote path.
+ * @throws when the base is not a non-empty string.
+ */
 export function joinRemotePath(base, name) {
-  if (base === "/" || base === "") return `/${name}`;
+  if (typeof base !== "string" || base.trim() === "") {
+    throw new Error("remote path must not be empty");
+  }
+  if (base === "/") return `/${name}`;
   return `${base.replace(/\/+$/, "")}/${name}`;
+}
+
+/** Local filesystems that fold case: macOS (APFS/HFS+) and Windows. */
+export const CASE_INSENSITIVE_LOCAL_FS = process.platform === "darwin" || process.platform === "win32";
+
+/**
+ * Decide which entries of one download tree can be written, BEFORE any bytes
+ * move.
+ *
+ * On a case-insensitive local filesystem `A.txt` and `a.txt` are one file. Both
+ * transfers used to run in the small-file pool, both opened (and truncated) the
+ * same path, and the batch still reported `files: 2` while a single file
+ * existed: one remote file's content was silently lost and the count was a lie.
+ * The remote side is POSIX, where both names are legal, so the loss cannot be
+ * avoided — reporting it is what makes the download honest.
+ *
+ * @param {{rel: string, isDirectory: boolean, symlink?: boolean}[]} entries - walker output.
+ * @param {{caseInsensitive?: boolean}} [options] - local filesystem behaviour.
+ * @returns {{directories: object[], files: object[], blocked: {path: string, error: string}[]}}
+ */
+export function planCaseSafeDownloads(entries, options = {}) {
+  const caseInsensitive = options.caseInsensitive ?? CASE_INSENSITIVE_LOCAL_FS;
+  const directories = [];
+  const files = [];
+  const blocked = [];
+  const claimed = new Map();
+  for (const entry of entries) {
+    if (entry.isDirectory === true) {
+      directories.push(entry);
+      continue;
+    }
+    if (entry.symlink === true) continue;
+    if (caseInsensitive) {
+      const key = String(entry.rel).toLowerCase();
+      const first = claimed.get(key);
+      if (first !== undefined) {
+        blocked.push({
+          path: entry.rel,
+          error: `the local filesystem ignores letter case, so ${JSON.stringify(entry.rel)} would overwrite ${JSON.stringify(first)}; download it separately`
+        });
+        continue;
+      }
+      claimed.set(key, entry.rel);
+    }
+    files.push(entry);
+  }
+  return { directories, files, blocked };
 }
 
 /** Parent directory and final segment of a posix path. */

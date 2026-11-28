@@ -1,7 +1,7 @@
 import { COLORS } from "./rules.js";
 
 export const MAX_CUSTOM_RULES = 32;
-export const MAX_RULE_TEXT = 128;
+const MAX_RULE_TEXT = 128;
 
 // Literal text only: users never need regex escaping, and a saved pattern
 // cannot introduce unbounded regular-expression backtracking on terminal data.
@@ -21,11 +21,3 @@ export function normalizeCustomRules(value) {
   return rules;
 }
 
-export function compileCustomRules(rules) {
-  return normalizeCustomRules(rules).filter((rule) => rule.enabled).map((rule) => {
-    const literal = rule.text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return { id: `custom:${rule.id}`, color: rule.color,
-      pattern: new RegExp(rule.match === "word" ? `(?<![\\p{L}\\p{N}_])${literal}(?![\\p{L}\\p{N}_])` : literal,
-        rule.caseSensitive ? "gu" : "giu") };
-  });
-}

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm, readFile, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -247,6 +248,39 @@ test("concurrent journals merge independent records without exposing active work
   } finally { first.close(); second.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a stale journal lock is reclaimed instead of blocking every later upload", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "dsh-transfer-stale-lock-"));
+  const journalPath = join(dir, "journal.json");
+  const lock = `${journalPath}.lock`;
+  const tasks = new TransferTasks({ journalPath });
+  const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+  const deadPid = child.pid;
+  await new Promise((resolve) => child.once("exit", resolve));
+  try {
+    await tasks.load();
+    // A different process that is gone: the common SIGKILL/reboot case.
+    await writeFile(lock, JSON.stringify({ pid: deadPid, token: "gone", at: Date.now() }), { mode: 0o600 });
+    await tasks.persist();
+    assert.deepEqual(JSON.parse(await readFile(journalPath, "utf8")), []);
+    assert.equal(await stat(lock).then(() => true, () => false), false, "the dead process's lock is gone");
+
+    // Same pid, but a token this process no longer owns (an abandoned instance).
+    await writeFile(lock, JSON.stringify({ pid: process.pid, token: "dead-instance", at: Date.now() }), { mode: 0o600 });
+    await tasks.persist();
+    assert.equal(await stat(lock).then(() => true, () => false), false, "a same-pid dead token is reclaimed");
+
+    // A legacy numeric lock from this pid cannot belong to this build.
+    await writeFile(lock, String(process.pid), { mode: 0o600 });
+    await tasks.persist();
+    assert.equal(await stat(lock).then(() => true, () => false), false, "a legacy same-pid lock is reclaimed");
+
+    // A malformed lock has no live owner.
+    await writeFile(lock, "not-a-pid", { mode: 0o600 });
+    await tasks.persist();
+    assert.equal(await stat(lock).then(() => true, () => false), false, "a malformed lock is reclaimed");
+  } finally { tasks.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("cleanup cannot claim a task another runtime has resumed", async () => {
   const dir = await mkdtemp(join(tmpdir(), "dsh-transfer-race-"));
   const journalPath = join(dir, "journal.json"); const source = join(dir, "file"); const sftp = fakeSftp();
@@ -295,4 +329,33 @@ test("persisting unrelated work does not overwrite a task resumed by another run
     assert.equal(records.find((entry) => entry.id === task.id).ownerToken, second.ownerToken);
     assert.ok(records.some((entry) => entry.id === next.id));
   } finally { first.close(); second.close(); await rm(dir, { recursive: true, force: true }); }
+});
+test("a failure during the commit rename reports an unknown result, not a plain failure", async () => {
+  // The commit is a rename: once it is in flight the remote either has the
+  // finished file or it does not, and nothing local can tell which. Calling
+  // that "failed" invited a retry onto a target that may already be correct.
+  const dir = await mkdtemp(join(tmpdir(), "dsh-transfer-"));
+  const source = join(dir, "file");
+  const bytes = Buffer.alloc(256 * 1024, 3);
+  const sftp = fakeSftp();
+  // The shared fixture fails the 4th chunk on purpose (that is the resume
+  // test); this case has to reach the commit, so writes always succeed.
+  sftp.write = (path, buf, _off, length, pos, cb) => {
+    const data = sftp.files.get(path) ?? Buffer.alloc(0);
+    const out = Buffer.alloc(Math.max(data.length, pos + length));
+    data.copy(out); buf.copy(out, pos, 0, length); sftp.files.set(path, out);
+    setTimeout(() => cb(null), 0);
+  };
+  let renames = 0;
+  sftp.rename = (_from, _to, cb) => { renames += 1; cb(new Error("connection lost during rename")); };
+  const service = setup(sftp);
+  try {
+    await writeFile(source, bytes);
+    const result = await service.sftpUploadLocalFile({ localPath: source, remotePath: "/dest" });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "sftp-upload-commit-unknown", result.error.message);
+    assert.match(result.error.message, /may already have completed/);
+    assert.equal(renames, 1, "a commit failure is not retried: the rename may have landed");
+    assert.equal(sftp.files.get("/dest").toString(), "original", "a refused rename leaves the target alone");
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

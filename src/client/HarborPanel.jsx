@@ -12,7 +12,7 @@
  */
 import * as React from "react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Badge, Button, ConfirmHost, Dot, EmptyState, ErrorNote, Icon, IconButton, ToastHost } from "./ui/kit.jsx";
+import { Badge, Button, ConfirmHost, Dot, EmptyState, ErrorNote, Icon, IconButton, Tabs, ToastHost } from "./ui/kit.jsx";
 import { TerminalAppearanceButton } from "./terminal-display/TerminalAppearanceButton.jsx";
 import { XtermView } from "./features/terminal/xterm-view.jsx";
 import { ConnectDialog } from "./features/connect/connect-dialog.jsx";
@@ -25,7 +25,7 @@ import { LogsPane } from "./features/logs/logs-pane.jsx";
 import { MonitorPane } from "./features/monitor/monitor-pane.jsx";
 import {
   getHarborUiSnapshot, useHarborUi, harborUiSetActiveConnection, harborUiSetBusy, harborUiSetConnections,
-  harborUiSetError, harborUiSetFeatures, harborUiAnnounceAgentConnections
+  harborUiSetError, harborUiSetFeatures, harborUiSetProjectTarget, harborUiAnnounceAgentConnections
 } from "./store.js";
 import {
   DEFAULT_VIEW_ID, adoptIntoView, claimPendingOpens, closeInView, forgetView, openInView,
@@ -37,7 +37,14 @@ import { connectionStatusView } from "./connection-status.js";
 import { t } from "../i18n/core.js";
 import { useLanguage } from "./locale.js";
 
-/** Error boundary so one crashed pane never takes the whole workbench down. */
+/**
+ * Error boundary so one crashed pane never takes the whole workbench down.
+ *
+ * The caught error used to live in state nothing cleared: one throwing render
+ * and that tab stayed an error card until the operator switched views and back
+ * (which remounted the boundary) or reloaded. A retry button and a reset when
+ * `resetKey` changes (view + server) make the pane recoverable.
+ */
 class PaneBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -49,15 +56,33 @@ class PaneBoundary extends React.Component {
   componentDidCatch(error) {
     console.error("[dsh-harbor] pane crashed:", error);
   }
+  componentDidUpdate(previous) {
+    if (this.state.error !== null && previous.resetKey !== this.props.resetKey) this.reset();
+  }
+  reset() {
+    if (this.state.error !== null) this.setState({ error: null });
+  }
   render() {
     if (this.state.error === null) return this.props.children;
     return (
-      <div className="hb-pad">
+      <div className="hb-pad hb-stack">
         <ErrorNote>{t(`此页签出错：${this.state.error?.message ?? String(this.state.error)}`)}</ErrorNote>
+        <div>
+          <Button variant="secondary" size="sm" icon="refresh-outline" onClick={() => this.reset()}>{t("重试")}</Button>
+        </div>
       </div>
  );
   }
 }
+
+/**
+ * The exact message this poll last put in the shared error slot.
+ *
+ * The slot is a single string shared with every other failure in the workbench,
+ * so a successful poll may only clear the message it wrote itself — clearing
+ * unconditionally would wipe a newer, unrelated error on the next tick.
+ */
+let listErrorShown = null;
 
 /** Mirror the host's connection list and this conversation's agent binding. */
 async function refreshConnections(api, sessionId) {
@@ -69,8 +94,17 @@ async function refreshConnections(api, sessionId) {
     // connection queued for its own view. Passing the session keeps another
     // conversation's reveal out of this pane.
     harborUiAnnounceAgentConnections(connections, { sessionId });
+    // A poll that failed once used to leave its message up for the rest of the
+    // session: the next successful list arrives five seconds later and nothing
+    // removed it, so the panel kept claiming it could not refresh while showing
+    // fresh data.
+    if (listErrorShown !== null) {
+      if (getHarborUiSnapshot().error === listErrorShown) harborUiSetError(null);
+      listErrorShown = null;
+    }
   } catch (error) {
-    harborUiSetError(t(`无法刷新 SSH 连接列表：${error?.message ?? String(error)}`));
+    listErrorShown = t(`无法刷新 SSH 连接列表：${error?.message ?? String(error)}`);
+    harborUiSetError(listErrorShown);
   }
 }
 
@@ -98,7 +132,13 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
   const [profiles, setProfiles] = useState([]);
   const [groups, setGroups] = useState([]);
   const seenBatchIdsRef = useRef(new Set());
+  const pendingBatchRef = useRef(0);
+  const batchPollInFlightRef = useRef(false);
   const adoptedRef = useRef(false);
+  // A settings-page connect may hand this pane a starting directory. Consume
+  // it once: leaving it in the store would snap the file pane back to that
+  // path every time the operator returns to this server.
+  const consumedProjectTargetRef = useRef(null);
   // True once this pane has adopted the host's connections at least once. Before
   // that, "no active connection" only means "the first paint has not finished",
   // and a fallback there would stomp the view the panel was mounted with.
@@ -144,25 +184,50 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
   }, [view, visibleViewIds]);
 
   const refreshBatchTasks = async () => {
+    // The one-second beat must not stack requests on a slow host: the panel
+    // used to ask for the same list again before the previous answer landed.
+    if (batchPollInFlightRef.current) return;
+    batchPollInFlightRef.current = true;
     try {
       const { tasks } = await api.batchTaskList();
       setPendingBatchCount(tasks.length);
+      pendingBatchRef.current = tasks.length;
+      // A finished plan never comes back, so its id does not have to be
+      // remembered: the set used to grow for the life of the panel.
+      for (const id of seenBatchIdsRef.current) {
+        if (!tasks.some((task) => task.batchId === id)) seenBatchIdsRef.current.delete(id);
+      }
       const unseen = tasks.find((task) => !seenBatchIdsRef.current.has(task.batchId));
       if (unseen !== undefined) {
         seenBatchIdsRef.current.add(unseen.batchId);
         setBatchTask((current) => current ?? unseen);
       }
-    } catch {}
+    } catch {
+      // A temporarily unavailable host must not stop later polls.
+    } finally {
+      batchPollInFlightRef.current = false;
+    }
   };
 
   useEffect(() => {
-    void refreshBatchTasks();
-    // Batch approvals need to surface promptly, but an occluded tab does not
-    // have to poll the host every second.
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void refreshBatchTasks();
-    }, 1000);
-    return () => clearInterval(timer);
+    let alive = true;
+    let timer = null;
+    const tick = async () => {
+      // An occluded tab does not have to poll the host at all; the next visible
+      // tick catches up.
+      if (document.visibilityState === "visible") await refreshBatchTasks();
+      if (!alive) return;
+      // One beat while something is waiting for an answer, because the operator
+      // is sitting in front of the dialog; a slower beat when only the arrival
+      // of a NEW agent plan has to be noticed. A fixed 1 Hz per pane polled all
+      // day for the idle case.
+      timer = setTimeout(tick, pendingBatchRef.current > 0 ? 1000 : 4000);
+    };
+    void tick();
+    return () => {
+      alive = false;
+      if (timer !== null) clearTimeout(timer);
+    };
   }, [api]);
 
   // Panes are sibling trees over one connection list, and the dock remounts
@@ -195,8 +260,24 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
   // A surface that owns no pane (the settings page) queues what it connected;
   // the first pane to render claims it.
   const pendingOpenRevision = useSyncExternalStore(subscribePaneSessions, paneOpenRequestsRevision);
+  // A project-directory request from the settings page is consumed by the
+  // first mount of the file pane it belongs to. Clear it after that mount so
+  // returning to the server later does not override the operator's own cwd.
   useEffect(() => {
-    for (const claim of claimPendingOpens(sessionId)) {
+    const target = ui.projectTarget;
+    if (target === null || target === undefined) return undefined;
+    if (target.connectionId !== resolvedActiveConnectionId) return undefined;
+    const signature = target.connectionId + "\u0000" + target.path;
+    if (consumedProjectTargetRef.current === signature) return undefined;
+    consumedProjectTargetRef.current = signature;
+    // Let HarborFiles mount (and load) with the target path first.
+    const timer = setTimeout(() => harborUiSetProjectTarget(null), 0);
+    return () => clearTimeout(timer);
+  }, [ui.projectTarget, resolvedActiveConnectionId]);
+
+  useEffect(() => {
+    const claims = claimPendingOpens(sessionId);
+    for (const claim of claims) {
       openInView(viewId, claim.connectionId);
       // A surface that owns no pane (the settings page) queued a connect whose
       // terminal is unclaimed: adopt it for this conversation so the pane shows
@@ -207,6 +288,10 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
           .catch(() => {});
       }
     }
+    // The settings page no longer writes its session-less list into the shared
+    // store, so refresh here to make the claimed tab visible immediately
+    // instead of waiting for the next five-second poll.
+    if (claims.length > 0) void refreshConnections(api, sessionId);
   }, [pendingOpenRevision, viewId, sessionId, api]);
 
   useEffect(() => {
@@ -257,7 +342,18 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
    * being closed in one of them.
    */
   const closePaneTab = async (connectionId) => {
-    const connection = ui.connections.find((entry) => entry.connectionId === connectionId);
+    // Re-read first: the cached list is up to five seconds old, and using it
+    // to decide "no other conversation has a terminal" could disconnect a
+    // transport another chat started using in that window. The read still is
+    // not atomic with the disconnect, but it shrinks the race to one round
+    // trip instead of a whole poll interval.
+    let connection = ui.connections.find((entry) => entry.connectionId === connectionId);
+    try {
+      const latest = await api.list(sessionId);
+      connection = latest?.connections?.find((entry) => entry.connectionId === connectionId) ?? connection;
+    } catch {
+      // Fall back to the cached snapshot; closing must still work offline.
+    }
     // Ending this tab ends THIS conversation's terminal. The transport is
     // disconnected only when no other conversation still has a terminal on it:
     // closing your tab must never kill another chat's shell.
@@ -292,13 +388,38 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
     disabled: entry.needsConnection === true && active === null
   }));
 
+  // A crashed pane is retried when the operator moves to another view or
+  // server: the error belongs to the surface that threw, not to the session.
+  const boundaryKey = `${view}:${resolvedActiveConnectionId ?? ""}`;
+
+  /**
+   * Arrow keys walk the open-server tabs (Left/Right/Home/End). The strip had
+   * no keyboard model: every tab sat in the tab order and nothing moved
+   * between them, so reaching the fourth server took four Tab presses.
+   */
+  const onServerStripKeyDown = (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const ids = paneConnections.map((connection) => connection.connectionId);
+    if (ids.length === 0) return;
+    const current = ids.indexOf(resolvedActiveConnectionId);
+    const next = event.key === "Home" ? 0
+      : event.key === "End" ? ids.length - 1
+      : current < 0 ? 0
+      : (current + (event.key === "ArrowRight" ? 1 : -1) + ids.length) % ids.length;
+    event.preventDefault();
+    const id = ids[next];
+    selectInView(viewId, id);
+    bindAgent(id);
+    event.currentTarget.querySelectorAll("[role=\"tab\"]")[next]?.focus?.();
+  };
+
   return (
     <div className="hb hb-shell" data-dsh-harbor-panel="true">
       <div className="hb-toolbar">
         {/* The strip scrolls; the connect button must not: three open servers in
             a narrow sidebar used to push it out of reach. */}
         <div className="hb-strip">
-          <div className="hb-servers" role="tablist" aria-label={t("已打开的服务器")}>
+          <div className="hb-servers" role="tablist" aria-label={t("已打开的服务器")} onKeyDown={onServerStripKeyDown}>
             {paneConnections.map((connection) => {
               const isActive = connection.connectionId === resolvedActiveConnectionId;
               const isAgentTarget = connection.connectionId === ui.activeConnectionId;
@@ -318,47 +439,46 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
                   key={connection.connectionId}
                   className="hb-server"
                   data-active={isActive ? "true" : "false"}
-                  role="tab"
-                  aria-selected={isActive}
-                  tabIndex={0}
-                  onKeyDown={(event) => {
-                    if (event.target !== event.currentTarget) return;
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      selectInView(viewId, connection.connectionId);
-                      bindAgent(connection.connectionId);
-                    }
-                  }}
-                  onClick={() => { selectInView(viewId, connection.connectionId); bindAgent(connection.connectionId); }}
-                  title={`${connection.username}@${connection.host}:${connection.port} · ${statusText}${isAgentTarget ? t("（Agent 的作用目标）") : ""}`}
                 >
-                  <Dot
-                    tone={!status.connected ? "err" : status.agentActive ? "busy" : "ok"}
-                    title={statusText}
-                  />
-                  <span className="hb-server__label">{connection.name || connection.host}</span>
-                  <span
-                    className="hb-server__terminal"
-                    data-on={status.hasTerminal ? "true" : "false"}
-                    title={status.hasTerminal ? t("本对话的终端运行中") : t("本对话暂无终端")}
-                    aria-hidden="true"
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={isActive}
+                    // Roving tab order: one stop for the strip, arrows move between
+                    // servers.
+                    tabIndex={isActive ? 0 : -1}
+                    className="hb-server__tab"
+                    onClick={() => { selectInView(viewId, connection.connectionId); bindAgent(connection.connectionId); }}
+                    title={`${connection.username}@${connection.host}:${connection.port} · ${statusText}${isAgentTarget ? t("（Agent 的作用目标）") : ""}`}
                   >
-                    <Icon name="terminal" size={11} />
-                  </span>
-                  {isAgentTarget && (
-                    <Badge
-                      tone="accent"
-                      title={status.agentActive ? t("Agent 正在操作此连接") : t("Agent 正在使用此连接")}
+                    <Dot
+                      tone={!status.connected ? "err" : status.agentActive ? "busy" : "ok"}
+                      title={statusText}
+                    />
+                    <span className="hb-server__label">{connection.name || connection.host}</span>
+                    <span
+                      className="hb-server__terminal"
+                      data-on={status.hasTerminal ? "true" : "false"}
+                      title={status.hasTerminal ? t("本对话的终端运行中") : t("本对话暂无终端")}
+                      aria-hidden="true"
                     >
-                      {t("Agent")}
-                    </Badge>
-                  )}
+                      <Icon name="terminal" size={11} />
+                    </span>
+                    {isAgentTarget && (
+                      <Badge
+                        tone="accent"
+                        title={status.agentActive ? t("Agent 正在操作此连接") : t("Agent 正在使用此连接")}
+                      >
+                        {t("Agent")}
+                      </Badge>
+                    )}
+                  </button>
                   <button
                     type="button"
                     className="hb-server__close"
                     aria-label={t(`关闭此栏的 ${connection.name || connection.host} 标签`)}
                     title={t("关闭此栏标签（只结束本对话的终端；没有别的对话在用这台服务器时才断开）")}
-                    onClick={(event) => { event.stopPropagation(); void closePaneTab(connection.connectionId); }}
+                    onClick={() => { void closePaneTab(connection.connectionId); }}
                   >
                     <Icon name="close-outline" size={12} />
                   </button>
@@ -376,24 +496,7 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
         </div>
       </div>
 
-      <div className="hb-tabs" role="tablist" aria-label={t("工作区视图")}>
-        {tabs.map((tab) => (
-          <button
-            key={tab.value}
-            type="button"
-            role="tab"
-            className="hb-tab"
-            aria-selected={view === tab.value}
-            aria-label={tab.label}
-            title={tab.label}
-            disabled={tab.disabled}
-            onClick={() => setView(tab.value)}
-          >
-            <Icon name={tab.icon} size={14} />
-            <span className="hb-tab__label">{tab.label}</span>
-          </button>
-        ))}
-      </div>
+      <Tabs ariaLabel={t("工作区视图")} value={view} onChange={setView} items={tabs} />
 
       {ui.error !== null && ui.error !== undefined && (
         <div className="hb-banner">
@@ -427,7 +530,7 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
 
       <div className="hb-body">
         <div className="hb-pane" style={{ display: view === "terminal" ? "flex" : "none" }}>
-          <PaneBoundary>
+          <PaneBoundary resetKey={boundaryKey}>
             {paneConnections.length === 0 ? (
               <EmptyState
                 icon="terminal"
@@ -468,7 +571,7 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
         {active !== null && (
           <>
             <div className="hb-pane" style={{ display: view === "monitor" ? "flex" : "none" }}>
-              <PaneBoundary>
+              <PaneBoundary resetKey={boundaryKey}>
                 <MonitorPane
                   api={api}
                   connection={active}
@@ -479,7 +582,7 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
               </PaneBoundary>
             </div>
             <div className="hb-pane" style={{ display: view === "files" ? "flex" : "none" }}>
-              <PaneBoundary>
+              <PaneBoundary resetKey={boundaryKey}>
                 {/* The pane owns per-server state (listing, cwd, selection,
                     editor). Keying it by the connection makes a switch a
                     remount: a response from server A can never land in the
@@ -488,7 +591,9 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
                 <HarborFiles
                   key={active.connectionId}
                   api={api}
+                  connection={active}
                   connectionId={active.connectionId}
+                  active={view === "files"}
                   onCd={cdFromFiles}
                   initialPath={ui.projectTarget?.connectionId === active.connectionId ? ui.projectTarget.path : "/"}
                 />
@@ -496,7 +601,7 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
             </div>
             {features.showTunnels !== false && (
               <div className="hb-pane" style={{ display: view === "tunnels" ? "flex" : "none" }}>
-                <PaneBoundary><TunnelsPane api={api} connectionId={active.connectionId} /></PaneBoundary>
+                <PaneBoundary resetKey={boundaryKey}><TunnelsPane api={api} connectionId={active.connectionId} active={view === "tunnels"} /></PaneBoundary>
               </div>
  )}
           </>
@@ -504,7 +609,7 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
 
         {features.showSnippets !== false && (
           <div className="hb-pane" style={{ display: view === "snippets" ? "flex" : "none" }}>
-            <PaneBoundary>
+            <PaneBoundary resetKey={boundaryKey}>
               <SnippetsView
                 api={api}
                 active={active}
@@ -512,6 +617,7 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
                 profiles={profiles}
                 groups={groups}
                 onFilled={() => setView("terminal")}
+                shown={view === "snippets"}
               />
             </PaneBoundary>
           </div>
@@ -519,7 +625,7 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
 
         {features.showLogs !== false && (
           <div className="hb-pane" style={{ display: view === "logs" ? "flex" : "none" }}>
-            <PaneBoundary><LogsPane api={api} /></PaneBoundary>
+            <PaneBoundary resetKey={boundaryKey}><LogsPane api={api} /></PaneBoundary>
           </div>
  )}
       </div>
@@ -530,7 +636,14 @@ export function HarborPanel({ api, credentials, sessionId, viewId = DEFAULT_VIEW
         sessionId={sessionId}
         open={connectOpen}
         onClose={() => setConnectOpen(false)}
-        onConnected={(connectionId) => openInView(viewId, connectionId)}
+        onConnected={(connectionId) => {
+          openInView(viewId, connectionId);
+          // The dialog just opened a PTY, but this pane renders from the
+          // mirrored connection list, which the five-second poll had not
+          // refreshed yet: the pane showed "no terminal" right after a
+          // successful connect. The claim path above does the same.
+          void refreshConnections(api, sessionId);
+        }}
         onDataChanged={() => { api.profileList().then((value) => setProfiles(value.profiles ?? [])).catch(() => {}); }}
       />
 

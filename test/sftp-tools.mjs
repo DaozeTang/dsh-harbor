@@ -131,15 +131,8 @@ function makeService(tree) {
   const missing = await service.sftpRename({ from: "/tmp/ghost", to: "/tmp/x" });
   assert.equal(missing.ok, false);
   assert.equal(missing.error.code, "sftp-rename-failed");
-
-  // A rename onto an existing name must not replace it: POSIX rename(2) is
-  // allowed to overwrite, which silently destroyed the target.
-  const clashTree = { "/tmp/a": { mode: FILE_MODE, size: 3 }, "/tmp/b": { mode: FILE_MODE, size: 9 } };
-  const clashService = makeService(clashTree);
-  const clash = await clashService.sftpRename({ from: "/tmp/a", to: "/tmp/b" });
-  assert.equal(clash.ok, false);
-  assert.equal(clash.error.code, "target-exists");
-  assert.deepEqual(Object.keys(clashTree).sort(), ["/tmp/a", "/tmp/b"], "the destination keeps its content");
+  // The overwrite refusal (and its case-only rename exception) lives in
+  // test/p1-regressions.mjs; keeping a second copy here only risked drift.
 }
 
 // ── connection resolution errors surface as no-connection ──

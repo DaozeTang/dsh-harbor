@@ -11,6 +11,8 @@ import {
   runTransferTasks,
   joinRemotePath,
   splitRemotePath,
+  planCaseSafeDownloads,
+  CASE_INSENSITIVE_LOCAL_FS,
   SFTP_DIR_SMALL_CONCURRENCY
 } from "../src/host/sftp-dir.js";
 import HarborService from "../src/index.js";
@@ -23,6 +25,35 @@ test("joinRemotePath and splitRemotePath handle root and nested paths", () => {
   assert.equal(joinRemotePath("/var/log/", "app"), "/var/log/app");
   assert.deepEqual(splitRemotePath("/var/log"), { parent: "/var", name: "log" });
   assert.deepEqual(splitRemotePath("/etc"), { parent: "/", name: "etc" });
+  // An empty base is not "the root": it used to re-root a whole upload at /.
+  assert.throws(() => joinRemotePath("", "a.txt"), /remote path must not be empty/);
+  assert.throws(() => joinRemotePath("   ", "a.txt"), /remote path must not be empty/);
+  assert.throws(() => joinRemotePath(undefined, "a.txt"), /remote path must not be empty/);
+});
+
+test("planCaseSafeDownloads refuses the second of two names that differ only in case", () => {
+  const entries = [
+    { rel: ".", isDirectory: true },
+    { rel: "A.txt", isDirectory: false },
+    { rel: "a.txt", isDirectory: false },
+    { rel: "B.txt", isDirectory: false },
+    { rel: "link", isDirectory: false, symlink: true },
+    { rel: "Sub/Deep.txt", isDirectory: false },
+    { rel: "sub/deep.txt", isDirectory: false }
+  ];
+  const folded = planCaseSafeDownloads(entries, { caseInsensitive: true });
+  assert.deepEqual(folded.directories.map((entry) => entry.rel), ["."], "directories pass through untouched");
+  assert.deepEqual(folded.files.map((entry) => entry.rel), ["A.txt", "B.txt", "Sub/Deep.txt"],
+    "the FIRST spelling wins; a later one would silently overwrite its file");
+  assert.deepEqual(folded.blocked.map((entry) => entry.path), ["a.txt", "sub/deep.txt"]);
+  assert.match(folded.blocked[0].error, /case/);
+  assert.match(folded.blocked[0].error, /A\.txt/, "the report names the file it collides with");
+
+  const exact = planCaseSafeDownloads(entries, { caseInsensitive: false });
+  assert.deepEqual(exact.files.map((entry) => entry.rel), ["A.txt", "a.txt", "B.txt", "Sub/Deep.txt", "sub/deep.txt"],
+    "a case-sensitive filesystem keeps both files");
+  assert.deepEqual(exact.blocked, []);
+  assert.equal(CASE_INSENSITIVE_LOCAL_FS, process.platform === "darwin" || process.platform === "win32");
 });
 
 test("runTransferTasks bounds small-file concurrency and keeps big files exclusive", async () => {
@@ -259,6 +290,91 @@ test("sftpDownloadDir recreates the tree locally", async () => {
     assert.equal(result.value.failed.length, 0);
     assert.equal(await readFile(join(localRoot, "out", "one.txt"), "utf8"), "first");
     assert.equal(await readFile(join(localRoot, "out", "nested", "two.txt"), "utf8"), "second");
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("a download the server cut short is reported, not counted as a finished file", async () => {
+  const localRoot = await mkdtemp(join(tmpdir(), "dsh-down-short-"));
+  try {
+    const fakeSftp = makeFakeSftp();
+    fakeSftp.dirs.add("/data");
+    fakeSftp.files.set("/data/ok.txt", Buffer.from("intact"));
+    fakeSftp.files.set("/data/short.txt", Buffer.from("0123456789"));
+    // The walk lists 10 bytes; the channel then delivers 4 and ends without an
+    // error, which is exactly what a transfer killed mid-stream looks like:
+    // the commit rename succeeds and the file looks finished.
+    const realCreateReadStream = fakeSftp.createReadStream;
+    fakeSftp.createReadStream = (remotePath) => (remotePath === "/data/short.txt"
+      ? Readable.from([Buffer.from("0123")])
+      : realCreateReadStream(remotePath));
+    const service = makeService(fakeSftp);
+
+    const result = await service.sftpDownloadDir({ connectionId: "c1", remotePath: "/data", localPath: join(localRoot, "out") });
+    assert.equal(result.ok, true, result.error?.message);
+    assert.equal(result.value.files, 1, "only the intact file counts as downloaded");
+    assert.equal(result.value.failed.length, 1);
+    assert.equal(result.value.failed[0].path, "short.txt");
+    assert.match(result.value.failed[0].error, /incomplete download/);
+    assert.equal(await readFile(join(localRoot, "out", "ok.txt"), "utf8"), "intact");
+    // The short bytes are not left behind as if they were the real file.
+    await assert.rejects(readFile(join(localRoot, "out", "short.txt")), /ENOENT/);
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("a POSIX filename containing a backslash keeps its name on the way up", async () => {
+  // Only Windows uses \ as a separator. The upload walker translated it
+  // unconditionally, so a local `a\\b.txt` became `/dest/a/b.txt` and a
+  // directory `a` appeared on the server: silent relocation, and asymmetric
+  // too, because assertSafeEntryName refuses a backslash on the way back down.
+  const localRoot = await mkdtemp(join(tmpdir(), "dsh-up-slash-"));
+  try {
+    const name = "a\\b.txt";
+    await writeFile(join(localRoot, name), "backslash");
+    const fakeSftp = makeFakeSftp();
+    fakeSftp.dirs.add("/dest");
+    const service = makeService(fakeSftp);
+
+    const result = await service.sftpUploadDir({ connectionId: "c1", localPath: localRoot, remotePath: "/dest" });
+    assert.equal(result.ok, true, result.error?.message);
+    assert.equal(result.value.files, 1);
+    assert.equal(result.value.failed.length, 0);
+    if (process.platform === "win32") {
+      assert.ok(fakeSftp.files.has("/dest/a/b.txt"), "a Windows host still translates its separator");
+    } else {
+      assert.ok(fakeSftp.files.has(`/dest/${name}`), "the name is uploaded verbatim: " + JSON.stringify([...fakeSftp.files.keys()]));
+      assert.equal(fakeSftp.files.get(`/dest/${name}`).toString(), "backslash");
+    }
+    assert.equal([...fakeSftp.dirs].some((dir) => dir === "/dest/a"), false, "no directory is invented from the file name");
+  } finally {
+    await rm(localRoot, { recursive: true, force: true });
+  }
+});
+
+test("a download never maps two remote names onto one local file", async () => {
+  const localRoot = await mkdtemp(join(tmpdir(), "dsh-down-case-"));
+  try {
+    const fakeSftp = makeFakeSftp();
+    fakeSftp.dirs.add("/data");
+    fakeSftp.files.set("/data/A.txt", Buffer.from("upper"));
+    fakeSftp.files.set("/data/a.txt", Buffer.from("lower"));
+    const service = makeService(fakeSftp);
+
+    const result = await service.sftpDownloadDir({ connectionId: "c1", remotePath: "/data", localPath: join(localRoot, "out") });
+    assert.equal(result.ok, true, result.error?.message);
+    if (CASE_INSENSITIVE_LOCAL_FS) {
+      assert.equal(result.value.files, 1, "one file, because one local file was written");
+      assert.equal(result.value.failed.length, 1, "the loss is reported instead of hidden behind a count");
+      assert.equal(result.value.failed[0].path, "a.txt");
+      assert.match(result.value.failed[0].error, /case/);
+      assert.equal(await readFile(join(localRoot, "out", "A.txt"), "utf8"), "upper");
+    } else {
+      assert.equal(result.value.files, 2, "a case-sensitive filesystem holds both");
+      assert.equal(result.value.failed.length, 0);
+    }
   } finally {
     await rm(localRoot, { recursive: true, force: true });
   }

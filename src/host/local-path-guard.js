@@ -15,7 +15,7 @@
  * Pure path math plus a realpath-based canonicalizer, so the decision cannot
  * be fooled by a symlink inside the workspace that points elsewhere.
  */
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 /**
@@ -61,8 +61,19 @@ export function isLocalPathInside(root, candidate) {
  * a symlink *inside* the workspace that points outside visible to the check,
  * while still allowing a download destination that has not been created yet.
  *
+ * "Does not exist yet" and "exists but cannot be resolved" are different
+ * answers, and only the first one may be walked past. A dangling symlink and a
+ * symlink loop both make realpath fail, and treating that failure as a missing
+ * component re-appended the unresolved name to a directory that IS inside the
+ * root — so `downloads/vendor -> /outside/newdir` was judged inside. The entry
+ * is therefore looked at directly when realpath says ENOENT: if it exists, the
+ * path is an unresolved link, and every other error (ELOOP, ENOTDIR, EACCES)
+ * means the path cannot be resolved at all. Guessing in either case is what
+ * made this guard, not the filesystem, the thing that said "inside".
+ *
  * @param {string} input - absolute local path.
  * @returns {Promise<string>} canonical absolute path.
+ * @throws when a component exists but cannot be resolved through.
  */
 export async function canonicalizeLocalPath(input) {
   const absolute = resolve(String(input));
@@ -73,6 +84,17 @@ export async function canonicalizeLocalPath(input) {
       const real = await realpath(probe);
       return suffix.length === 0 ? real : resolve(real, ...suffix.reverse());
     } catch (error) {
+      // Only a genuinely missing component is the supported case.
+      if (error?.code !== "ENOENT") {
+        throw new Error(`${probe} cannot be resolved (${error?.code ?? error?.message ?? String(error)})`);
+      }
+      // realpath reports ENOENT for a dangling link too. The entry itself
+      // exists, so this is an unresolved symbolic link, never a destination
+      // that has yet to be created.
+      const entry = await lstat(probe).catch(() => null);
+      if (entry !== null && entry.isSymbolicLink()) {
+        throw new Error(`${probe} is a symbolic link that does not resolve to an existing target`);
+      }
       const parent = dirname(probe);
       if (parent === probe) throw error;
       suffix.push(basename(probe));

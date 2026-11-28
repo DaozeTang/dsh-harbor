@@ -2,46 +2,21 @@
 // server, drive it with the same ssh2 client the plugin uses, and prove the
 // sandbox both serves files and refuses to escape its root.
 import assert from "node:assert/strict";
-import net from "node:net";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Client } from "ssh2";
+import { startTestSshd } from "./support/start-test-sshd.mjs";
 import { uploadPipeline } from "../src/host/sftp-pipeline.js";
 import { saveEditorFile } from "../src/host/sftp-editor-save.js";
 const { default: HarborService } = await import(process.env.DSH_TEST_BUILT_HOST ? "../lib/index.js" : "../src/index.js");
 import { TransferTasks } from "../src/host/transfer-tasks.js";
 
-const freePort = () => new Promise((resolve) => {
-  const probe = net.createServer();
-  probe.listen(0, "127.0.0.1", () => {
-    const { port } = probe.address();
-    probe.close(() => resolve(port));
-  });
-});
-
-const port = await freePort();
 const root = mkdtempSync(join(tmpdir(), "dsh-sshd-sftp-test-"));
 writeFileSync(join(root, "seed.txt"), "seeded\n");
-
-const child = spawn(process.execPath, [
-  // fileURLToPath: `new URL(...).pathname` on Windows is "/D:/…" and the
-  // child exits instantly with code 1 (same URL-pathname class as PR #28).
-  fileURLToPath(new URL("./support/test-sshd.mjs", import.meta.url)),
-  String(port), "--sftp-root", root
-], { stdio: ["ignore", "pipe", "pipe"] });
-
-const ready = new Promise((resolve, reject) => {
-  const timer = setTimeout(() => reject(new Error("test-sshd did not start in time")), 10000);
-  child.stdout.on("data", (chunk) => {
-    if (String(chunk).includes("listening on")) { clearTimeout(timer); resolve(); }
-  });
-  child.on("exit", (code) => { clearTimeout(timer); reject(new Error(`test-sshd exited early (${code})`)); });
-});
+const { port, child, ready } = await startTestSshd(["--sftp-root", root]);
 
 const call = (target, method, ...args) => new Promise((resolve, reject) => {
   target[method](...args, (error, value) => (error ? reject(error) : resolve(value)));

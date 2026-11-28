@@ -156,6 +156,24 @@ const execFor = (overrides = {}) => ({
   assert.match(asked.reason, /rm -rf \/tmp\/x/);
 }
 {
+  // terminal_send types into a live PTY: there is no rewrite point, so the
+  // approval copy must not promise the trash move that ssh_exec performs.
+  let asked = null;
+  const { service, sshGate } = makeHarness({ approval: { request: async (request) => { asked = request; return "rejected"; } } });
+  service.bindingForTerminal = (id) => id === "pty-1"
+    ? { connectionId: "conn1", session: { inputLine: "", inputKnown: true } }
+    : undefined;
+  const result = await sshGate(execFor({
+    name: "terminal_send",
+    callId: "call-terminal-copy",
+    arguments: { sessionId: "pty-1", text: "rm -rf /tmp/x", submit: true }
+  }), next);
+  assert.equal(result.kind, "deny");
+  assert.match(asked.reason, /rm -rf \/tmp\/x/);
+  assert.doesNotMatch(asked.reason, /移入回收站的可逆操作/, "the terminal path is not a trash move");
+  assert.match(asked.reason, /原样执行/, "the operator is told the command runs as typed");
+}
+{
   let asked = 0;
   const { service, sshGate } = makeHarness({ approval: { request: async () => { asked += 1; return "allowed-once"; } } });
   service.bindingForTerminal = (id) => id === "pty-1"

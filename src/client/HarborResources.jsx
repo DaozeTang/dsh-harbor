@@ -19,7 +19,7 @@ import {
 import { installSurfaceStyles } from "./ui/styles.js";
 import SETTINGS_CSS from "./features/settings/settings.css";
 import {
-  harborUiRequestSurface, harborUiSetConnections, harborUiSetError, harborUiSetFeatures, harborUiSetProjectTarget
+  harborUiRequestSurface, harborUiSetError, harborUiSetFeatures, harborUiSetProjectTarget
 } from "./store.js";
 import { requestPaneOpen } from "./pane-selection.js";
 import { privateKeyProblem } from "./pemkey.js";
@@ -122,7 +122,7 @@ function readLegacyProfiles() {
 }
 
 /** Migrate only non-secret coordinates from older browser-local profiles. */
-export async function migrateLegacyProfiles(api) {
+async function migrateLegacyProfiles(api) {
   const legacy = readLegacyProfiles().filter((p) => String(p.host ?? "").trim() !== "");
   if (legacy.length === 0) return false;
   const remaining = [];
@@ -1004,6 +1004,7 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
   // Execution policy (AI high-risk command gate): null = loading; the segment
   // and checklist stay disabled until the host answers.
   const [execPolicy, setExecPolicy] = useState(null);
+  const [policyLoadFailed, setPolicyLoadFailed] = useState(false);
   const [execPolicyAllow, setExecPolicyAllow] = useState([]);
   const [exactRules, setExactRules] = useState([]);
   const [ruleDraft, setRuleDraft] = useState("");
@@ -1056,6 +1057,7 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
             harborUiSetFeatures(settings.features);
           }
           setAgentAutoConnect(settings.agentAutoConnect === true);
+          setPolicyLoadFailed(false);
           setExecPolicy(settings.execPolicy ?? "standard");
           setExecPolicyAllow(settings.execPolicyAllow ?? []);
           setExactRules(settings.execPolicyExact ?? []);
@@ -1066,7 +1068,10 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
       } catch {
         if (alive) {
           setAgentAutoConnect(false);
-          setExecPolicy("standard");
+          // Do not invent "standard": a failed read is not the same as a host
+          // that really runs the standard gate, and choosing a tier from a
+          // fake baseline could loosen or tighten the wrong thing.
+          setPolicyLoadFailed(true);
         }
       }
       if (alive) await refresh();
@@ -1253,12 +1258,19 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
         await api.changeDirectory(session.sessionId, profile.defaultProjectPath);
         harborUiSetProjectTarget(connection.connectionId, profile.defaultProjectPath);
       }
-      const listed = await api.list();
-      harborUiSetConnections(listed.connections);
       // This page owns no pane, so queue the connection for one to pick up and
       // ask the host to reveal the terminal. Without both halves a connect here
       // opened nothing and the new server never appeared in the panel.
       requestPaneOpen(connection.connectionId, { adopt: true });
+      // The row's 已连接 badge (and its 断开 control) comes from the 5 s status
+      // poll, so right after a successful connect the row still said
+      // disconnected and its 连接 button was live — profileConnect does not
+      // reuse by default, so a second click opened a second SSH connection.
+      setConnectedProfiles((current) => {
+        const next = new Set(current ?? []);
+        next.add(profile.profileId);
+        return next;
+      });
       // A successful connect must clear any stale panel error (e.g. an earlier
       // host-key mismatch) so the error bar doesn't linger after recovery.
       harborUiSetError(null);
@@ -1435,11 +1447,15 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
     profile: { profileId: undefined, name: known.host, host: known.host, port: known.port, username: "root", authKind: "password", hostKeyMode: "accept-new" }
   });
 
-  const policyHint = execPolicy === "custom"
-    ? t("放行勾选的类别及精确匹配的命令")
-    : execPolicy === "allowAll"
-      ? t("AI 可直接执行任何命令，含不可逆删除（不进回收站）")
-      : t("破坏性命令一律拦截，由操作者在会话内审批后才执行");
+  const policyHint = policyLoadFailed
+    ? t("执行策略不可用，请刷新页面后重试")
+    : execPolicy === null
+      ? t("正在读取执行策略…")
+      : execPolicy === "custom"
+        ? t("放行勾选的类别及精确匹配的命令")
+        : execPolicy === "allowAll"
+          ? t("AI 可直接执行任何命令，含不可逆删除（不进回收站）")
+          : t("破坏性命令一律拦截，由操作者在会话内审批后才执行");
 
   return (
     <div className="hb hb-page hb-settings">
@@ -1667,12 +1683,21 @@ export function HarborResources({ api, credentials, pluginManager, openPluginMan
           }
         />
         <hr className="hb-hr" />
+        {policyLoadFailed && (
+          <ErrorNote>
+            {t("无法读取当前的 AI 执行策略，下面的选项不代表宿主真实设置；请刷新页面后重试。")}
+          </ErrorNote>
+        )}
         <Field label={t("执行策略")}>
           <SegmentedControl
-            value={execPolicy ?? "standard"}
+            value={execPolicy ?? ""}
             onChange={chooseExecPolicy}
             label={t("AI 命令执行策略")}
-            items={["standard", "custom", "allowAll"].map((tier) => ({ value: tier, label: execPolicyLabel(tier) }))}
+            items={Object.keys(TIER_ORDER).map((tier) => ({
+              value: tier,
+              label: execPolicyLabel(tier),
+              disabled: execPolicy === null
+            }))}
           />
         </Field>
         <div className="hb-quiet">{policyHint}</div>

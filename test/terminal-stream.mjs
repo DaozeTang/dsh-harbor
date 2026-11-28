@@ -3,6 +3,7 @@
 // isolation. Uses the prototype stub — no ssh2 transport.
 import assert from "node:assert/strict";
 import HarborService from "../src/index.js";
+import { createTerminalOutput } from "../src/host/terminal-output.js";
 
 function makeService(heartbeatMs = 40) {
   const service = Object.create(HarborService.prototype);
@@ -17,7 +18,6 @@ function attachSession(service, sessionId) {
   const session = {
     id: sessionId,
     connectionId: "c1",
-    buffer: "",
     waiters: [],
     streamListeners: new Set(),
     exited: null,
@@ -51,7 +51,7 @@ function decodeItem(item) {
 {
   const service = makeService();
   const session = attachSession(service, "s1");
-  session.buffer = "MOTD\r\n"; // arrived before the client subscribed
+  service.terminalOutput(session).append("MOTD\r\n"); // arrived before the client subscribed
 
   const gen = service.terminalStream({ sessionId: "s1" });
   const first = await gen.next();
@@ -119,7 +119,10 @@ function decodeItem(item) {
   const pending = gen.next();
   await new Promise((resolve) => setTimeout(resolve, 5));
   service.appendSessionOutput(session, "lost-without-handback\r\n");
-  assert.equal(session.buffer, "lost-without-handback\r\n", "legacy poll buffer remains independent");
+  // A cursorless poll reader still gets the bytes — and only once, the way the
+  // destructive buffer behaved before the journal became the only copy.
+  assert.equal(service.readWithoutCursor(session), "lost-without-handback\r\n", "a poll reader without a cursor sees new output");
+  assert.equal(service.readWithoutCursor(session), "", "the poll cursor advances");
   controller.abort();
   await pending;
 
@@ -130,7 +133,7 @@ function decodeItem(item) {
   const next = service.terminalStream({ sessionId: "s1" });
   const first = await next.next();
   assert.deepEqual(decodeItem(first.value), { data: "lost-without-handback\r\n", exit: null });
-  assert.equal(session.buffer, "lost-without-handback\r\n", "stream attach does not consume the legacy poll buffer");
+  assert.equal(service.readWithoutCursor(session), "", "attaching a stream does not duplicate output into the poll path");
   await next.return();
 }
 
@@ -169,6 +172,38 @@ function decodeItem(item) {
   assert.equal(decodeItem(b.value).data, "broadcast", "listeners are independent, not competing like waiters");
   await genA.return();
   await genB.return();
+}
+
+// ── cursor polling reads the same journal and wakes every reader ──
+// The panel falls back from the stream to read(after) when a stream cannot be
+// opened; two panes polling must not compete for one destructive buffer.
+{
+  const service = makeService(20);
+  const session = attachSession(service, "s1");
+  const offset = service.terminalOutput(session).read().offset;
+  const pollA = service.read({ sessionId: "s1", timeoutMs: 100, after: offset });
+  const pollB = service.read({ sessionId: "s1", timeoutMs: 100, after: offset });
+  service.appendSessionOutput(session, "poll-once\r\n");
+  const [resultA, resultB] = await Promise.all([pollA, pollB]);
+  assert.equal(Buffer.from(resultA.value.data, "base64").toString(), "poll-once\r\n");
+  assert.deepEqual(resultA, resultB, "cursor poll readers do not compete");
+}
+
+// ── the journal truncates on a UTF-8 boundary, never mid-character ──
+{
+  const journal = createTerminalOutput("", 5);
+  journal.append("😀😀A");
+  assert.deepEqual(journal.read(0), { data: "😀A", startOffset: 2, offset: 5 });
+}
+
+// ── a long stream stays exactly within the byte budget ──
+{
+  const journal = createTerminalOutput("", 1024 * 1024);
+  for (let index = 0; index < 2000; index += 1) journal.append("x".repeat(1024));
+  const page = journal.read();
+  assert.equal(page.data.length, 1024 * 1024, "the retained text is exactly the cap");
+  assert.equal(Buffer.byteLength(page.data, "utf8"), 1024 * 1024);
+  assert.equal(page.offset, 2000 * 1024, "the total offset still counts every appended character");
 }
 
 console.log("terminal stream: handover, push, heartbeat, exit, abort, multi-listener: all cases passed");

@@ -246,7 +246,11 @@ export const withResources = (Base) => class extends Base {
         return { ok: false, error: fail("no-profile", `SSH resource "${profileId}" does not exist`) };
       }
       const now = new Date().toISOString();
-      const groupId = request.groupId ?? null;
+      // Omitted means "keep the previous group": a partial update (a
+      // script, an older panel) must not silently ungroup the server.
+      const groupId = Object.hasOwn(request, "groupId")
+        ? (request.groupId ?? null)
+        : (previous?.groupId ?? null);
       if (groupId !== null && this.requireGroupTable().get(groupId) === undefined) {
         return { ok: false, error: fail("no-group", `SSH group "${groupId}" does not exist`) };
       }
@@ -282,8 +286,11 @@ export const withResources = (Base) => class extends Base {
         port: request.port ?? 22,
         username: request.username.trim(),
         authKind: request.authKind,
-        hostKeyMode: request.hostKeyMode ?? DEFAULT_HOST_KEY_MODE,
-        agentForward: request.agentForward === true,
+        // An omitted field preserves what the record already says; only an
+        // explicit value changes it. Falling back to the literal default here
+        // would rewrite a pinned `verify` policy to TOFU on any partial save.
+        hostKeyMode: request.hostKeyMode ?? previous?.hostKeyMode ?? DEFAULT_HOST_KEY_MODE,
+        agentForward: Object.hasOwn(request, "agentForward") ? request.agentForward === true : previous?.agentForward === true,
         // An explicit null detaches a shared credential and restores the
         // server's legacy dedicated credential slot; only an omitted field
         // preserves old records for backwards-compatible callers.
@@ -419,6 +426,9 @@ export const withResources = (Base) => class extends Base {
         readyTimeout: request.readyTimeout,
         retries: request.retries,
         auth: targetAuth,
+        // Bind the new connection to the conversation that asked for it, not
+        // the process-global compatibility pointer.
+ ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
  ...(proxyJump.length > 0 ? { proxyJump } : {})
       }, request.profileId, { activate: request.activate !== false });
     } catch (error) {

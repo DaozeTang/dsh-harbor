@@ -5,23 +5,22 @@
  * ...) so the main conversation can drive the same sessions the panel shows.
  *
  * The service body is composed from src/host/service/*; this entry keeps the
- * constructor and the session wiring that the service crosses with
- * recording/shell integration, and delegates the ssh2 CommonJS interop to
+ * constructor and the session wiring the service crosses with terminal I/O,
+ * recording and the panel bridge, and delegates the ssh2 CommonJS interop to
  * host/ssh2-client.js.
  */
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { fail } from "./host/envelope.js";
 import { noConnectionGuidance } from "./host/agent-connect.js";
-import { ShellIntegrationTracker, SHELL_FAMILY_PROBE, parseShellFamilyProbe, shellIntegrationCommand } from "./host/shell-integration.js";
-import { buildCwdAwareCommand, posixLoginShell } from "./host/exec-cwd.js";
+import { posixLoginShell } from "./host/exec-cwd.js";
 import { t } from "./i18n/core.js";
 import { HarborServiceCore } from "./host/service/index.js";
 import { MAX_BUFFER_BYTES, MAX_COMMAND_OUTPUT_BYTES, MAX_SESSIONS, MAX_SESSIONS_PER_CONNECTION, OPERATOR_APPROVAL_TIMEOUT_MS, READ_TIMEOUT_MS, STREAM_HEARTBEAT_MS, TTY_PROBE_MS, TTY_PROBE_RETRY_DELAYS_MS } from "./host/service/constants.js";
 import { streamRouteDescriptor } from "./host/service/stream-routes.js";
 import { anonymousSessions, indexOwner, normalizeOwner, ownerKey, ownerSessionIds, pickOwnerSession, unindexOwner } from "./host/terminal-owner.js";
 import { buildCensusScript, isPtyPath, parseCensus, pickNewTty } from "./host/terminal-census.js";
-import { promptFromTerminalData, tailCapped } from "./host/service/text.js";
+import { promptFromTerminalData } from "./host/service/text.js";
 import { markSourceRemote } from "./host/service/source-remote.js";
 import { createSsh2Client } from "./host/ssh2-client.js";
 import { publishHarborService, retractHarborService } from "./shared/service-hub.js";
@@ -78,6 +77,7 @@ export default class HarborService extends HarborServiceCore {
       this.connections.clear();
       this.sessions.clear();
       this.exitedSessions.clear();
+      this._terminalBindings?.clear();
       for (const voucher of this.operatorApprovals.values()) {
         if (voucher.timer !== undefined) clearTimeout(voucher.timer);
       }
@@ -205,12 +205,9 @@ export default class HarborService extends HarborServiceCore {
       openedBy: request.openedBy ?? "panel",
       cols,
       rows,
-      buffer: "",
       lastPrompt: null,
       waiters: [],
       streamListeners: new Set(),
-      // OSC 133 markers, when the shell emits them (enableShellIntegration).
-      shellIntegration: new ShellIntegrationTracker(),
       exited: null,
       stream: null,
       // The PTY receives keystrokes one at a time. Track the current command
@@ -245,6 +242,18 @@ export default class HarborService extends HarborServiceCore {
         if (loginCommand) conn.client.exec(loginCommand, { pty: { term: "xterm-256color", cols, rows } }, opened);
         else conn.client.shell({ term: "xterm-256color", cols, rows }, opened);
       });
+      // The panel (or a transport loss) can close this terminal while its
+      // channel is still opening: the record is published in `sessions` BEFORE
+      // the await above, so closeSession() finds it, deletes it, and sees
+      // `stream === null` — nothing to end. The channel that arrives afterwards
+      // used to be adopted by a record nobody tracks any more: no close path
+      // reached it and it held one of sshd's MaxSessions slots until the
+      // transport died. Give it back instead of adopting it.
+      if (this.sessions.get(sessionId) !== session || session.exited !== null) {
+        try { stream.end(); } catch {}
+        try { stream.close?.(); } catch {}
+        return { ok: false, error: fail("session-closed", `terminal "${sessionId}" was closed while its shell was opening`) };
+      }
       session.stream = stream;
       // ssh2 splits the byte stream wherever a packet ends, so a multi-byte
       // character can straddle two chunks. Decoding each chunk on its own
@@ -293,18 +302,15 @@ export default class HarborService extends HarborServiceCore {
       // Fire-and-forget, but never an unhandled rejection: a probe failure must
       // not surface as a process-level error on a host without /proc.
       void this.learnSessionTty(conn, session).catch(() => {});
-      {
-        const conn = this.connections.get(request.connectionId);
-        // Recording starts with the session's FIRST output, not with the
-        // session: a shell that produces nothing (an accidental tab, a probe)
-        // must not leave an empty log behind.
-        session.logMeta = {
-          sessionId, connectionId: request.connectionId,
-          name: conn?.name ?? null, host: conn?.connectConfig?.host ?? conn?.username ?? null,
-          port: conn?.connectConfig?.port ?? null, openedBy: session.openedBy,
-          startedAt: session.openedAt
-        };
-      }
+      // Recording starts with the session's FIRST output, not with the
+      // session: a shell that produces nothing (an accidental tab, a probe)
+      // must not leave an empty log behind.
+      session.logMeta = {
+        sessionId, connectionId: request.connectionId,
+        name: conn?.name ?? null, host: conn?.connectConfig?.host ?? conn?.username ?? null,
+        port: conn?.connectConfig?.port ?? null, openedBy: session.openedBy,
+        startedAt: session.openedAt
+      };
     } catch (error) {
       this.sessions.delete(sessionId);
       conn.sessions.delete(sessionId);
@@ -501,6 +507,7 @@ export default class HarborService extends HarborServiceCore {
           this.recordExit(session, { code: 0, reason: "session-closed" });
           try { session.stream.end(); } catch {}
         }
+        this.detachBindingForSession?.(session);
         this.sessions.delete(sessionId);
         unindexOwner(conn, sessionId, owner);
         conn.sessions?.delete(sessionId);
@@ -511,52 +518,7 @@ export default class HarborService extends HarborServiceCore {
     return { ok: true, value: { closed } };
   }
 
-  async enableShellIntegration(request) {
-    const session = this.sessions.get(request.sessionId);
-    const conn = session && this.connections.get(session.connectionId);
-    const ready = () => session && conn && this.sessions.get(request.sessionId) === session
-      && !conn.dead && !conn.closing && session.exited === null && session.stream
-      && session.inputKnown === true && session.inputLine === ""
-      && this.cwdProbeReady(conn, session);
-    if (!ready()) return { ok: false, error: fail("terminal-not-ready", t("请先结束前台程序、清空未提交输入，并确认该终端的可定位状态")) };
-    try {
-      if (!posixLoginShell(await this.resolveLoginShell(conn))) {
-        return { ok: false, error: fail("unsupported-shell", t("无法确认此 shell 的空闲状态，请在终端手动启用")) };
-      }
-      const client = conn.client;
-      const probe = await this.collectExecOutput(client, buildCwdAwareCommand(":", { tty: session.tty ?? null }), 5000);
-      if (probe.exitCode !== 0) {
-        return { ok: false, error: fail("terminal-busy", t("未确认空闲交互 shell，请结束前台程序后重试")) };
-      }
-      if (!ready() || client !== conn.client) {
-        return { ok: false, error: fail("terminal-changed", t("终端状态已变化，请重试")) };
-      }
-      // Which flavour of snippet fits is the shell's own answer: a single line
-      // is parsed whole, so handing zsh syntax to sh (or the reverse) would
-      // abort it silently on a pipe.
-      const family = await this.collectExecOutput(client, buildCwdAwareCommand(SHELL_FAMILY_PROBE, { tty: session.tty ?? null }), 5000)
- .then((result) => (result.exitCode === 0 ? parseShellFamilyProbe(result.stdout) : ""))
- .catch(() => "");
-      if (!this.writeTerminalSession(session, `${shellIntegrationCommand(family)}\r`)) {
-        return { ok: false, error: fail("write-failed", t("终端已停止写入")) };
-      }
-      return { ok: true, value: { sessionId: session.id, enabled: true } };
-    } catch (error) {
-      return { ok: false, error: fail("shell-integration-failed", error.message) };
-    }
-  }
-
-  readTerminalContext(request) {
-    const session = this.sessions.get(request.sessionId);
-    if (!session) return { ok: false, error: fail("no-session", `session "${request.sessionId}" does not exist`) };
-    const maxBytes = request.maxBytes ?? 24 * 1024;
-    const history = this.terminalContextHistory(session);
-    const relativeAfter = request.after === undefined ? undefined : request.after - history.start;
-    const window = history.journal.readWindow(relativeAfter, maxBytes);
-    return { ok: true, value: { sessionId: session.id, ...window, historyStart: history.start, historyEnd: history.end, offset: history.start + window.offset, nextOffset: history.start + window.nextOffset, alive: session.exited === null && session.stream !== null, exit: session.exited, redacted: history.redacted, shell: session.shellIntegration?.snapshot() ?? null } };
-  }
-
-  /** Append transport data to the journal and the poll buffer. */
+  /** Append transport data to the session's output journal. */
   appendSessionOutput(session, text, { observePrompt = true } = {}) {
     this.terminalOutput(session).append(text);
     // Recording must never influence the session: a broken log is swallowed.
@@ -567,9 +529,6 @@ export default class HarborService extends HarborServiceCore {
         store.append(session.id, text);
       }
     } catch { /* keep the session alive */ }
-    try { session.shellIntegration?.feed(text); } catch { /* tracking is decoration */ }
-    // Legacy poll readers retain their independent destructive buffer.
-    session.buffer = tailCapped((session.buffer ?? "") + text, this.config.maxBufferBytes);
     if (observePrompt) {
       const prompt = promptFromTerminalData(text);
       if (prompt !== null) session.lastPrompt = prompt;
@@ -581,6 +540,9 @@ export default class HarborService extends HarborServiceCore {
   recordExit(session, exit) {
     if (session.exited !== null) return;
     session.exited = exit;
+    // The PTY is gone: release its registry wrapper (and the journal it pins)
+    // even when the exit came from a transport loss rather than SshTerminalSession.close().
+    this.detachBindingForSession?.(session);
     if (exit?.reason) this.log(`SSH terminal ended: connection=${session.connectionId}, session=${session.id}, reason=${exit.reason}, code=${exit.code}`);
     try {
       const store = this.sessionLogStore();

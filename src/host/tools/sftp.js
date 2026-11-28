@@ -206,7 +206,7 @@ export function registerSftpTools(ctx, service) {
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
       path: { type: "string", required: true, description: "Remote file path. A relative path resolves under the remote workspace root." },
-      max_bytes: { type: "integer", description: "Maximum bytes to read, defaults to 4 MiB." }
+      max_bytes: { type: "integer", description: "Maximum bytes to read, defaults to 4 MiB (capped at 4 MiB)." }
     },
     output: {
       schema: {
@@ -222,7 +222,9 @@ export function registerSftpTools(ctx, service) {
       render(args, value) {
         const body = value.data || "(empty file)";
         const returnedBytes = Buffer.from(value.data || "", "base64").length;
-        return [{ type: "text", text: value.truncated ? `${body}\n[output truncated after ${returnedBytes} of ${value.bytes} bytes]` : body }];
+        // `bytes` is how much content was returned, not the file size: a
+        // truncated read cannot know the real size without a second round trip.
+        return [{ type: "text", text: value.truncated ? `${body}\n[output truncated: the first ${returnedBytes} bytes of a larger file]` : body }];
       }
     },
     async execute(args, exec) {
@@ -256,7 +258,7 @@ export function registerSftpTools(ctx, service) {
     },
     async execute(args, exec) {
       const target = await resolveTarget(exec, args.connection_id, args.path);
-      const result = await service.sftpWriteFile({ connectionId: target.connectionId, path: target.path, data: Buffer.from(args.content, "utf8").toString("base64") });
+      const result = await service.sftpWriteFile({ connectionId: target.connectionId, path: target.path, data: Buffer.from(args.content, "utf8").toString("base64"), signal: exec?.signal });
       if (!result.ok) throw new Error(`sftp_write failed: ${result.error.message}`);
       return result.value;
     }
@@ -393,7 +395,7 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_upload_dir",
-    description: "Upload a local directory tree to a remote server over SFTP, creating the remote directory structure. Small files transfer in parallel (bounded), large files one at a time for full link throughput. Per-file failures are reported, not fatal. Omit connection_id for the current server. A local source outside this conversation's workspace requires operator approval.",
+    description: "Upload a local directory tree to a remote server over SFTP, creating the remote directory structure. Small files transfer in parallel (bounded), large files one at a time for full link throughput. Per-file failures are reported, not fatal; symbolic links are skipped and reported. Omit connection_id for the current server. A local source outside this conversation's workspace requires operator approval.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
       local_path: { type: "string", required: true, description: "Local directory to upload." },
@@ -436,7 +438,7 @@ export function registerSftpTools(ctx, service) {
 
   ctx.tools.register(defineTool({
     name: "sftp_download_dir",
-    description: "Download a remote directory tree over SFTP to a local directory, recreating the structure. Small files transfer in parallel (bounded), large files one at a time. Per-file failures are reported, not fatal. Omit connection_id for the current server. A local destination outside this conversation's workspace requires operator approval.",
+    description: "Download a remote directory tree over SFTP to a local directory, recreating the structure. Small files transfer in parallel (bounded), large files one at a time. Per-file failures are reported, not fatal; symbolic links are not followed and are reported instead. Omit connection_id for the current server. A local destination outside this conversation's workspace requires operator approval.",
     parameters: {
       connection_id: { type: "string", description: "Connection id from ssh_connect; omit to use the current server." },
       remote_path: { type: "string", required: true, description: "Remote directory to download." },

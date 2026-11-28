@@ -18,7 +18,7 @@ import { harborUiSetError } from "../../store.js";
 import { t } from "../../../i18n/core.js";
 
 const TIER_ICON = { standard: "shield-outline", custom: "sliders-two-outline", allowAll: "warning-outline" };
-const TIER_CHOICES = ["standard", "custom", "allowAll"];
+const TIER_CHOICES = Object.keys(TIER_ORDER);
 
 /** Operator-facing name for the DSH session ceiling. */
 function dshCeilingLabel(ceiling) {

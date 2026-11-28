@@ -229,13 +229,3 @@ export function resolveTerminalOwner({ sessionId, session, scope, getAgent }) {
   if (scope !== "conversation") return own;
   return conversationOwner(own, session, getAgent) ?? own;
 }
-
-/**
- * Whether a terminal belongs to the session asking.
- * @param {object} session - PTY session record.
- * @param {unknown} ownerSessionId - caller's owner id.
- * @returns {boolean} true for the caller's own terminal.
- */
-export function isOwnedBy(session, ownerSessionId) {
-  return ownerKey(session?.ownerSessionId) === ownerKey(ownerSessionId);
-}

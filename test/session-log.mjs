@@ -151,6 +151,40 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 
+// ── prune / clear-all never reclaim a session that is still recording ───────
+// A live session has no sidecar of its own yet (list() merges the open entry),
+// so treating the listing as history deleted the log file under a running
+// writer: the session kept going and recorded nothing for the rest of its life.
+{
+  const liveDir = mkdtempSync(join(tmpdir(), "dsh-harbor-logs-live-"));
+  try {
+    const live = new SessionLogStore({ dir: liveDir, limits: { maxTotalBytes: 1 } });
+    await live.begin({ sessionId: "live", host: "h", startedAt: "2020-01-01T00:00:00.000Z" });
+    live.append("live", "still recording\n");
+    await live.begin({ sessionId: "newer", host: "h", startedAt: "2030-01-01T00:00:00.000Z" });
+    live.append("newer", "finished session\n");
+    await live.end("newer");
+
+    assert.deepEqual((await live.list()).map((entry) => entry.sessionId), ["newer", "live"], "the live entry is listed as history");
+
+    const pruned = await live.prune();
+    assert.deepEqual(pruned.removed, [], "prune skips the recording session even when over budget");
+    assert.equal(live.has("live"), true, "its write stream is still attached");
+    live.append("live", "and appended after a prune\n");
+    const kept = await live.read("live", { offset: 0, maxBytes: 4096 });
+    assert.match(kept.data, /still recording\nand appended after a prune\n$/, "the recording keeps writing after a prune");
+
+    const cleared = await live.removeAll();
+    assert.equal(cleared.deleted, 1, "clear-all removes only the finished session");
+    assert.deepEqual((await live.list()).map((entry) => entry.sessionId), ["live"], "the live recording is still listed");
+    live.append("live", "still recording after clear-all\n");
+    const afterClear = await live.read("live", { offset: 0, maxBytes: 4096 });
+    assert.match(afterClear.data, /still recording after clear-all\n$/, "and it still records");
+  } finally {
+    rmSync(liveDir, { recursive: true, force: true });
+  }
+}
+
 // ── service layer: the RPCs over the store, plus the wiring contract ───────
 {
   const svcDir = mkdtempSync(join(tmpdir(), "dsh-harbor-logs-svc-"));
@@ -186,6 +220,9 @@ try {
 
     const removed = await service.sessionLogDelete({ sessionId: "live-1" });
     assert.deepEqual(removed.value, { deleted: 1, remaining: 0 });
+
+    const removedAgain = await service.sessionLogDelete({ sessionId: "live-1" });
+    assert.deepEqual(removedAgain.value, { deleted: 0, remaining: 0 }, "deleting a missing log reports zero, not one");
 
     const disabled = Object.create(HarborService.prototype);
     disabled.config = { sessionLogEnabled: false };

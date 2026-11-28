@@ -3,6 +3,8 @@
 // provider mocked out. No ssh2 transport, no real credential store.
 import assert from "node:assert/strict";
 import HarborService from "../src/index.js";
+import { profileSaveRequestSchema } from "../src/rpc/schemas.js";
+import { fakeTable } from "./support/fake-table.mjs";
 
 function makeService() {
   const service = Object.create(HarborService.prototype);
@@ -27,17 +29,6 @@ function makeService() {
   service.store = store;
   service.storeKey = key;
   return service;
-}
-
-function fakeTable(entries = []) {
-  const map = new Map(entries);
-  return {
-    get: (id) => map.get(id),
-    put: (id, record) => { map.set(id, record); },
-    delete: (id) => { map.delete(id); },
-    entries: () => [...map.entries()],
-    size: () => map.size
-  };
 }
 
 // ── profileSave: fresh save returns non-secret record + derived refs ──
@@ -189,6 +180,50 @@ function fakeTable(entries = []) {
   assert.equal(listed.ok, true);
   assert.equal(listed.value.profiles[0].credentialConfigured, true);
   assert.equal(listed.value.profiles[0].passphraseConfigured, false);
+}
+
+// ── a partial save keeps the stored host-key policy ───────────────────────
+// The request schema used to default hostKeyMode to "accept-new", so any caller
+// that saved a profile without repeating the field silently downgraded a
+// resource pinned to `verify` back to trust-on-first-use.
+{
+  const parsed = profileSaveRequestSchema.parse({ name: "n", host: "h", username: "u", authKind: "password" });
+  assert.equal("hostKeyMode" in parsed, false, "the request schema does not invent a host-key policy");
+  assert.equal("agentForward" in parsed, false, "nor an agent-forwarding choice");
+
+  const service = makeService();
+  const table = fakeTable();
+  service.requireProfileTable = () => table;
+  const created = await service.profileSave({ name: "strict", host: "10.0.0.9", username: "root", authKind: "password", hostKeyMode: "verify", agentForward: true });
+  assert.equal(created.ok, true);
+  const profileId = created.value.profile.profileId;
+
+  const partial = await service.profileSave({ profileId, name: "strict", host: "10.0.0.9", username: "root", authKind: "password" });
+  assert.equal(partial.ok, true);
+  assert.equal(table.get(profileId).hostKeyMode, "verify", "an omitted hostKeyMode keeps the pinned policy");
+  assert.equal(table.get(profileId).agentForward, true, "an omitted agentForward keeps the stored choice");
+
+  const explicit = await service.profileSave({ profileId, name: "strict", host: "10.0.0.9", username: "root", authKind: "password", hostKeyMode: "accept-new", agentForward: false });
+  assert.equal(explicit.ok, true);
+  assert.equal(table.get(profileId).hostKeyMode, "accept-new", "an explicit value still changes it");
+  assert.equal(table.get(profileId).agentForward, false);
+
+  // groupId follows the same "omitted keeps, null clears" rule as the other
+  // optional fields; a partial save used to ungroup the server.
+  const groupId = "11111111-1111-4111-8111-111111111111";
+  const groups = fakeTable();
+  groups.put(groupId, { name: "ops" });
+  service.requireGroupTable = () => groups;
+  const grouped = await service.profileSave({ name: "grouped", host: "10.0.0.10", username: "root", authKind: "password", groupId });
+  assert.equal(grouped.ok, true);
+  const groupedId = grouped.value.profile.profileId;
+  assert.equal(table.get(groupedId).groupId, groupId);
+  const partialGroup = await service.profileSave({ profileId: groupedId, name: "grouped", host: "10.0.0.10", username: "root", authKind: "password" });
+  assert.equal(partialGroup.ok, true);
+  assert.equal(table.get(groupedId).groupId, groupId, "an omitted groupId keeps the group");
+  const clearedGroup = await service.profileSave({ profileId: groupedId, name: "grouped", host: "10.0.0.10", username: "root", authKind: "password", groupId: null });
+  assert.equal(clearedGroup.ok, true);
+  assert.equal(table.get(groupedId).groupId, null, "an explicit null still ungroups");
 }
 
 console.log("credentials: save→refs→resolve→unset chain: all cases passed");

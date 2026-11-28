@@ -3,7 +3,7 @@
  * send settlement, signals and the take-over handoff.
  */
 import assert from "node:assert/strict";
-import { HarborSshBackend, SshTerminalSession, SUBAGENT_REFUSAL, TAKEN_OVER, HARBOR_SSH_BACKEND_TYPE } from "../src/host/terminal-backend.js";
+import { HarborSshBackend, SshTerminalSession, SUBAGENT_REFUSAL, TAKEN_OVER, HARBOR_SSH_BACKEND_TYPE, SEND_TIMEOUT_MS } from "../src/host/terminal-backend.js";
 
 function makeSession(overrides = {}) {
   return {
@@ -76,6 +76,37 @@ assert.equal(HARBOR_SSH_BACKEND_TYPE, "harbor-ssh");
   assert.equal(binding.pid, 4242, "the census pid is exposed when known");
 }
 
+// Two concurrent terminal_open calls must not publish two registry records on
+// one PTY. The first spawn is held open until the second has queued; the second
+// then sees the published binding and is refused instead of adopting the PTY.
+{
+  const session = makeSession();
+  const { service } = makeService(session);
+  let attached = null;
+  let opened = 0;
+  let releaseFirst;
+  const firstOpened = new Promise((resolve) => { releaseFirst = resolve; });
+  service.attachTerminalBinding = (binding) => { attached = binding; };
+  service.liveAgentTerminal = () => (attached === null ? undefined : attached);
+  service.openAgentTerminal = async () => {
+    if (attached !== null) throw new Error("this conversation already has an SSH terminal");
+    opened += 1;
+    if (opened === 1) await firstOpened;
+    return { session, connectionId: "c1", host: "h", reused: false };
+  };
+  const backend = new HarborSshBackend({ service });
+  const owner = { id: "agent-1", session: { header: { origin: "main" } } };
+  const first = backend.spawn({ sessionId: "pty-1", type: "harbor-ssh", owner });
+  const second = backend.spawn({ sessionId: "pty-2", type: "harbor-ssh", owner });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  releaseFirst();
+  const binding = await first;
+  await assert.rejects(second, /already has an SSH terminal/);
+  assert.equal(opened, 1, "the second spawn never opens a second PTY");
+  assert.equal(binding.registryId, "pty-1");
+  assert.equal(attached, binding, "only the first spawn publishes a binding");
+}
+
 // ── screen paging ─────────────────────────────────────────────────────────
 {
   const session = makeSession();
@@ -137,6 +168,46 @@ assert.equal(HARBOR_SSH_BACKEND_TYPE, "harbor-ssh");
   assert.deepEqual(interrupt, { delivered: true, targetPgid: 4242 });
   await binding.signal("SIGTERM");
   assert.equal(session.stream.lastSignal, "TERM", "other signals travel through the SSH channel");
+}
+
+// ── a command that never stops printing still settles at the deadline ──────
+// Regression: the settle loop `continue`d on every new output offset, so the
+// deadline was only evaluated while the terminal was silent. `yes` or
+// `journalctl -f` therefore held one terminal_send open indefinitely.
+{
+  const session = makeSession();
+  const { service, state } = makeService(session);
+  let cursor = 0;
+  // Output never stops: the journal offset advances on every poll.
+  service.terminalJournal = () => ({ read: () => ({ data: "", offset: (cursor += 64), startOffset: 0 }) });
+  service.renderTerminalSession = () => ({ text: `${state.rendered}${"x".repeat(cursor % 512)}`, redacted: false, truncated: false });
+  const binding = makeBinding(service, session, { sendTimeoutMs: 120 });
+  const began = Date.now();
+  const result = await binding.startSend({ text: "yes", submit: true }).done;
+  const elapsed = Date.now() - began;
+  assert.equal(result.waitReason, "timeout", "a never-quiet command ends at the deadline instead of hanging");
+  assert.ok(elapsed >= 100, `the wait reaches the deadline (${elapsed}ms)`);
+  assert.ok(elapsed < 2000, `and is bounded by it (${elapsed}ms)`);
+  assert.equal(
+    new SshTerminalSession({ service, session, registryId: "r", name: "n", connectionId: "c1", ownerSessionId: "conv-1", motd: "" }).sendTimeoutMs,
+    SEND_TIMEOUT_MS,
+    "production keeps the 30s bound; the seam defaults to it"
+  );
+}
+
+// ── an aborted tool call stops the send instead of waiting out the deadline ──
+{
+  const session = makeSession();
+  const { service, state } = makeService(session);
+  const binding = makeBinding(service, session, { sendTimeoutMs: 5000 });
+  const controller = new AbortController();
+  const send = binding.startSend({ text: "sleep 10", submit: true, signal: controller.signal });
+  setTimeout(() => controller.abort(), 20);
+  const began = Date.now();
+  const result = await send.done;
+  assert.equal(result.waitReason, "inferred_idle", "the abort settles the operation without a new contract value");
+  assert.ok(Date.now() - began < 1000, "the wait does not run to the send deadline");
+  assert.equal(state.written.at(-1), "\u0003", "the interrupt is still written to the PTY");
 }
 
 console.log("terminal backend: spawn, paging, sends, take-over, close and signals all passed");

@@ -23,6 +23,7 @@ import {
   Badge, Button, Card, Checkbox, Dialog, EmptyState, ErrorNote, Field, Icon, IconButton, InputGroup, Menu,
   MenuItem, MenuLabel, MenuSeparator, Notice, Pill, ProgressBar, Section, Spinner, TextArea, TextInput, confirmAction
 } from "./ui/kit.jsx";
+import { formatBytes, formatWhen } from "./format.js";
 import { MAX_EDITABLE_BYTES, changedLineRegions, decodeEditableText, encodeEditableText, filterEntries } from "./file-editor.js";
 import { favoritesKey, readFavorites, toggleFavorite, writeFavorites } from "./sftp-favorites.js";
 import { searchRemoteFiles } from "./remote-file-search.js";
@@ -31,11 +32,16 @@ import {
   checkpointDestination, checkpointFile, createDownloadCheckpoint, deleteDownloadCheckpoint,
   listDownloadCheckpoints, withDownloadLock
 } from "./download-checkpoints.js";
+import {
+  attachFileController, beginFileTask, beginFileUpload, cancelFileTask, clearFileUploadConflict,
+  clearFinishedFileTasks, endFileUpload, getFileTransfers, releaseFileController, setFileUploadConflict,
+  subscribeFileTransfers, updateFileTask
+} from "./file-transfers.js";
 import { installSurfaceStyles } from "./ui/styles.js";
 import { t } from "../i18n/core.js";
 import CSS from "./features/files/files.css";
 
-const { Fragment, useEffect, useRef, useState } = React;
+const { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore } = React;
 
 installSurfaceStyles("files", CSS);
 
@@ -98,34 +104,13 @@ function modeString(mode) {
   return (kinds[mode & 0o170000] ?? "-") + chars.join("");
 }
 
-function formatSize(bytes) {
-  if (!Number.isFinite(bytes) || bytes < 0) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-/**
- * Compact modification time. The current year keeps the row narrow; an older
- * entry needs its year, so the date wins over the time of day there.
- */
-function formatTime(ms) {
-  if (!Number.isFinite(ms) || ms <= 0) return "—";
-  const value = new Date(ms);
-  const pad = (part) => String(part).padStart(2, "0");
-  if (value.getFullYear() !== new Date().getFullYear()) {
-    return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
-  }
-  return `${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}`;
-}
-
 /** Directories first, then names in natural order — the order a file manager shows. */
 function compareEntries(left, right) {
   if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
   return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
 }
 
-export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
+export function HarborFiles({ api, connection, connectionId, active = true, onCd, initialPath = "/" }) {
   const [cwd, setCwd] = useState("/");
   const [entries, setEntries] = useState(null);
   const [error, setError] = useState(null);
@@ -143,23 +128,34 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const [scpDownloadPath, setScpDownloadPath] = useState("");
   const [filter, setFilter] = useState("");
   const [favorites, setFavorites] = useState([]);
-  const [favoritesStorageKey, setFavoritesStorageKey] = useState(null);
+  // The stable per-server key comes from the connection this pane already
+  // shows, so it exists on the first render. Asking `api.list()` here left a
+  // window where clicking the star updated React state but the write was
+  // silently dropped (key === null), then the late lookup overwrote it.
+  const favoritesStorageKey = favoritesKey(connection);
   const favoritesKeyRef = useRef(favoritesStorageKey);
   favoritesKeyRef.current = favoritesStorageKey;
+  // initialPath is a mount input, not a controlled value: the panel clears
+  // the one-shot project target after this mount and must not navigate back.
+  const initialPathRef = useRef(initialPath);
   const [editing, setEditing] = useState(null);
   const [previewChanges, setPreviewChanges] = useState(false);
   const connectionRef = useRef(connectionId);
   connectionRef.current = connectionId;
   const [editorBusy, setEditorBusy] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  const [tasks, setTasks] = useState([]);
   const [agentTasks, setAgentTasks] = useState([]);
   const [persistDownloads, setPersistDownloads] = useState(false);
   const [checkpoints, setCheckpoints] = useState([]);
-  const taskId = useRef(0);
-  const controllers = useRef(new Map());
-  const uploadController = useRef(null);
-  const [uploadConflict, setUploadConflict] = useState(null);
+  // Transfers are deliberately not component state: this pane is keyed by
+  // connection id and remounts on every server switch, and an upload must not
+  // die with the tab that started it (see file-transfers.js).
+  const subscribeTransfers = useCallback(
+    (listener) => subscribeFileTransfers(connectionId, listener),
+    [connectionId]
+  );
+  const transfers = useSyncExternalStore(subscribeTransfers, () => getFileTransfers(connectionId));
+  const { tasks, conflict: uploadConflict } = transfers;
   const [conflictApplyAll, setConflictApplyAll] = useState(false);
   const searchController = useRef(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -173,38 +169,41 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
   const dirInputRef = useRef(null);
   const scpFileInputRef = useRef(null);
 
-  const updateTask = (id, patch) => setTasks((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item));
-  const addTask = (task) => {
-    const id = ++taskId.current;
-    setTasks((items) => [{ ...task, id }, ...items.filter((item, index) => item.status === "running" || index < 49)]);
-    return id;
-  };
+  const updateTask = (id, patch) => updateFileTask(connectionId, id, patch);
+  const addTask = (task) => beginFileTask(connectionId, task);
   useEffect(() => () => {
+    // Search results belong to this pane; transfers do not. Aborting them here
+    // is exactly what used to kill an upload on a server-tab switch.
     searchController.current?.abort();
-    for (const controller of controllers.current.values()) controller.abort();
   }, []);
-  useEffect(() => () => uploadController.current?.abort(), [connectionId]);
   useEffect(() => {
     searchController.current?.abort();
     searchController.current = null;
     setSearchState(null);
   }, [connectionId]);
   useEffect(() => {
-    let active = true;
+    let alive = true;
     setAgentTasks([]);
-    if (!connectionId || typeof api.sftpTransferList !== "function") return () => { active = false; };
+    if (!active || !connectionId || typeof api.sftpTransferList !== "function") return () => { alive = false; };
+    let polling = false;
     const refresh = async () => {
+      // A hidden pane or a slow host must not stack transfer-list requests.
+      if (polling) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      polling = true;
       try {
         const result = await api.sftpTransferList(connectionId);
-        if (active) setAgentTasks(result.transfers ?? []);
+        if (alive) setAgentTasks(result.transfers ?? []);
       } catch {
         // Older hosts may not expose the registry.
+      } finally {
+        polling = false;
       }
     };
     void refresh();
     const timer = setInterval(refresh, 1500);
-    return () => { active = false; clearInterval(timer); };
-  }, [api, connectionId]);
+    return () => { alive = false; clearInterval(timer); };
+  }, [api, connectionId, active]);
 
   const refreshCheckpoints = async (identity = favoritesStorageKey) => {
     if (!identity) return;
@@ -258,7 +257,7 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
     }
     const controller = new AbortController();
     const task = addTask({ name: checkpoint.path.split("/").pop(), kind: "download", status: "running", sent: checkpoint.offset, total: checkpoint.total, cancellable: true, resuming: true });
-    controllers.current.set(task, controller);
+    attachFileController(connectionId, task, controller);
     try {
       await withDownloadLock(checkpoint.id, async () => {
         const prefix = await checkpointFile(checkpoint.id);
@@ -287,7 +286,7 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
       updateTask(task, { status: cancelled ? "cancelled" : "failed", error: cancelled ? "" : (err?.message ?? String(err)) });
       if (!cancelled) setError(err?.message ?? String(err));
     } finally {
-      controllers.current.delete(task);
+      releaseFileController(connectionId, task);
       void refreshCheckpoints();
     }
   };
@@ -298,9 +297,26 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
     const controller = new AbortController();
     searchController.current = controller;
     const root = cwd;
-    setSearchState({ running: true, root, results: [], errors: [] });
-    const result = await searchRemoteFiles((path) => api.sftpList(connectionId, path), root, searchQuery.trim(), { signal: controller.signal });
-    if (searchController.current === controller) setSearchState({ ...result, root, running: false });
+    setSearchState({ running: true, root, visited: 0, results: [], errors: [], reason: null });
+    try {
+      const result = await searchRemoteFiles((path) => api.sftpList(connectionId, path), root, searchQuery.trim(), { signal: controller.signal });
+      if (searchController.current === controller) setSearchState({ ...result, root, running: false });
+    } catch (error) {
+      // Without this the pane sat on 「搜索中…」 for good: the running flag was
+      // only cleared by the success path, and the search button stays disabled
+      // while it is true — no way back short of leaving the tab.
+      if (searchController.current !== controller) return;
+      const cancelled = controller.signal.aborted || error?.name === "AbortError";
+      setSearchState({
+        root,
+        running: false,
+        visited: 0,
+        results: [],
+        errors: [],
+        reason: cancelled ? "cancelled" : "failed",
+        failure: cancelled ? "" : (error?.message ?? String(error))
+      });
+    }
   };
   // Monotonic sequence: only the latest issued directory listing may commit
   // state, so a slow earlier response cannot overwrite a newer directory.
@@ -312,25 +328,10 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
   // happened instead of reloading whichever directory is still current.
   const requestedRef = useRef(initialPath);
 
-  // Favorites are stored per server: the runtime connection id changes every
-  // session, so resolve the stable host/port/username key once here.
+  // Favorites are stored per server under the stable host/port/username key.
   useEffect(() => {
-    let cancelled = false;
-    setFavoritesStorageKey(null);
-    (async () => {
-      try {
-        const value = await api.list();
-        if (cancelled) return;
-        const connection = (value?.connections ?? []).find((item) => item.connectionId === connectionId);
-        const key = favoritesKey(connection);
-        setFavoritesStorageKey(key);
-        setFavorites(readFavorites(globalThis.localStorage, key));
-      } catch {
-        // Favorites are cosmetic: a failed lookup simply shows none.
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [api, connectionId]);
+    setFavorites(readFavorites(globalThis.localStorage, favoritesStorageKey));
+  }, [favoritesStorageKey]);
 
   const load = async (path, { preserveError = false } = {}) => {
     const seq = ++loadSeq.current;
@@ -363,14 +364,30 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
     }
   };
 
+  /**
+   * Leave SCP mode and probe SFTP again.
+   *
+   * The downgrade is a one-way decision taken by whichever listing failed
+   * first, and `sftp-failed` also covers a subsystem that could not open while
+   * the transport was reconnecting. Without this, one unlucky first load kept
+   * the pane in single-file SCP mode for the whole connection, with delete,
+   * rename, mkdir and the editor (all SFTP-only) simply absent.
+   */
+  const retrySftp = () => {
+    if (busy) return;
+    setTransferMode("sftp");
+    setScpReason("");
+    void load("/");
+  };
+
   useEffect(() => {
     setTransferMode("sftp");
     setScpReason("");
     setScpUploadFile(null);
     setScpUploadPath("");
     setScpDownloadPath("");
-    if (connectionId) load(initialPath);
-  }, [connectionId, initialPath]);
+    if (connectionId) load(initialPathRef.current);
+  }, [connectionId]);
 
   const goUp = () => {
     if (cwd !== "/") load(dirnameOf(cwd));
@@ -393,7 +410,7 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
       }
       const controller = new AbortController();
       const task = addTask({ name: target.name, kind: "download", status: "running", sent: 0, total: target.size, cancellable: true, verifying: true });
-      controllers.current.set(task, controller);
+      attachFileController(connectionId, task, controller);
       setError(null);
       try {
         const query = new URLSearchParams({ connectionId, path: joinPath(cwd, target.name), verify: "sha256" });
@@ -431,7 +448,7 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
         updateTask(task, { status: cancelled ? "cancelled" : "failed", error: cancelled ? "" : (err?.message ?? String(err)) });
         if (!cancelled) setError(err?.message ?? String(err));
       } finally {
-        controllers.current.delete(task);
+        releaseFileController(connectionId, task);
         void refreshCheckpoints();
       }
       return;
@@ -462,15 +479,17 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
 
   const upload = async (fileList) => {
     const files = Array.isArray(fileList) ? fileList : [fileList];
-    if (!connectionId || files.length === 0 || uploadController.current) return;
+    if (!connectionId || files.length === 0) return;
+    const controller = new AbortController();
+    // One batch at a time per connection: the directory cache, the conflict
+    // prompt and the final refresh are written for a sequential walk.
+    if (!beginFileUpload(connectionId, controller)) return;
     setBusy(true);
     setError(null);
-    const controller = new AbortController();
-    uploadController.current = controller;
     const { signal } = controller;
     let total = files.reduce((sum, file) => sum + file.size, 0);
     const task = addTask({ name: files.length === 1 ? files[0].name : t(`${files.length} 个文件`), kind: "upload", status: "running", sent: 0, total, cancellable: true });
-    controllers.current.set(task, controller);
+    attachFileController(connectionId, task, controller);
     let completedBytes = 0;
     let skipped = 0;
     let changed = false;
@@ -492,13 +511,15 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
         const abort = () => reject(signal.reason);
         signal.addEventListener("abort", abort, { once: true });
         setConflictApplyAll(false);
-        setUploadConflict({
+        // The prompt lives in the registry, so a remount while it is open
+        // reopens it instead of stranding the upload on a promise nobody holds.
+        setFileUploadConflict(connectionId, {
           path, canOverwrite, moreFiles,
           cancel: () => controller.abort(),
           choose: (choice, applyAll) => {
             signal.removeEventListener("abort", abort);
             if (applyAll) batchChoice = choice;
-            setUploadConflict(null);
+            clearFileUploadConflict(connectionId);
             resolve(choice);
           }
         });
@@ -568,9 +589,9 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
       updateTask(task, { status: cancelled ? "cancelled" : "failed", error: cancelled ? null : (err?.message ?? String(err)), cancellable: false });
       if (!cancelled && connectionRef.current === connectionId) setError(t(`上传失败：${err?.message ?? String(err)}`));
     } finally {
-      controllers.current.delete(task);
-      uploadController.current = null;
-      setUploadConflict(null);
+      releaseFileController(connectionId, task);
+      endFileUpload(connectionId, controller);
+      clearFileUploadConflict(connectionId);
       setBusy(false);
       if (connectionRef.current === connectionId && changed) void load(cwdRef.current, { preserveError: true });
     }
@@ -694,7 +715,7 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
     try {
       const stat = await api.sftpStat(connectionId, path).catch(() => null);
       if (stat?.size > MAX_EDITABLE_BYTES) {
-        setError(t(`文件 ${formatSize(stat.size)} 超过 ${MAX_EDITABLE_BYTES / 1024 / 1024} MB 的编辑上限，请下载后编辑`));
+        setError(t(`文件 ${formatBytes(stat.size)} 超过 ${MAX_EDITABLE_BYTES / 1024 / 1024} MB 的编辑上限，请下载后编辑`));
         return;
       }
       const file = await api.sftpReadFile(connectionId, path, MAX_EDITABLE_BYTES + 1);
@@ -735,6 +756,27 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
     } finally {
       setEditorBusy(false);
     }
+  };
+
+  /**
+   * Close the editor, asking first when the buffer differs from what was read.
+   *
+   * Escape, the scrim and the 关闭 button all landed on `setEditing(null)`: one
+   * stray key on a full-screen editor silently dropped the edits, with nothing
+   * on the page saying they were gone. The shared confirm is themeable and
+   * resolves false for Escape/cancel, so the editor simply stays open.
+   */
+  const closeEditor = async () => {
+    if (editing === null || editorBusy) return;
+    if (editing.text === editing.original) { setEditing(null); return; }
+    const confirmed = await confirmAction({
+      title: t("放弃未保存的修改？"),
+      message: t("修改还没有保存，关闭编辑器会丢弃这些修改。"),
+      confirmLabel: t("放弃修改"),
+      cancelLabel: t("继续编辑"),
+      danger: true
+    });
+    if (confirmed) setEditing(null);
   };
 
   const visibleEntries = entries === null ? null : filterEntries(entries, filter);
@@ -810,9 +852,14 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
   if (transferMode === "scp") {
     return (
       <div className="hb-files hb-files__scp">
-        <Notice icon="warning-triangle-outline">
-          {t("SFTP 子系统不可用，已切换到 SCP 兼容模式。仅支持单文件上传和下载，需填写远端完整路径。")}
-        </Notice>
+        <div className="hb-inline" style={{ alignItems: "flex-start" }}>
+          <Notice icon="warning-triangle-outline">
+            {t("SFTP 子系统不可用，已切换到 SCP 兼容模式。仅支持单文件上传和下载，需填写远端完整路径。")}
+          </Notice>
+          <Button variant="secondary" size="sm" icon="refresh-outline" busy={busy} onClick={retrySftp}>
+            {t("重试 SFTP")}
+          </Button>
+        </div>
         {scpReason !== "" && <div className="hb-quiet">{scpReason}</div>}
         {error !== null && (
           <ErrorNote action={<IconButton icon="close-outline" size="sm" label={t("关闭")} onClick={() => setError(null)} />}>
@@ -907,7 +954,10 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
           icon="pin-outline"
           size="sm"
           active={isFavorite}
-          label={isFavorite ? t("取消收藏当前目录") : t("收藏当前目录")}
+          disabled={favoritesStorageKey === null}
+          label={favoritesStorageKey === null
+            ? t("这台服务器缺少主机信息，暂时不能收藏")
+            : isFavorite ? t("取消收藏当前目录") : t("收藏当前目录")}
           onClick={pinCurrent}
         />
         {canResumeDownloads && (
@@ -934,8 +984,10 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
       </Menu>
 
       <div className="hb-files__bar hb-files__bar--actions">
-        <Button variant="primary" size="sm" icon="upload-outline" onClick={chooseFiles}>{t("上传")}</Button>
-        <Button variant="secondary" size="sm" icon="folder-open-outline" title={t("上传目录并合并已有目录")} onClick={chooseFolder}>
+        {/* A batch keeps running after this pane remounts, so the buttons must
+            report that state instead of silently ignoring the click. */}
+        <Button variant="primary" size="sm" icon="upload-outline" disabled={transfers.uploading} onClick={chooseFiles}>{t("上传")}</Button>
+        <Button variant="secondary" size="sm" icon="folder-open-outline" disabled={transfers.uploading} title={t("上传目录并合并已有目录")} onClick={chooseFolder}>
           {t("上传目录")}
         </Button>
         <IconButton icon="plus-outline" size="sm" label={t("新建目录")} onClick={() => setCreating(true)} />
@@ -1009,7 +1061,11 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
           {searchState !== null && (
             <div className="hb-files__searchbody">
               <div className="hb-quiet">
-                {searchState.running ? t("搜索中…") : t(`已搜索 ${searchState.visited} 个目录，找到 ${searchState.results.length} 项`)}
+                {searchState.running
+                  ? t("搜索中…")
+                  : searchState.reason === "failed"
+                    ? `${t("搜索失败：")}${searchState.failure ?? ""}`
+                    : t(`已搜索 ${searchState.visited} 个目录，找到 ${searchState.results.length} 项`)}
                 {searchState.reason === "limit" ? t("（达到上限）") : searchState.reason === "timeout" ? t("（超时，结果不完整）") : searchState.reason === "cancelled" ? t("（已取消）") : ""}
               </div>
               {searchState.errors.length > 0 && (
@@ -1089,7 +1145,7 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
           <Section
             title={t("传输任务")}
             action={
-              <Button variant="ghost" size="sm" onClick={() => setTasks((items) => items.filter((item) => item.status === "running"))}>
+              <Button variant="ghost" size="sm" onClick={() => clearFinishedFileTasks(connectionId)}>
                 {t("清除已结束")}
               </Button>
             }
@@ -1104,7 +1160,7 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
                     <span className="hb-truncate" title={task.name}>{task.name}</span>
                     <span className="hb-spacer" />
                     {task.status === "running" && task.cancellable === true && (
-                      <IconButton icon="stop-fill" size="sm" label={t("取消")} onClick={() => controllers.current.get(task.id)?.abort()} />
+                      <IconButton icon="stop-fill" size="sm" label={t("取消")} onClick={() => cancelFileTask(connectionId, task.id)} />
                     )}
                   </div>
                   <div className="hb-quiet">
@@ -1114,9 +1170,9 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
                   </div>
                   {task.status === "running" && !task.verifying && !task.resuming && task.kind === "download" && task.speed > 0 && (
                     <div className="hb-quiet hb-numeric">
-                      {formatSize(task.sent)}
-                      {task.total !== null && task.total !== undefined ? ` / ${formatSize(task.total)}` : ""}
-                      {` · ${formatSize(task.speed)}/s`}
+                      {formatBytes(task.sent)}
+                      {task.total !== null && task.total !== undefined ? ` / ${formatBytes(task.total)}` : ""}
+                      {` · ${formatBytes(task.speed)}/s`}
                       {task.total !== null && task.total !== undefined && task.sent < task.total
                         ? ` · ${t("剩余约")} ${Math.ceil((task.total - task.sent) / task.speed)}s`
                         : ""}
@@ -1130,7 +1186,7 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
                         label={t("正在计算远端校验值…")}
                       />
                       {task.verification !== undefined && task.verification !== null && (
-                        <div className="hb-quiet hb-numeric">{formatSize(task.verification.bytes)} / {formatSize(task.verification.total)}</div>
+                        <div className="hb-quiet hb-numeric">{formatBytes(task.verification.bytes)} / {formatBytes(task.verification.total)}</div>
                       )}
                     </Fragment>
                   ) : task.total !== null && task.total !== undefined ? (
@@ -1153,7 +1209,7 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
                 <div key={checkpoint.id} className="hb-files__task">
                   <div className="hb-files__taskline">
                     <span className="hb-files__grow hb-mono hb-truncate" title={checkpoint.path}>{checkpoint.path}</span>
-                    <span className="hb-quiet hb-numeric">{formatSize(checkpoint.offset)} / {formatSize(checkpoint.total)}</span>
+                    <span className="hb-quiet hb-numeric">{formatBytes(checkpoint.offset)} / {formatBytes(checkpoint.total)}</span>
                     <IconButton icon="play-outline" size="sm" label={t("续传")} onClick={() => { void resumeCheckpoint(checkpoint); }} />
                     <IconButton
                       icon="trash-outline"
@@ -1259,8 +1315,8 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
                   <span className="hb-file__icon"><Icon name={entry.isDirectory ? "folder-open-outline" : "file"} size={14} /></span>
                   <span className="hb-file__name">{entry.name}</span>
                   <span className="hb-file__meta">
-                    <span>{entry.isDirectory ? "—" : formatSize(entry.size)}</span>
-                    <span>{formatTime(entry.mtime)}</span>
+                    <span>{entry.isDirectory ? "—" : formatBytes(entry.size)}</span>
+                    <span>{entry.mtime > 0 ? formatWhen(entry.mtime) : "—"}</span>
                     <span className="hb-files__perm">{modeString(entry.mode)}</span>
                   </span>
                   <span
@@ -1342,15 +1398,15 @@ export function HarborFiles({ api, connectionId, onCd, initialPath = "/" }) {
       {editing !== null && (
         <Dialog
           open
-          onClose={() => setEditing(null)}
+          onClose={closeEditor}
           title={t(`编辑：${editing.path}`)}
           description={
-            `${formatSize(editing.bytes)} · UTF-8${editing.replaced ? t(" · 含无法按 UTF-8 解码的字节（保存会按 UTF-8 重写）") : ""}${editing.text !== editing.original ? t(" · 已修改") : ""}`
+            `${formatBytes(editing.bytes)} · UTF-8${editing.replaced ? t(" · 含无法按 UTF-8 解码的字节（保存会按 UTF-8 重写）") : ""}${editing.text !== editing.original ? t(" · 已修改") : ""}`
           }
           width="full"
           footer={
             <Fragment>
-              <Button variant="secondary" onClick={() => setEditing(null)}>{t("关闭")}</Button>
+              <Button variant="secondary" onClick={closeEditor}>{t("关闭")}</Button>
               <Button variant="secondary" icon="compare-split-outline" onClick={() => setPreviewChanges(!previewChanges)}>
                 {previewChanges ? t("返回编辑") : t("预览修改")}
               </Button>

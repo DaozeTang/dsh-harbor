@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 
@@ -85,9 +85,11 @@ for (const language of ["en", "zh"]) {
 const npmCache = mkdtempSync(join(tmpdir(), "harbor-pack-"));
 const npmEnv = { ...process.env, npm_config_cache: npmCache };
 
-if (!existsSync(join(root, "lib", "index.js"))) {
-  execFileSync("npm", ["run", "build"], { cwd: root, stdio: "inherit", env: npmEnv, shell: process.platform === "win32" });
-}
+// `npm test` must not build: rebuilding here would rewrite the very artifacts
+// under audit (and make a stale lib/ look fresh). Installing runs `prepare`
+// (npm run build) and CI runs the build as its own gate before the tests.
+assert.ok(existsSync(join(root, "lib", "index.js")),
+  "lib/ is missing — run `npm install` (prepare builds it) or `npm run build` before `npm test`");
 const packed = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
   cwd: root, encoding: "utf8", env: npmEnv, shell: process.platform === "win32"
 });
@@ -125,16 +127,7 @@ const expected = [
   "lib/typert.js",
   "locale/en.json",
   "locale/zh.json",
-  "package.json",
-  "scripts/build-client.mjs",
-  "scripts/build-host.mjs",
-  "scripts/build-preview.mjs",
-  "scripts/i18n-extract.mjs",
-  "scripts/install-dev.mjs",
-  "scripts/list-tests.mjs",
-  "scripts/package-release.mjs",
-  "scripts/sync-theme-snapshot.mjs",
-  "scripts/theme-tokens.mjs"
+  "package.json"
 ].sort();
 
 assert.deepEqual(

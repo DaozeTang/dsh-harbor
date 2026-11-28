@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRegexRunner } from "../src/client/terminal-display/regex-runner.js";
-import { createNodeHighlightWorker } from "./helpers/highlight-worker.mjs";
+import { createNodeHighlightWorker } from "./support/highlight-worker.mjs";
 const scheme = (text) => [{ id: "custom:test", text, mode: "regex", color: "#123456", enabled: true, caseSensitive: false }];
 
 test("real regex worker supports groups, Unicode and zero-length matches with bounded results", async () => {

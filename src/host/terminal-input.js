@@ -14,7 +14,7 @@
 import { UNVERIFIED_LINE_REASON } from "./policy-messages.js";
 import { t } from "../i18n/core.js";
 
-export const MAX_INPUT_LINE_LENGTH = 8192;
+const MAX_INPUT_LINE_LENGTH = 8192;
 
 /**
  * C0 controls that demonstrably leave the shell's line buffer alone. Anything

@@ -5,6 +5,11 @@ export const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
 export const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
 export const READ_TIMEOUT_MS = 300;
 export const MAX_SESSIONS = 64;
+// Ceiling on live SSH transports. Each one holds a TCP socket, keepalive
+// timers, an optional jump chain and up to MAX_SESSIONS_PER_CONNECTION PTYs;
+// without a ceiling a runaway agent loop or one forgotten tab per server could
+// exhaust file descriptors and the local NAT table with nothing to reclaim it.
+export const MAX_CONNECTIONS = 32;
 // One interactive terminal per conversation per connection is the ownership
 // rule; the per-connection cap bounds the PTY channels one sshd transport must
 // carry (sshd's own MaxSessions defaults to 10, shared with SFTP and exec).
@@ -14,6 +19,11 @@ export const MAX_SESSIONS_PER_CONNECTION = 8;
 export const TTY_PROBE_MS = 4000;
 export const TTY_PROBE_RETRY_DELAYS_MS = [0, 150, 500, 1200];
 export const OPERATOR_APPROVAL_TTL_MS = 5 * 60 * 1000;
+// A login-shell probe that times out with no bytes is not proof of a
+// non-POSIX device: a slow NFS home or a temporarily full MaxSessions looks
+// identical. Retry the probe after this pause instead of caching "no shell"
+// forever and routing every later exec through the interactive terminal.
+export const LOGIN_SHELL_PROBE_RETRY_MS = 60 * 1000;
 // A prompt the operator never answers must not suspend the tool call forever.
 // The approval itself has no host-side deadline in DSH, so Harbor owns one:
 // when it fires the request settles as cancelled, the DSH client card is
@@ -60,6 +70,14 @@ export function isKexMismatchError(error) {
 export const RECONNECT_BASE_DELAY_MS = 1000;
 export const RECONNECT_MAX_DELAY_MS = 30000;
 export const RECONNECT_WAIT_MS = 30000;
+// Upper bound on the self-healing loop. A transport that genuinely cannot be
+// re-established (the account was locked while the link was down, the password
+// was rotated, AAA is broken) has to stop: every retry is a fresh login attempt
+// against a host that may rate-limit, log, or lock the account. After this many
+// attempts the record stays dead and the operator reconnects deliberately.
+// Together with the permanent-failure verdict this is what turns "self-healing"
+// into a bounded retry instead of a login storm.
+export const RECONNECT_MAX_ATTEMPTS = 8;
 // Stream push keepalive: when the terminal is idle the generator still yields
 // an empty item at this cadence, so the client can tell a live-but-quiet
 // terminal from a dead WebSocket mux.
@@ -80,6 +98,8 @@ export const STREAM_IDLE_TIMEOUT_MS = 30000;
 // would storm every selected server (and any rate-limited network path between)
 // at once. Worker-pool the targets instead.
 export const BATCH_MAX_CONCURRENCY = 4;
+/** Pending plans kept for the operator; a flood must not grow the map forever. */
+export const BATCH_TASK_LIMIT = 50;
 // Upper bound for one SFTP/SCP read (agent tools may lower it via max_bytes).
 export const MAX_FILE_READ_BYTES = 4 * 1024 * 1024;
 // Late readers can still see the exit status of the N most recently exited

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import { profileSaveRequestSchema } from "../rpc/schemas.js";
-import { knownHostKey } from "./hostkey.js";
+import { knownHostKey, knownKeys } from "./hostkey.js";
 
 const uuid = z.string().uuid();
 const secretsSchema = z.object({
@@ -13,7 +13,18 @@ const secretsSchema = z.object({
 }).strict();
 const savedSchema = z.object({
   version: z.literal(1),
-  knownHosts: z.array(z.object({ host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535), algorithm: z.string().min(1).max(200), fingerprint: z.string().min(1).max(200), firstSeenAt: z.string().max(80), lastSeenAt: z.string().max(80) }).strict()).max(10000),
+  knownHosts: z.array(z.object({
+    host: z.string().min(1).max(255), port: z.number().int().min(1).max(65535),
+    algorithm: z.string().min(1).max(200), fingerprint: z.string().min(1).max(200),
+    firstSeenAt: z.string().max(80), lastSeenAt: z.string().max(80),
+    // Every host-key algorithm this server has presented; absent in archives
+    // written before multi-algorithm trust records. The pair above stays the
+    // most recently seen key so older readers still understand a row.
+    keys: z.array(z.object({
+      algorithm: z.string().max(200), fingerprint: z.string().min(1).max(200),
+      firstSeenAt: z.string().max(80).nullable().optional(), lastSeenAt: z.string().max(80).nullable().optional()
+    }).strict()).max(16).optional()
+  }).strict()).max(10000),
   groups: z.array(z.object({ id: uuid, name: z.string().min(1).max(80) }).strict()).max(5000),
   credentials: z.array(z.object({ id: uuid, name: z.string().min(1).max(120), authKind: z.enum(["key", "password"]), secrets: secretsSchema }).strict()).max(5000),
   profiles: z.array(z.object({ id: uuid, record: profileSaveRequestSchema, secrets: secretsSchema, jumps: z.array(secretsSchema).max(8) }).strict()).max(5000)
@@ -92,7 +103,16 @@ function validateBackup(data) {
 function assertCompatibleFingerprints(data, knownHosts) {
   for (const host of data.knownHosts) {
     const key = knownHostKey(host.host, host.port), existing = knownHosts.get(key);
-    if (existing && (existing.fingerprint !== host.fingerprint || existing.algorithm !== host.algorithm)) throw new Error("Backup host fingerprint conflicts with an existing trusted host");
+    if (existing === undefined) continue;
+    // Per algorithm: one host row carries every key type the server presents,
+    // and only a fingerprint that disagrees for the SAME algorithm is a trust
+    // conflict. A row without an algorithm (written by an older build) is
+    // matched against any algorithm, which is exactly how it was verified.
+    const stored = knownKeys(existing);
+    for (const incoming of knownKeys(host)) {
+      const same = stored.find((entry) => entry.algorithm === incoming.algorithm || entry.algorithm === "" || incoming.algorithm === "");
+      if (same !== undefined && same.fingerprint !== incoming.fingerprint) throw new Error("Backup host fingerprint conflicts with an existing trusted host");
+    }
   }
 }
 
@@ -113,7 +133,11 @@ export function previewResourceBackup(service, input) {
 async function equivalentJump(service, credentials, archivedCredentials, match, item) {
   const current = match.record;
   const incoming = item.record;
-  if (current.authKind !== incoming.authKind || (current.hostKeyMode ?? "accept-new") !== incoming.hostKeyMode) return false;
+  // Both sides normalize to the stored default: an archive written before the
+  // field existed omits it, and an omitted field means exactly what an explicit
+  // "accept-new" means. Comparing the raw values made such an archive look like
+  // a different jump server and duplicated it on every import.
+  if (current.authKind !== incoming.authKind || (current.hostKeyMode ?? "accept-new") !== (incoming.hostKeyMode ?? "accept-new")) return false;
   if ((current.proxyJump?.length ?? 0) || (incoming.proxyJump?.length ?? 0)) return false;
   if (Boolean(current.credentialId) !== Boolean(incoming.credentialId)) return false;
   const archived = incoming.credentialId ? archivedCredentials.find(({ id }) => id === incoming.credentialId) : null;

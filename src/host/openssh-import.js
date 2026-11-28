@@ -4,7 +4,7 @@ import { homedir, hostname as localHostname, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { isEncryptedPrivateKey } from "../shared/private-key.js";
 
-export const SSH_IMPORT_LIMIT = 500;
+const SSH_IMPORT_LIMIT = 500;
 const CONFIG_BYTES = 1024 * 1024;
 // An IdentityFile is copied into the credential store, so bound the read: real
 // private keys are a few KB, and a mistyped path must not turn a preview into a

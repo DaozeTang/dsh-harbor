@@ -8,42 +8,13 @@
  * must never imply a measurement it does not have.
  */
 import { t } from "../../../i18n/core.js";
+import { formatBytePair, formatBytes } from "../../format.js";
 
-const UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
+// Byte formatting is shared with the file and log panes; re-exported here so
+// the status pane's own modules (and its test) keep one import path.
+export { formatBytePair, formatBytes };
+
 const DASH = "—";
-
-/** Bytes in the largest unit that keeps three significant digits. */
-export function formatBytes(bytes, digits = 1) {
-  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return DASH;
-  if (bytes < 1024) return Math.round(bytes) + " B";
-  return bytesAt(bytes, unitIndex(bytes), digits);
-}
-
-/** The unit index for a value: the largest power of 1024 that fits. */
-function unitIndex(bytes) {
-  let index = 0;
-  let value = bytes;
-  while (value >= 1024 && index < UNITS.length - 1) {
-    value /= 1024;
-    index += 1;
-  }
-  return index;
-}
-
-/** Bytes rendered in one fixed unit, so a used/total pair stays comparable. */
-function bytesAt(bytes, index, digits) {
-  const value = bytes / 1024 ** index;
-  const text = value >= 100 ? value.toFixed(0) : value.toFixed(digits);
-  return text + " " + UNITS[index];
-}
-
-/** "1.8 TB / 2.0 TB": both halves in the unit of the larger value. */
-export function formatBytePair(used, total, digits = 1) {
-  if (typeof used !== "number" || !Number.isFinite(used) || used < 0) return DASH;
-  if (typeof total !== "number" || !Number.isFinite(total) || total < 0) return DASH;
-  const index = unitIndex(total);
-  return bytesAt(used, index, digits) + " / " + bytesAt(total, index, digits);
-}
 
 
 /** A transfer rate, with the unit suffix the probe reports in. */

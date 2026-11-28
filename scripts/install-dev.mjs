@@ -1,7 +1,11 @@
 /**
  * Dev install helper: link this plugin into the web profile and register it as
- * a bundle. Equivalent to:
- *   dsh plugin --profile web add file:/path/to/dsh-harbor -w
+ * a bundle. Equivalent to running, from the repository root:
+ *   dsh plugin --profile web add "$PWD" -w
+ *
+ * The argument is this checkout's own path, not a `file:` spec: `dsh plugin add`
+ * takes a directory (or a tarball) and the `-w` flag registers the web profile's
+ * bundle row in the same step.
  */
 import { execFileSync } from "node:child_process";
 import { readdirSync, statSync, existsSync } from "node:fs";

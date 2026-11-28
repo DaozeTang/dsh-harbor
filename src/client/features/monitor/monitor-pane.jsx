@@ -22,6 +22,7 @@ import CSS from "./monitor.css";
 import { formatBytePair, formatBytes, formatClock, formatPercent, formatRate, formatUptime, usageTone } from "./format.js";
 import { CoreBars, Sparkline, Stat } from "./monitor-charts.jsx";
 import { hostMethodMissing } from "./errors.js";
+import { isMineTerminal } from "../../session-terminals.js";
 
 installSurfaceStyles("monitor", CSS);
 
@@ -89,7 +90,7 @@ function hostMismatchText() {
 }
 
 /** The plain-text snapshot the copy button puts on the clipboard. */
-export function snapshotText(sample, connection) {
+function snapshotText(sample, connection) {
   if (sample === null || sample === undefined) return "";
   const host = sample.host ?? {};
   const lines = [];
@@ -270,10 +271,9 @@ export function MonitorPane({ api, connection, sessionId, active = true, onOpenT
   const identity = [sample?.host?.os, sample?.host?.kernel, sample?.host?.arch]
     .filter((part) => part !== undefined && part !== null && part !== "")
     .join(" · ");
-  // `mine` is computed by the host for this conversation; the owner fallback
-  // keeps an older host (and the offline preview) counting sensibly.
-  const terminalCount = (connection?.terminals ?? []).filter((terminal) => terminal.mine === true
-    || (terminal.mine === undefined && sessionId !== undefined && terminal.ownerSessionId === sessionId)).length;
+  // One ownership rule for the whole panel: the pane resolver, the close-tab
+  // action and this counter must agree on whose terminal is whose.
+  const terminalCount = (connection?.terminals ?? []).filter((terminal) => isMineTerminal(terminal, sessionId)).length;
   const warnings = (sample?.warnings ?? []).map(warningText).filter((text) => text !== null);
 
   let status = "";

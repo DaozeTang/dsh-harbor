@@ -91,14 +91,33 @@ export function replyBytes(code) {
  * @param options - { forwardOut(host, port, cb), onClose?() }.
  * @returns a disposer that stops serving and destroys the socket.
  */
-export function attachSocks5(socket, { forwardOut, onClose }) {
+/**
+ * How long one SOCKS client may take to finish negotiating.
+ *
+ * The listener is reachable by anything on the host, and `ssh -D` has no
+ * second-stage timeout of its own: a client that connects and then says
+ * nothing held its socket, its connection-counter slot and (for the dynamic
+ * forward) a tunnel record for the life of the process. The budget covers the
+ * greeting, the request AND the ssh2 channel open, because forwardOut's round
+ * trip is untimed as well.
+ */
+export const SOCKS_HANDSHAKE_TIMEOUT_MS = 30000;
+
+export function attachSocks5(socket, { forwardOut, onClose, handshakeTimeoutMs = SOCKS_HANDSHAKE_TIMEOUT_MS }) {
   let buffer = Buffer.alloc(0);
   let state = "greeting";
+  let handshakeTimer = null;
+  const stopHandshakeTimer = () => {
+    if (handshakeTimer === null) return;
+    clearTimeout(handshakeTimer);
+    handshakeTimer = null;
+  };
   // The close counting contract: exactly one onClose per served socket. The
   // socket can reach 'close' through several teardowns, so the notification
   // itself must be idempotent — the host's connection counter hangs off it.
   let closeNotified = false;
   const closed = () => {
+    stopHandshakeTimer();
     if (closeNotified) return;
     closeNotified = true;
     try { onClose?.(); } catch { /* counting must never throw */ }
@@ -137,6 +156,10 @@ export function attachSocks5(socket, { forwardOut, onClose }) {
         buffer = buffer.subarray(request.bytes);
         state = "open";
         forwardOut(request.host, request.port, (error, stream) => {
+          // The negotiation is over either way: a refused address answers the
+          // client now, and a slow channel open must not be killed later while
+          // the tunnelled bytes are flowing.
+          stopHandshakeTimer();
           if (error || !stream) { fail(replyCodeForError(error)); return; }
           socket.write(replyBytes(SOCKS_REPLY.SUCCEEDED));
           // One flush, then the parser retires: bytes buffered during the
@@ -165,8 +188,19 @@ export function attachSocks5(socket, { forwardOut, onClose }) {
   socket.on("error", () => socket.destroy());
   socket.on("close", closed);
   socket.on("end", () => socket.destroy());
+  if (Number.isFinite(handshakeTimeoutMs) && handshakeTimeoutMs > 0) {
+    handshakeTimer = setTimeout(() => {
+      handshakeTimer = null;
+      // No SOCKS reply frame: the greeting may not have been parsed at all, so
+      // any reply code would be a claim about a request that was never read.
+      // Closing is what a real SOCKS server does with a stalled client too.
+      socket.destroy();
+    }, handshakeTimeoutMs);
+    handshakeTimer.unref?.();
+  }
 
   return () => {
+    stopHandshakeTimer();
     socket.removeListener("data", onData);
     socket.destroy();
   };

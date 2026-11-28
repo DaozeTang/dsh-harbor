@@ -1,8 +1,8 @@
 /**
  * Plain-HTTP byte routes for streaming downloads and uploads (/harbor/stream).
  */
-import { randomUUID } from "node:crypto";
 import { hashTransferStream } from "../transfer-tasks.js";
+import { replaceRemoteFile, siblingTempPath } from "../sftp-write.js";
 import { hasInteractiveTerminal, INTERACTIVE_UPLOAD_CHUNK_BYTES, scheduleUploadWrite } from "../ssh-upload-scheduling.js";
 import { STREAM_ROUTE_PREFIX, STREAM_HIGH_WATER_MARK, STREAM_IDLE_TIMEOUT_MS } from "./constants.js";
 
@@ -271,7 +271,7 @@ export const withStreamRoutes = (Base) => class extends Base {
     }
     const overwrite = url.searchParams.get("overwrite") !== "false";
     const keepPartial = url.searchParams.get("onCancel") === "keep";
-    const partialPath = `${remotePath}.dsh-upload-${randomUUID()}.tmp`;
+    const partialPath = siblingTempPath(remotePath, "up");
     const prepared = await this.streamPrepareSftp(res, connectionId);
     if (prepared === null) return;
     const targetExists = async () => {
@@ -389,15 +389,12 @@ export const withStreamRoutes = (Base) => class extends Base {
             if (error.code === "target-exists" || !await targetExists()) throw error;
             throw Object.assign(new Error("Upload target already exists"), { code: "target-exists" });
           }
-        } else if (typeof prepared.sftp.ext_openssh_rename === "function") {
-          try {
-            await this.sftpCall(prepared, (cb) => prepared.sftp.ext_openssh_rename(partialPath, remotePath, cb));
-          } catch (error) {
-            if (error.message !== "Server does not support this extended request") throw error;
-            await this.sftpCall(prepared, (cb) => prepared.sftp.rename(partialPath, remotePath, cb));
-          }
         } else {
-          await this.sftpCall(prepared, (cb) => prepared.sftp.rename(partialPath, remotePath, cb));
+          // Explicit overwrite: the shared helper prefers OpenSSH's POSIX rename
+          // (which replaces the target) and falls back to plain rename on a
+          // server without the extension. The non-overwrite branch above keeps
+          // its own "refuse an existing target" rule.
+          await this.sftpDeadline(replaceRemoteFile(prepared.sftp, partialPath, remotePath));
         }
       } catch (error) {
         settled = true;

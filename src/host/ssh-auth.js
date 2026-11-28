@@ -116,7 +116,7 @@ const AUTH_REJECTED_RE = /All configured authentication methods failed/;
  * 4253 §11.1 disconnect reason (ssh2 sets no `level` on it). Node system
  * errors carry STRING codes, so an integer in 1..15 is unambiguous.
  */
-export function isServerDisconnect(error) {
+function isServerDisconnect(error) {
   return error instanceof Error && Number.isInteger(error.code) && error.code >= 1 && error.code <= 15;
 }
 

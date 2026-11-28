@@ -22,7 +22,7 @@ const PSEUDO_DEVICES = new Set([
 const PHYSICAL_DISK = /^(?:sd[a-z]+|hd[a-z]+|vd[a-z]+|xvd[a-z]+|nvme\d+n\d+|mmcblk\d+)$/;
 
 /** One "key=value" line of the #meta section. */
-export function parseMetaLines(lines) {
+function parseMetaLines(lines) {
   const meta = {};
   for (const line of lines) {
     const at = line.indexOf("=");
@@ -51,7 +51,7 @@ function stripQuotes(value) {
 }
 
 /** Split the probe output into sections keyed by their marker name. */
-export function splitSections(stdout) {
+function splitSections(stdout) {
   const sections = new Map();
   const lines = String(stdout ?? "").split(/\r?\n/);
   let current = null;
@@ -128,7 +128,7 @@ export function parseMeminfo(lines) {
 }
 
 /** /proc/loadavg: three load averages, then running/total threads. */
-export function parseLoadavg(lines) {
+function parseLoadavg(lines) {
   const line = (lines.find((entry) => entry.trim() !== "") ?? "").trim();
   const parts = line.split(/\s+/);
   if (parts.length < 3) return null;
@@ -143,7 +143,7 @@ export function parseLoadavg(lines) {
 }
 
 /** Uptime in seconds; the probe already cuts the fractional part. */
-export function parseUptime(lines) {
+function parseUptime(lines) {
   const line = (lines.find((entry) => entry.trim() !== "") ?? "").trim();
   const seconds = Number.parseFloat(line);
   return Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds) : null;
@@ -260,7 +260,12 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-/** ps -e -o pid=,pcpu=,pmem=,comm= rows, sorted by CPU and capped. */
+/**
+ * ps -e -o pid=,pcpu=,pmem=,comm= rows, sorted by CPU and capped.
+ *
+ * Returns only what the wire carries: `count` used to ride along and be
+ * stripped by systemStatsProcessesSchema, so nothing could ever read it.
+ */
 export function parsePs(lines, max = 6) {
   const rows = [];
   for (const line of lines) {
@@ -274,7 +279,7 @@ export function parsePs(lines, max = 6) {
     rows.push({ pid, name, cpuPercent: Math.max(0, cpu), memPercent: Math.max(0, Math.min(100, mem)) });
   }
   rows.sort((a, b) => b.cpuPercent - a.cpuPercent || b.memPercent - a.memPercent);
-  return { rows: rows.slice(0, max), count: rows.length };
+  return { rows: rows.slice(0, max) };
 }
 
 /**

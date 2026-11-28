@@ -1,5 +1,5 @@
 import { COLORS } from "./rules.js";
-import { normalizeCustomRules, MAX_CUSTOM_RULES } from "./custom-rules.js";
+import { normalizeCustomRules } from "./custom-rules.js";
 import { normalizeScheme, getScheme, defaultScheme, parseSchemeBackup } from "./scheme.js";
 
 const KEY = "dsh-harbor.terminal-display.v1";
@@ -142,46 +142,5 @@ export function resetDisplayBackground(theme) {
     const backgrounds = { ...state.backgrounds };
     delete backgrounds[theme];
     return { backgrounds: Object.keys(backgrounds).length ? backgrounds : undefined };
-  });
-}
-/** Drop every background override, returning both themes to DSH's colors. */
-export function resetDisplayBackgrounds() {
-  settings.update(() => ({ backgrounds: undefined }));
-}
-
-export function setDisplayColor(theme, key, color) {
-  if (!["dark", "light"].includes(theme) || !Object.hasOwn(COLORS, key) || !/^#[0-9a-f]{6}$/i.test(color)) return;
-  settings.update((state) => ({ colors: { ...state.colors, [theme]: { ...state.colors?.[theme], [key]: color } } }));
-}
-export function resetDisplayColors(theme) {
-  if (!["dark", "light"].includes(theme)) return;
-  settings.update((state) => ({ colors: { ...state.colors, [theme]: {} } }));
-}
-
-export function saveDisplayRule(rule) {
-  const [valid] = normalizeCustomRules([rule]);
-  if (!valid) return false;
-  let saved = false;
-  settings.update((state) => {
-    const rules = [...(state.customRules ?? [])];
-    const index = rules.findIndex((item) => item.id === valid.id);
-    if (index >= 0) rules[index] = valid;
-    else if (rules.length < MAX_CUSTOM_RULES) rules.push(valid);
-    else return {};
-    saved = true;
-    return { customRules: rules };
-  });
-  return saved;
-}
-export function deleteDisplayRule(id) {
-  settings.update((state) => ({ customRules: (state.customRules ?? []).filter((rule) => rule.id !== id) }));
-}
-export function moveDisplayRule(id, direction) {
-  settings.update((state) => {
-    const rules = [...(state.customRules ?? [])], index = rules.findIndex((rule) => rule.id === id);
-    const next = index + direction;
-    if (![1, -1].includes(direction) || index < 0 || next < 0 || next >= rules.length) return {};
-    [rules[index], rules[next]] = [rules[next], rules[index]];
-    return { customRules: rules };
   });
 }

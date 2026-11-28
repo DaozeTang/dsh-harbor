@@ -29,7 +29,7 @@ function stripComments(css) {
  * Re-emit only custom-property declarations, preserving each rule's selector.
  * Source-order is preserved so dark overrides still win over light ones.
  */
-export function tokenRules(css) {
+function tokenRules(css) {
   const clean = stripComments(css);
   const rules = [];
   let index = 0;

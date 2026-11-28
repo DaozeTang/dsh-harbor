@@ -19,7 +19,11 @@
  *   collapse, chat switches, and closing the SSH tab.
  * - Unowned entries beyond `max` are evicted least-recently-used and disposed;
  *   owned entries are never evicted under a live mount.
- * - `drop` disposes immediately (host session is gone: `no-session`).
+ * - `drop` forgets a session the host ended (`no-session`, an exit item):
+   disposed at once when no mount owns it, otherwise marked dead and
+   disposed by the owning mount's release. A dead entry is never reused.
+ - `release` matches a lease by session, not just by owner: one mount can
+   hold a pooled entry for session A and a lease for session B.
  *
  * Each terminal keeps its last displayed stream offset. Identical new output
  * is retained; only explicitly overlapping offsets are skipped.
@@ -37,15 +41,14 @@
  *   },
  *   release: (sessionId: string, owner: object) => void,
  *   drop: (sessionId: string) => void,
- *   get: (sessionId: string) => { term: object, fit: object, closed: boolean } | undefined,
- *   setClosed: (sessionId: string, closed: boolean) => void,
+ *   get: (sessionId: string) => { term: object, fit: object } | undefined,
  *   forEachTerm: (callback: (term: object) => void) => void,
  *   size: () => number,
  *   disposeAll: () => void
  * }}
  */
 export function createTerminalPool({ create, max = 8 }) {
-  /** sessionId → { term, fit, closed, owner, pooled } in LRU order (Map insertion order). */
+  /** sessionId → { term, fit, owner, pooled } in LRU order (Map insertion order). */
   const entries = new Map();
   /** owner → unpooled entry. One mount's private terminal when the pooled one is live-owned elsewhere. */
   const leases = new Map();
@@ -68,11 +71,26 @@ export function createTerminalPool({ create, max = 8 }) {
       // travels with the entry: a pooled terminal keeps every addon it was
       // built with, for every mount that borrows it.
  ...(built.search !== undefined ? { search: built.search } : {}),
-      closed: false,
       owner: null,
       pooled: true,
       offset: undefined
     };
+  }
+
+  /**
+   * An unpooled terminal for a mount that cannot borrow the pooled entry
+   * (another live mount owns it, or it belongs to a dead PTY that mount is
+   * still drawing). A mount that already holds this session's lease reuses
+   * it, so a re-run acquire never leaves a second terminal behind.
+   */
+  function leaseFor(owner, sessionId) {
+    const held = leases.get(owner);
+    if (held !== undefined && held.sessionId === sessionId) return { entry: held, reused: true };
+    const lease = makeEntry();
+    lease.pooled = false;
+    lease.sessionId = sessionId;
+    leases.set(owner, lease);
+    return { entry: lease, reused: false };
   }
 
   /** The face a mount uses: terminal plus the per-session write accounting. */
@@ -97,7 +115,20 @@ export function createTerminalPool({ create, max = 8 }) {
   return {
     /** Bind one mount to a terminal for `sessionId`; `owner` must be a unique mount token. */
     acquire(sessionId, owner) {
-      const existing = entries.get(sessionId);
+      let existing = entries.get(sessionId);
+      if (existing !== undefined && existing.dead && existing.owner !== null) {
+        // The host session ended while another mount still draws this
+        // terminal. That mount's release will dispose it; this one must not
+        // touch the element, so it runs unpooled like any other live split.
+        const lease = leaseFor(owner, sessionId);
+        return face(lease.entry, lease.reused);
+      }
+      if (existing !== undefined && existing.dead) {
+        // Nobody is drawing it: its scrollback belongs to a dead PTY.
+        existing.term.dispose();
+        entries.delete(sessionId);
+        existing = undefined;
+      }
       if (existing === undefined) {
         const entry = makeEntry();
         entry.owner = owner;
@@ -114,16 +145,22 @@ export function createTerminalPool({ create, max = 8 }) {
       }
       // The entry belongs to another live mount: never steal its element.
       // This mount runs on an unpooled terminal that dies with it.
-      const lease = makeEntry();
-      lease.pooled = false;
-      leases.set(owner, lease);
-      return face(lease, false);
+      const lease = leaseFor(owner, sessionId);
+      return face(lease.entry, lease.reused);
     },
 
-    /** Detach one mount. A pooled entry keeps its scrollback; an unpooled one is disposed. */
+    /**
+     * Detach one mount. A pooled entry keeps its scrollback; an unpooled one
+     * is disposed.
+     *
+     * The lease is matched by session, not just by owner: a mount that holds
+     * both a pooled entry (session A) and a lease (session B) used to have its
+     * release for A dispose B's terminal and return, leaving A's entry owned
+     * by a mount that had already gone — evicted only by LRU, never reused.
+     */
     release(sessionId, owner) {
       const lease = leases.get(owner);
-      if (lease !== undefined) {
+      if (lease !== undefined && lease.sessionId === sessionId) {
         lease.term.dispose();
         leases.delete(owner);
         return;
@@ -131,28 +168,40 @@ export function createTerminalPool({ create, max = 8 }) {
       const entry = entries.get(sessionId);
       if (entry === undefined || entry.owner !== owner) return;
       entry.owner = null;
+      if (entry.dead) {
+        // The host session died while this mount still owned the terminal;
+        // drop() could not dispose it from under a live view and deferred.
+        entry.term.dispose();
+        entries.delete(sessionId);
+        return;
+      }
       evictOverflow();
     },
 
-    /** Forget a session entirely (host session gone): dispose and drop. Any
-     * unpooled lease dies with its own mount. */
-    drop(sessionId) {
+    /**
+     * Forget a session the host ended: dispose and drop. Any unpooled lease
+     * dies with its own mount.
+     *
+     * Pass `owner` when the mount that observed the end is still the one
+     * holding the entry: it may dispose its own terminal. An entry another
+     * live mount still draws must not be disposed under it — that view keeps
+     * its final scrollback — so it is marked dead and disposed by its own
+     * release. A dead entry is never handed out again either way.
+     */
+    drop(sessionId, { owner = null } = {}) {
       const entry = entries.get(sessionId);
-      if (entry !== undefined) {
-        entry.term.dispose();
-        entries.delete(sessionId);
+      if (entry === undefined) return;
+      if (entry.owner !== null && entry.owner !== owner) {
+        entry.dead = true;
+        return;
       }
+      entry.term.dispose();
+      entries.delete(sessionId);
     },
 
     get(sessionId) {
       const entry = entries.get(sessionId);
-      return entry === undefined ? undefined : { term: entry.term, fit: entry.fit, closed: entry.closed };
-    },
-
-    /** The exited/closed flag lives with the session, not the mount. */
-    setClosed(sessionId, closed) {
-      const entry = entries.get(sessionId);
-      if (entry !== undefined) entry.closed = closed;
+      return entry === undefined ? undefined : { term: entry.term, fit: entry.fit };
     },
 
     size() {

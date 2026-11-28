@@ -16,26 +16,9 @@ import { Badge, Button, Checkbox, EmptyState, ErrorNote, Icon, IconButton, TextI
 import { readableLine, toReadableText } from "../../../host/terminal-text.js";
 import { classifyLogLine, segmentLogText } from "../../log-highlight.js";
 import { t } from "../../../i18n/core.js";
+import { formatBytes, formatWhen } from "../../format.js";
 
 const PAGE_BYTES = 48 * 1024;
-
-function formatBytes(bytes) {
-  const value = Number(bytes) || 0;
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatWhen(iso) {
-  if (typeof iso !== "string" || iso === "") return "—";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  const pad = (part) => String(part).padStart(2, "0");
-  if (date.getFullYear() !== new Date().getFullYear()) {
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-  }
-  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
 
 /** Search hits reuse the body's line colouring so a match looks like its context. */
 function hitClass(line) {

@@ -14,7 +14,7 @@ export function scpCommand(direction, remotePath) {
   return `scp -${direction} -- ${shellQuote(remotePath)}`;
 }
 
-export function scpFileName(remotePath) {
+function scpFileName(remotePath) {
   const name = remotePath.replace(/\/+$/, "").split("/").at(-1);
   if (!name || name === "." || name === ".." || CONTROL_CHAR_RE.test(name)) {
     throw new Error("SCP upload requires a complete remote file path");
@@ -28,14 +28,35 @@ class ScpReader {
     this.waiters = [];
     this.failure = null;
     this.closed = false;
-    this.timer = setTimeout(() => this.finish(new Error("SCP transfer timed out")), timeoutMs);
+    this.timeoutMs = timeoutMs;
+    this.timer = null;
+    this.arm();
     stream.on("data", (chunk) => this.push(Buffer.from(chunk)));
+    // For an upload the bytes move out before the remote answers: a drain means
+    // the channel accepted them, which is progress even with no reply yet.
+    stream.on("drain", () => this.arm());
     stream.on("error", (error) => this.finish(error));
     stream.on("close", () => this.finish());
   }
 
+  /**
+   * Restart the inactivity clock. The deadline exists to bound a peer that
+   * stopped answering, not the transfer as a whole: a one-shot timer failed
+   * every SCP transfer that took longer than 30 s — which is most of them on a
+   * link where SCP is the only file channel (the hosts without SFTP).
+   */
+  arm() {
+    if (this.closed) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(
+      () => this.finish(new Error(`SCP transfer timed out (no data for ${Math.round(this.timeoutMs / 1000)}s)`)),
+      this.timeoutMs
+    );
+  }
+
   push(chunk) {
     if (this.closed || chunk.length === 0) return;
+    this.arm();
     this.chunks.push(chunk);
     this.flush();
   }
@@ -126,8 +147,8 @@ async function readFileHeader(reader, stream) {
   }
 }
 
-export async function scpUpload(stream, remotePath, data) {
-  const reader = new ScpReader(stream);
+export async function scpUpload(stream, remotePath, data, { timeoutMs } = {}) {
+  const reader = new ScpReader(stream, timeoutMs);
   try {
     await expectAck(reader);
     const name = scpFileName(remotePath);
@@ -142,8 +163,8 @@ export async function scpUpload(stream, remotePath, data) {
   }
 }
 
-export async function scpDownload(stream, maxBytes) {
-  const reader = new ScpReader(stream);
+export async function scpDownload(stream, maxBytes, { timeoutMs } = {}) {
+  const reader = new ScpReader(stream, timeoutMs);
   try {
     // scp -f waits for the client to request the first entry.
     stream.write(Buffer.from([0]));

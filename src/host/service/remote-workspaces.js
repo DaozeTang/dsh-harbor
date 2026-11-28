@@ -6,7 +6,7 @@ import { posix } from "node:path";
 import { findReusableProfileConnection } from "../profile-connection.js";
 import { normalizeOwner, pickOwnerSession } from "../terminal-owner.js";
 import { AUTO_CONNECT_DISABLED_MESSAGE } from "../agent-connect.js";
-import { RemoteWorkspacePathError, remoteWorkspacePromptText, normalizeRemoteRoot, resolveRemotePath, isRemotePathInside, workspaceRelativePart, REMOTE_WORKSPACE_OFFLINE, REMOTE_WORKSPACE_OUTSIDE } from "../remote-workspace.js";
+import { RemoteWorkspacePathError, remoteWorkspacePromptText, normalizeRemoteRoot, resolveRemotePath, isRemotePathInside, workspaceRelativePart, assertNoControlCharacters, REMOTE_WORKSPACE_OFFLINE, REMOTE_WORKSPACE_OUTSIDE } from "../remote-workspace.js";
 import { fail } from "../envelope.js";
 import { t } from "../../i18n/core.js";
 
@@ -133,7 +133,9 @@ export const withRemoteWorkspaces = (Base) => class extends Base {
 
   /**
    * Resolve one SFTP tool request for the calling session. Unbound sessions
-   * keep the historical behaviour (absolute path, current/omitted connection).
+   * keep the historical behaviour (absolute or covering-relative path, current
+   * or omitted connection) but still refuse an empty one: `sftp_upload_dir`
+   * with `remote_path: ""` used to re-root the tree at `/` on the server.
    * A bound session resolves relative paths under its remote root, defaults to
    * the bound server, refuses escapes, and never silently talks to another
    * server than the one the binding names. A session that sits in a
@@ -151,7 +153,17 @@ export const withRemoteWorkspaces = (Base) => class extends Base {
     const sessionId = typeof exec?.agent?.id === "string" ? exec.agent.id : undefined;
     const sessionDirectory = this.sessionDirectoryOf(exec);
     const binding = this.remoteBindingFor(sessionDirectory);
-    if (binding === undefined) return { connectionId: request.connectionId, path: request.path, bound: false };
+    if (binding === undefined) {
+      // No binding means "whatever the tool said", and the tool's own docs say
+      // an absolute path. An absent or blank one is not an absolute path, and
+      // the join/rename below turn it into a filesystem-root destination.
+      const path = request?.path;
+      if (typeof path !== "string" || path.trim().length === 0) {
+        throw new RemoteWorkspacePathError("path must not be empty", REMOTE_WORKSPACE_OUTSIDE);
+      }
+      assertNoControlCharacters(path);
+      return { connectionId: request.connectionId, path, bound: false };
+    }
     const record = binding.record;
     const subdirectory = binding.relative === undefined ? workspaceRelativePart(record.workspacePath, sessionDirectory) : binding.relative;
     const base = subdirectory === null || subdirectory === "" ? record.remotePath : `${record.remotePath}/${subdirectory}`;

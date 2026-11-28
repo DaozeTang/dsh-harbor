@@ -49,6 +49,7 @@ function fakeClient(source, options = {}) {
       const stream = new EventEmitter();
       stream.stderr = new EventEmitter();
       stream.close = () => {};
+      stream.destroy = () => { stream.destroyed = true; };
       callback(null, stream);
       const payload = typeof source === "function" ? source(index) : source;
       // A silent probe is used to test the service-side timeout; the stream's
@@ -225,6 +226,38 @@ function fakeClock() {
   assert.equal(result.error.code, "probe-failed");
   assert.match(result.error.message, /超时/);
   assert.ok(Date.now() - started < 1000, "the timeout wins over a silent channel");
+}
+
+// ── repeated silent probes stop opening channels for a minute ──────────────
+{
+  const clock = fakeClock();
+  try {
+    const client = fakeClient(probeText, { silent: true, delay: 5000 });
+    const service = serviceWith(client);
+    service.config.monitorProbeTimeoutMs = 40;
+
+    const first = await service.systemStats({ connectionId: "c1" });
+    assert.equal(first.error.code, "probe-failed", "the first timeout is reported honestly");
+
+    clock.advance(2000);
+    const second = await service.systemStats({ connectionId: "c1" });
+    assert.equal(second.error.code, "probe-failed");
+    assert.equal(client.calls.length, 2);
+
+    // Two consecutive silent probes are a verdict, not a cadence: further
+    // calls must not open yet another channel on a host that never answers.
+    clock.advance(1000);
+    const third = await service.systemStats({ connectionId: "c1" });
+    assert.equal(third.error.code, "probe-unresponsive");
+    assert.equal(client.calls.length, 2, "a silent host is not re-probed inside the memo");
+
+    clock.advance(60000);
+    const fourth = await service.systemStats({ connectionId: "c1" });
+    assert.equal(fourth.error.code, "probe-failed");
+    assert.equal(client.calls.length, 3, "the memo expires and sampling is retried");
+  } finally {
+    clock.restore();
+  }
 }
 
 // ── probe state is dropped with its connection ─────────────────────────────

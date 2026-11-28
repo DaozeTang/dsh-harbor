@@ -14,7 +14,8 @@
  * cordis.patch.yml and reaches the root service through `service-hub.js`.
  */
 import { harborHub, currentHarborService } from "../shared/service-hub.js";
-import { promptFromTerminalData, tailUtf8 } from "./service/text.js";
+import { endsWithPrompt, promptFromTerminalData, tailUtf8 } from "./service/text.js";
+import { toReadableText } from "./terminal-text.js";
 
 /** Registry type models pass to terminal_open. */
 export const HARBOR_SSH_BACKEND_TYPE = "harbor-ssh";
@@ -30,7 +31,9 @@ const PROMPT_SILENCE_MS = 250;
 /** Silence after a send that ends the wait even without a visible prompt. */
 const IDLE_SILENCE_MS = 3000;
 /** Longest one send may wait for its foreground command. */
-const SEND_TIMEOUT_MS = 30000;
+export const SEND_TIMEOUT_MS = 30000;
+/** Poll interval while one send waits for its command to settle. */
+const SEND_POLL_MS = 50;
 /** Default page size of terminal_read. */
 const DEFAULT_READ_LINES = 500;
 /** UTF-8 bound on one rendered result. */
@@ -66,7 +69,7 @@ export class SshTerminalSession {
   /**
    * @param {object} options - root service, live PTY record, registry identity.
    */
-  constructor({ service, session, registryId, name, connectionId, ownerSessionId, motd }) {
+  constructor({ service, session, registryId, name, connectionId, ownerSessionId, motd, sendTimeoutMs }) {
     this.service = service;
     this.session = session;
     this.registryId = registryId;
@@ -81,6 +84,9 @@ export class SshTerminalSession {
     this.renderedCursor = 0;
     this.renderTruncated = false;
     this.exitStatus = null;
+    // Longest one send may wait. The backend never sets it; the default is the
+    // production bound, and the seam exists so a test can watch it expire.
+    this.sendTimeoutMs = Number.isFinite(sendTimeoutMs) && sendTimeoutMs > 0 ? sendTimeoutMs : SEND_TIMEOUT_MS;
   }
 
   /** Whether the registry may still route traffic to this session. */
@@ -104,12 +110,17 @@ export class SshTerminalSession {
   startSend(request) {
     if (this.takenOver) throw new Error(TAKEN_OVER);
     if (!this.alive) throw new Error("this SSH terminal is no longer running; open a new terminal with terminal_open");
-    const control = { cancelled: false };
+    const control = { cancelled: false, settled: false };
+    let onAbort;
     const operation = {
-      done: this.runSend(request, control),
+      done: null,
       readOutput: () => this.consumeDelta(),
       cancel: () => {
-        if (control.cancelled) return false;
+        // A settled send is not cancelled — it already finished. Writing ^C
+        // then would type into a terminal this call no longer owns: it kills
+        // whatever the person (or the next tool call) started in the meantime,
+        // and the registry may ask at any point after `done` resolved.
+        if (control.cancelled || control.settled) return false;
         control.cancelled = true;
         // The interrupt is queued behind the written input, so it reaches the
         // command that input started — same ordering as the official backend.
@@ -117,6 +128,22 @@ export class SshTerminalSession {
         return true;
       }
     };
+    // A tool abort must stop the wait here; relying on the registry to call
+    // cancel() left the send running to its 30-second deadline on hosts that
+    // only abort the signal.
+    if (request?.signal !== undefined) {
+      if (request.signal.aborted) {
+        // Already cancelled: do not write ^C into a terminal this call never
+        // touched. runSend sees the flag and stops before sending anything.
+        control.cancelled = true;
+      } else {
+        onAbort = () => operation.cancel();
+        request.signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+    operation.done = this.runSend(request, control).finally(() => {
+      if (onAbort !== undefined) request.signal.removeEventListener("abort", onAbort);
+    });
     return operation;
   }
 
@@ -165,45 +192,66 @@ export class SshTerminalSession {
     this.exitStatus = this.status();
   }
 
-  /** One send: write input, then wait for readiness, silence or the deadline. */
+  /**
+   * One send: write input, then wait for readiness, silence or the deadline.
+   *
+   * The deadline bounds the whole wait and is checked on EVERY pass. A command
+   * that keeps writing (`journalctl -f`, a noisy build) only ever resets
+   * `lastChange`; behind the "output stopped" branches the deadline never ran,
+   * so one terminal_send could stay open forever.
+   */
   async runSend(request, control) {
-    this.renderedCursor = this.renderText().length;
-    this.renderTruncated = false;
-    const input = `${request.text}${request.submit ? "\r" : ""}`;
-    if (input.length > 0 && !this.service.writeTerminalSession(this.session, input)) {
-      throw new Error("the SSH terminal is no longer writing");
+    try {
+      if (control.cancelled) throw new Error("the SSH terminal send was cancelled");
+      this.renderedCursor = this.renderText().length;
+      this.renderTruncated = false;
+      const input = `${request.text}${request.submit ? "\r" : ""}`;
+      if (input.length > 0 && !this.service.writeTerminalSession(this.session, input)) {
+        throw new Error("the SSH terminal is no longer writing");
+      }
+      const deadline = Date.now() + this.sendTimeoutMs;
+      let lastOffset = this.journalOffset();
+      let lastChange = Date.now();
+      let waitReason = "timeout";
+      for (;;) {
+        await delay(SEND_POLL_MS);
+        if (control.cancelled) {
+          // Stay inside the registry's existing wait-reason vocabulary; the
+          // interrupt was already written, so the wait simply ends now.
+          waitReason = "inferred_idle";
+          break;
+        }
+        if (this.status().kind === "exited") {
+          waitReason = "session_exit";
+          break;
+        }
+        const offset = this.journalOffset();
+        if (offset !== lastOffset) {
+          // Still printing: this run has not settled yet.
+          lastOffset = offset;
+          lastChange = Date.now();
+        } else {
+          const silentFor = Date.now() - lastChange;
+          if (!control.cancelled && silentFor >= PROMPT_SILENCE_MS && this.atPrompt()) {
+            waitReason = "stdin_read";
+            break;
+          }
+          if (silentFor >= IDLE_SILENCE_MS) {
+            waitReason = "inferred_idle";
+            break;
+          }
+        }
+        // Bounds every send, streaming or not.
+        if (Date.now() >= deadline) break;
+      }
+      const delta = this.consumeDelta();
+      return { viewport: delta.delta, waitReason, sessionStatus: this.status(), truncated: delta.truncated };
+    } finally {
+      // Anything that runs after this point (a late abort listener, the
+      // registry's own cleanup) must see the send as settled.
+      control.settled = true;
     }
-    const deadline = Date.now() + SEND_TIMEOUT_MS;
-    let lastOffset = this.journalOffset();
-    let lastChange = Date.now();
-    let waitReason = "timeout";
-    for (;;) {
-      await delay(50);
-      if (this.status().kind === "exited") {
-        waitReason = "session_exit";
-        break;
-      }
-      const offset = this.journalOffset();
-      if (offset !== lastOffset) {
-        lastOffset = offset;
-        lastChange = Date.now();
-        continue;
-      }
-      const silentFor = Date.now() - lastChange;
-      if (!control.cancelled && silentFor >= PROMPT_SILENCE_MS && this.atPrompt()) {
-        waitReason = "stdin_read";
-        break;
-      }
-      if (silentFor >= IDLE_SILENCE_MS) {
-        waitReason = "inferred_idle";
-        break;
-      }
-      if (Date.now() >= deadline) break;
-    }
-    const delta = this.consumeDelta();
-    return { viewport: delta.delta, waitReason, sessionStatus: this.status(), truncated: delta.truncated };
   }
-
   /** Output written since the previous operation read. */
   consumeDelta() {
     const rendered = this.service.renderTerminalSession(this.session);
@@ -229,9 +277,13 @@ export class SshTerminalSession {
   atPrompt() {
     const tail = this.service.terminalSessionTail(this.session, 4096);
     if (promptFromTerminalData(tail) !== null) return true;
-    const rendered = this.renderText().trimEnd();
+    // The fallback only looks at the end of the screen. Rendering the whole
+    // journal here ran on every 50 ms poll; a 2 MB journal cost ~39 ms per
+    // pass. The last 4 KB is all the regex can see anyway.
+    const rendered = toReadableText(tail).trimEnd();
     if (rendered.length === 0) return false;
-    return /(?:^|\n)[^\n]{0,100}[%$#>\u276f]\s*$/.test(rendered.slice(-160));
+    // The rendered rule lives next to its raw counterpart in service/text.js.
+    return endsWithPrompt(rendered);
   }
 
   /** Current UTF-16 end offset of the session's output journal. */
@@ -268,6 +320,12 @@ export class HarborSshBackend {
   constructor(hub = harborHub()) {
     this.hub = hub;
     this.type = HARBOR_SSH_BACKEND_TYPE;
+    // owner session id -> queue tail. Spawn both opens and publishes the
+    // registry binding, so two concurrent terminal_open calls used to race:
+    // both passed liveAgentTerminal(), then both adopted the same PTY and
+    // published two registry records. Serializing the whole spawn makes the
+    // second call see the first binding and fail with "already has a terminal".
+    this.spawnLocks = new Map();
   }
 
   /**
@@ -281,20 +339,32 @@ export class HarborSshBackend {
     if (service === null || service === undefined) {
       throw new Error("Harbor's SSH service is still loading; retry in a moment");
     }
-    const prepared = await service.openAgentTerminal({ owner: spec.owner, signal: spec.signal });
-    const session = prepared.session;
-    const rendered = service.renderTerminalSession(session).text;
-    const motd = tailUtf8(rendered, MAX_MOTD_BYTES).text;
-    const binding = new SshTerminalSession({
-      service,
-      session,
-      registryId: String(spec.sessionId),
-      name: spec.name,
-      connectionId: prepared.connectionId,
-      ownerSessionId: service.terminalOwner(spec.owner),
-      motd
-    });
-    service.attachTerminalBinding(binding);
-    return binding;
+    const ownerKey = service.terminalOwner(spec.owner) ?? "anonymous";
+    const previous = this.spawnLocks.get(ownerKey) ?? Promise.resolve();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const queued = previous.then(() => gate);
+    this.spawnLocks.set(ownerKey, queued);
+    await previous;
+    try {
+      const prepared = await service.openAgentTerminal({ owner: spec.owner, signal: spec.signal });
+      const session = prepared.session;
+      const rendered = service.renderTerminalSession(session).text;
+      const motd = tailUtf8(rendered, MAX_MOTD_BYTES).text;
+      const binding = new SshTerminalSession({
+        service,
+        session,
+        registryId: String(spec.sessionId),
+        name: spec.name,
+        connectionId: prepared.connectionId,
+        ownerSessionId: service.terminalOwner(spec.owner),
+        motd
+      });
+      service.attachTerminalBinding(binding);
+      return binding;
+    } finally {
+      release();
+      if (this.spawnLocks.get(ownerKey) === queued) this.spawnLocks.delete(ownerKey);
+    }
   }
 }

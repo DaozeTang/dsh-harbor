@@ -171,8 +171,10 @@ export function ConnectDialog({ api, credentials, sessionId, open, onClose, onCo
       setError(t("端口需为 1–65535 的整数"));
       return;
     }
-    if (form.authKind === "password" && form.password === "") {
-      setError(t("请输入密码后再保存并连接"));
+    // Only an inline password has to be typed here; a shared credential is
+    // already in the credential store (the picker only lists configured ones).
+    if (form.credentialId === "" && form.authKind === "password" && form.password === "") {
+      setError(t("请输入密码，或选择一条已保存的共享凭据"));
       return;
     }
     if (!guard()) return;
@@ -180,6 +182,11 @@ export function ConnectDialog({ api, credentials, sessionId, open, onClose, onCo
     setError(null);
     setStatus(t("正在保存并连接…"));
     try {
+      // A chosen shared credential travels with the resource. Omitting it saved
+      // a server that had NEITHER the shared credential NOR an inline secret
+      // (the password/key fields are hidden while a credential is selected), so
+      // the very first connect after "save and connect" failed.
+      const sharedCredentialId = form.credentialId === "" ? null : form.credentialId;
       const saved = await api.profileSave({
         name: form.name.trim(),
         host: form.host.trim(),
@@ -188,17 +195,24 @@ export function ConnectDialog({ api, credentials, sessionId, open, onClose, onCo
         authKind: form.authKind,
         hostKeyMode: "accept-new",
         groupId: null,
+        credentialId: sharedCredentialId,
         proxyJump: proxyJumps.map((hop) => ({ profileId: hop.profileId }))
       });
-      const primaryRef = form.authKind === "password" ? saved.credentialRefs.password : saved.credentialRefs.privateKey;
-      const secret = form.authKind === "password" ? form.password : form.privateKey;
-      if (secret !== "") {
-        const response = await credentials.set(primaryRef, secret);
-        if (response && response.ok === false) throw new Error(response.error?.message ?? t("无法保存凭据"));
-      }
-      if (form.authKind === "key" && form.passphrase !== "") {
-        const response = await credentials.set(saved.credentialRefs.passphrase, form.passphrase);
-        if (response && response.ok === false) throw new Error(response.error?.message ?? t("无法保存私钥口令"));
+      // Inline secrets belong to THIS resource only; with a shared credential
+      // the credential store already holds them and the profile refs must stay
+      // untouched (and must never receive a stale value left in the hidden
+      // field).
+      if (sharedCredentialId === null) {
+        const primaryRef = form.authKind === "password" ? saved.credentialRefs.password : saved.credentialRefs.privateKey;
+        const secret = form.authKind === "password" ? form.password : form.privateKey;
+        if (secret !== "") {
+          const response = await credentials.set(primaryRef, secret);
+          if (response && response.ok === false) throw new Error(response.error?.message ?? t("无法保存凭据"));
+        }
+        if (form.authKind === "key" && form.passphrase !== "") {
+          const response = await credentials.set(saved.credentialRefs.passphrase, form.passphrase);
+          if (response && response.ok === false) throw new Error(response.error?.message ?? t("无法保存私钥口令"));
+        }
       }
       const profileId = saved?.profile?.profileId;
       if (profileId === undefined) throw new Error(t("保存资源后未能取得 profileId"));

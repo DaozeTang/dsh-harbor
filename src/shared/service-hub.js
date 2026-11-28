@@ -18,7 +18,7 @@ const HUB_KEY = Symbol.for("dsh-harbor.service-hub");
 export function harborHub() {
   let hub = globalThis[HUB_KEY];
   if (hub === undefined) {
-    hub = { service: null, backend: null, backendType: "harbor-ssh" };
+    hub = { service: null, backend: null };
     globalThis[HUB_KEY] = hub;
   }
   return hub;

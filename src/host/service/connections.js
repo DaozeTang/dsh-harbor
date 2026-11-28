@@ -12,7 +12,7 @@ import { applyAgentForwarding } from "../ssh-agent.js";
 import { decideHostKey, keyFingerprint, blobAlgorithm, DEFAULT_HOST_KEY_MODE } from "../hostkey.js";
 import { noConnectionGuidance } from "../agent-connect.js";
 import { sharedCredentialRefs, profileCredentialRefs } from "./models.js";
-import { KEEPALIVE_INTERVAL_MS, KEEPALIVE_COUNT_MAX, CONNECT_RETRIES, LEGACY_VRP_ALGORITHMS, isKexMismatchError, RECONNECT_BASE_DELAY_MS, RECONNECT_MAX_DELAY_MS, RECONNECT_WAIT_MS } from "./constants.js";
+import { KEEPALIVE_INTERVAL_MS, KEEPALIVE_COUNT_MAX, CONNECT_RETRIES, MAX_CONNECTIONS, LEGACY_VRP_ALGORITHMS, isKexMismatchError, RECONNECT_BASE_DELAY_MS, RECONNECT_MAX_DELAY_MS, RECONNECT_MAX_ATTEMPTS, RECONNECT_WAIT_MS } from "./constants.js";
 
 export const withConnections = (Base) => class extends Base {
   async connect(request) {
@@ -48,6 +48,16 @@ export const withConnections = (Base) => class extends Base {
   }
 
   async connectInternal(request, profileId = undefined, { activate = true } = {}) {
+    // Bound how many transports one plugin instance holds. Every live record
+    // keeps a TCP socket, keepalive timers, an optional jump chain and up to
+    // MAX_SESSIONS_PER_CONNECTION PTYs; a runaway agent loop or one forgotten
+    // tab per server could otherwise exhaust file descriptors and the local NAT
+    // table, and nothing in the product would ever reclaim them. A record that
+    // is closing does not count — disconnecting frees the slot.
+    const openRecords = [...this.connections.values()].filter((record) => record.closing !== true).length;
+    if (openRecords >= MAX_CONNECTIONS) {
+      return { ok: false, error: fail("connection-limit", t(`同时打开的 SSH 连接已达上限（${MAX_CONNECTIONS} 条），请先断开不再使用的服务器再连接。`)) };
+    }
     const id = request.name ? `${request.name}-${randomUUID().slice(0, 8)}` : randomUUID();
     const connectConfig = {
       host: request.host,
@@ -135,6 +145,10 @@ export const withConnections = (Base) => class extends Base {
       connecting: true,
       reconnectTimer: null,
       reconnectAttempts: 0,
+      // Set once the loop has given up (permanent failure or attempt budget),
+      // so ensureAlive answers immediately instead of waiting for a retry that
+      // will never be scheduled.
+      reconnectStopped: false,
       reconnectWaiters: []
     };
     this.connections.set(id, record);
@@ -153,7 +167,6 @@ export const withConnections = (Base) => class extends Base {
       this.connections.delete(id);
       return connected;
     }
-    this.attachTransportHandlers(record);
     const value = {
       connectionId: id,
       host: connectConfig.host,
@@ -372,16 +385,33 @@ export const withConnections = (Base) => class extends Base {
         }
         record.dead = false;
         record.reconnectAttempts = 0;
+        record.reconnectStopped = false;
         // Success: the client owns these now; they are not "in flight".
         record.inflight = new Set();
-        await this.persistFirstSeenHostKey(record);
+        // Attach the loss handlers BEFORE the first await below. The window
+        // between "ready" and "somebody is listening for close" is where a
+        // transport that died immediately used to disappear: the record stayed
+        // `dead: false`, list() reported it connected, every operation on it
+        // failed, and — because handleTransportLoss never ran — no reconnect was
+        // ever scheduled. Handlers are attached for every connect, so the
+        // callers no longer have to remember to do it.
+        this.attachTransportHandlers(record);
+        // Recording a first-seen host key is a local file write. A full disk or
+        // a read-only profile must not turn a working login into a failure, and
+        // must not leave a live transport behind a record that connect() is
+        // about to delete.
+        try {
+          await this.persistFirstSeenHostKey(record);
+        } catch (error) {
+          this.log(`SSH host key for ${record.host}:${record.port} could not be recorded: ${error?.message ?? error}`);
+        }
         return { ok: true };
       } catch (error) {
         // Host-key TOFU rejection is never transient: surface it, don't retry.
         if (record.hostKeyMismatch) {
           for (const hop of record.hops) { try { hop.end(); } catch {} }
           record.hops = [];
-          return { ok: false, error: this.hostKeyError(record.hostKeyMismatch) };
+          return { ok: false, retriable: false, error: this.hostKeyError(record.hostKeyMismatch) };
         }
         lastError = error;
         // A cancelled connect must not spend its remaining retry attempts.
@@ -446,6 +476,10 @@ export const withConnections = (Base) => class extends Base {
     });
     return {
       ok: false,
+      // Whether the self-healing loop may dial again. A rejected credential,
+      // a blocked account or a protocol refusal needs the operator, not another
+      // attempt: retrying those is what locked people out of their own devices.
+      retriable: isTransientConnectError(lastError),
       error: fail("connect-failed", formatConnectFailure(diagnosis, `${record.username}@${record.host}:${record.port}`))
     };
   }
@@ -480,10 +514,21 @@ export const withConnections = (Base) => class extends Base {
         sock.once("error", onReject);
       });
     }
-    const { stream, plan } = await withRepairedBanner(sock, {
-      // Never outlast the handshake budget the user set for this connection.
-      timeoutMs: Math.min(record.connectConfig.readyTimeout ?? 20000, 10000)
-    });
+    let repaired;
+    try {
+      repaired = await withRepairedBanner(sock, {
+        // Never outlast the handshake budget the user set for this connection.
+        timeoutMs: Math.min(record.connectConfig.readyTimeout ?? 20000, 10000)
+      });
+    } catch (error) {
+      // The banner reader settles with the socket paused and detached, and the
+      // caller retries on a BRAND-NEW socket. Leaving this one alone kept a
+      // live TCP connection (and the peer's half-open sshd session) per failed
+      // attempt, invisibly — nothing else holds a reference to it.
+      try { sock.destroy(); } catch {}
+      throw error;
+    }
+    const { stream, plan } = repaired;
     record.bannerRepairNote = plan.reason === "" ? null : plan.reason;
     return stream;
   }
@@ -497,96 +542,128 @@ export const withConnections = (Base) => class extends Base {
    */
   async connectChain(proxyJump, targetHost, targetPort, record = null) {
     const hops = [];
+    // ONE teardown for every failure exit. Two shapes used to leak a live SSH
+    // transport (with its keepalive timer and TCP socket) until the process
+    // exited: a hop whose own handshake failed, because it is only pushed onto
+    // `hops` after success, and a hop whose forwardOut threw SYNCHRONOUSLY —
+    // ssh2 does that on an already-closed client instead of calling back, so the
+    // promise executor's implicit rejection skipped the in-callback cleanup.
+    // connectClient cannot cover either case: it only sees `record.hops`, which
+    // is assigned once the WHOLE chain succeeds.
+    const closeAll = (extra = null) => {
+      for (const hop of hops) { try { hop.end(); } catch {} }
+      if (extra !== null) { try { extra.end(); } catch {} }
+    };
     let sock;
-    for (let index = 0; index < proxyJump.length; index += 1) {
-      const hopConfig = proxyJump[index];
-      const hopConnectConfig = {
-        host: hopConfig.host,
-        port: hopConfig.port ?? 22,
-        username: hopConfig.username,
-        // Jump hosts are ordinary SSH servers; legacy KEX is NOT forced on
-        // them, so an old switch as a jump host would need its own explicit
-        // `legacy` support. The legacy downgrade applies to the target
-        // connection (the one that terminates at the device).
-        readyTimeout: hopConfig.readyTimeout ?? 20000
-      };
-      // Primary + optional secondary factor (dual-factor jump devices): the
-      // hop's auth handler walks methods from whatever is configured.
-      if (hopConfig.auth?.password !== undefined) hopConnectConfig.password = hopConfig.auth.password;
-      if (hopConfig.auth?.privateKey !== undefined) {
-        hopConnectConfig.privateKey = hopConfig.auth.privateKey;
-        if (hopConfig.auth.passphrase !== void 0) hopConnectConfig.passphrase = hopConfig.auth.passphrase;
-      }
-      if (hopConfig.auth?.secondary?.kind === "key") {
-        hopConnectConfig.privateKey = hopConfig.auth.secondary.privateKey;
-        if (hopConfig.auth.secondary.passphrase !== void 0) hopConnectConfig.passphrase = hopConfig.auth.secondary.passphrase;
-      } else if (hopConfig.auth?.secondary?.kind === "password") {
-        hopConnectConfig.password = hopConfig.auth.secondary.password;
-      }
-      // Jump hosts get the same keyboard-interactive support as targets: an
-      // MFA-prompting bastion is exactly where a saved password answers prompts.
-      const hopTracker = createAuthTracker();
-      if (hopConnectConfig.password !== undefined) {
-        hopConnectConfig.tryKeyboard = true;
-        hopConnectConfig.authHandler = makeAuthHandler(hopTracker, {
-          hasPassword: true, hasPrivateKey: hopConnectConfig.privateKey !== undefined, tryKeyboard: true
-        });
-      }
-      if (sock !== undefined) hopConnectConfig.sock = sock;
-      const hopState = { hostKeyMismatch: null, hostKeyToRecord: null };
-      this.attachHostVerifier(hopConnectConfig, hopState, hopConnectConfig.host, hopConnectConfig.port, hopConfig.hostKeyMode);
-      const hopClient = this.newClient();
-      // Reachable by an operator cancel from here on, not only once the whole
-      // chain has succeeded.
-      if (record !== null) this.trackInflight(record, () => { try { hopClient.end(); } catch {} });
-      try {
-        await new Promise((resolve, reject) => {
-          // Standing error listener for the hop's whole life: ssh2 may emit a
-          // second protocol error after the first one settled this promise,
-          // and an unhandled 'error' crashes the DSH process.
-          let settled = false;
-          if (hopConnectConfig.tryKeyboard) {
-            hopClient.on("keyboard-interactive", (name, instructions, instructionsLang, prompts, finish) => {
-              hopTracker.kbdSeen = true;
-              finish(prompts.map(() => hopConnectConfig.password));
-            });
-          }
-          hopClient.once("ready", () => { if (!settled) { settled = true; resolve(); } });
-          hopClient.on("error", (cause) => { if (!settled) { settled = true; reject(cause); } });
-          hopClient.connect(hopConnectConfig);
-        });
-        await this.persistFirstSeenHostKey(hopState);
-      } catch (error) {
-        for (const h of hops) { try { h.end(); } catch {} }
-        if (hopState.hostKeyMismatch) {
-          const m = hopState.hostKeyMismatch;
-          const hostKeyFailure = this.hostKeyError(m);
-          const hopError = new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${hostKeyFailure.message}`);
-          hopError.code = hostKeyFailure.code;
-          throw hopError;
+    try {
+      for (let index = 0; index < proxyJump.length; index += 1) {
+        const hopConfig = proxyJump[index];
+        const hopConnectConfig = {
+          host: hopConfig.host,
+          port: hopConfig.port ?? 22,
+          username: hopConfig.username,
+          // Jump hosts are ordinary SSH servers; legacy KEX is NOT forced on
+          // them, so an old switch as a jump host would need its own explicit
+          // `legacy` support. The legacy downgrade applies to the target
+          // connection (the one that terminates at the device).
+          readyTimeout: hopConfig.readyTimeout ?? 20000
+        };
+        // Primary + optional secondary factor (dual-factor jump devices): the
+        // hop's auth handler walks methods from whatever is configured.
+        if (hopConfig.auth?.password !== undefined) hopConnectConfig.password = hopConfig.auth.password;
+        if (hopConfig.auth?.privateKey !== undefined) {
+          hopConnectConfig.privateKey = hopConfig.auth.privateKey;
+          if (hopConfig.auth.passphrase !== void 0) hopConnectConfig.passphrase = hopConfig.auth.passphrase;
         }
-        throw new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${error.message}`);
-      }
-      hops.push(hopClient);
-      // forwardOut to the next destination: the next hop, or the final target.
-      const next = index + 1 < proxyJump.length ? proxyJump[index + 1] : null;
-      const nextHost = next !== null ? next.host : targetHost;
-      const nextPort = next !== null ? (next.port ?? 22) : targetPort;
-      sock = await new Promise((resolve, reject) => {
-        hopClient.forwardOut("127.0.0.1", 0, nextHost, nextPort, (error, stream) => {
-          if (error) {
-            for (const h of hops) { try { h.end(); } catch {} }
-            reject(new Error(`proxyJump hop ${index + 1} forwardOut to ${nextHost}:${nextPort}: ${error.message}`));
-          } else {
-            // Track every forwarded stream too: a cancel while the chain is
-            // still being built would otherwise leave these open.
-            if (record !== null) this.trackInflight(record, () => { try { stream.destroy?.(); } catch {} });
-            resolve(stream);
+        if (hopConfig.auth?.secondary?.kind === "key") {
+          hopConnectConfig.privateKey = hopConfig.auth.secondary.privateKey;
+          if (hopConfig.auth.secondary.passphrase !== void 0) hopConnectConfig.passphrase = hopConfig.auth.secondary.passphrase;
+        } else if (hopConfig.auth?.secondary?.kind === "password") {
+          hopConnectConfig.password = hopConfig.auth.secondary.password;
+        }
+        // Jump hosts get the same keyboard-interactive support as targets: an
+        // MFA-prompting bastion is exactly where a saved password answers prompts.
+        const hopTracker = createAuthTracker();
+        if (hopConnectConfig.password !== undefined) {
+          hopConnectConfig.tryKeyboard = true;
+          hopConnectConfig.authHandler = makeAuthHandler(hopTracker, {
+            hasPassword: true, hasPrivateKey: hopConnectConfig.privateKey !== undefined, tryKeyboard: true
+          });
+        }
+        if (sock !== undefined) hopConnectConfig.sock = sock;
+        const hopState = { hostKeyMismatch: null, hostKeyToRecord: null };
+        this.attachHostVerifier(hopConnectConfig, hopState, hopConnectConfig.host, hopConnectConfig.port, hopConfig.hostKeyMode);
+        const hopClient = this.newClient();
+        // Reachable by an operator cancel from here on, not only once the whole
+        // chain has succeeded.
+        if (record !== null) this.trackInflight(record, () => { try { hopClient.end(); } catch {} });
+        try {
+          await new Promise((resolve, reject) => {
+            // Standing error listener for the hop's whole life: ssh2 may emit a
+            // second protocol error after the first one settled this promise,
+            // and an unhandled 'error' crashes the DSH process.
+            let settled = false;
+            if (hopConnectConfig.tryKeyboard) {
+              hopClient.on("keyboard-interactive", (name, instructions, instructionsLang, prompts, finish) => {
+                hopTracker.kbdSeen = true;
+                finish(prompts.map(() => hopConnectConfig.password));
+              });
+            }
+            hopClient.once("ready", () => { if (!settled) { settled = true; resolve(); } });
+            hopClient.on("error", (cause) => { if (!settled) { settled = true; reject(cause); } });
+            hopClient.connect(hopConnectConfig);
+          });
+        } catch (error) {
+          closeAll(hopClient);
+          if (hopState.hostKeyMismatch) {
+            const m = hopState.hostKeyMismatch;
+            const hostKeyFailure = this.hostKeyError(m);
+            const hopError = new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${hostKeyFailure.message}`);
+            hopError.code = hostKeyFailure.code;
+            throw hopError;
+          }
+          throw new Error(`proxyJump hop ${index + 1} (${hopConnectConfig.username}@${hopConnectConfig.host}:${hopConnectConfig.port}): ${error.message}`);
+        }
+        // Recording a first-seen key is a local file write. The target's own
+        // path logs and continues on failure for exactly the same reason (a full
+        // disk or a read-only profile must not fail a handshake that worked);
+        // here it also used to leave `hopClient` outside `hops` while throwing.
+        try {
+          await this.persistFirstSeenHostKey(hopState);
+        } catch (error) {
+          this.log(`SSH host key for ${hopConnectConfig.host}:${hopConnectConfig.port} could not be recorded: ${error?.message ?? error}`);
+        }
+        hops.push(hopClient);
+        // forwardOut to the next destination: the next hop, or the final target.
+        const next = index + 1 < proxyJump.length ? proxyJump[index + 1] : null;
+        const nextHost = next !== null ? next.host : targetHost;
+        const nextPort = next !== null ? (next.port ?? 22) : targetPort;
+        sock = await new Promise((resolve, reject) => {
+          const failed = (cause) => reject(new Error(`proxyJump hop ${index + 1} forwardOut to ${nextHost}:${nextPort}: ${cause.message}`));
+          try {
+            hopClient.forwardOut("127.0.0.1", 0, nextHost, nextPort, (error, stream) => {
+              if (error) {
+                failed(error);
+                return;
+              }
+              // Track every forwarded stream too: a cancel while the chain is
+              // still being built would otherwise leave these open.
+              if (record !== null) this.trackInflight(record, () => { try { stream.destroy?.(); } catch {} });
+              resolve(stream);
+            });
+          } catch (error) {
+            // Synchronous throw: ssh2 refuses forwardOut on a client that is
+            // already gone. Rejecting through the same path keeps the teardown
+            // below in charge instead of the promise executor's implicit reject.
+            failed(error);
           }
         });
-      });
+      }
+      return { hops, sock };
+    } catch (error) {
+      closeAll();
+      throw error;
     }
-    return { hops, sock };
   }
 
   sleep(ms) {
@@ -646,10 +723,14 @@ export const withConnections = (Base) => class extends Base {
    * already piped to channels (those die with the SSH client); remote-forward
    * tunnels have no listener — the server side dies with the transport — so
    * only the tcp-connection bridge is detached.
+   *
+   * A tunnel does NOT survive its transport: the local listener is closed here
+   * and the live handles are dropped with the map, which is also why
+   * scheduleReconnect has no "restore" pass. Reconnecting does not resurrect a
+   * forward; the operator (or the model) starts a new one.
    */
   closeConnectionTunnels(conn) {
     for (const tunnel of conn.tunnels.values()) {
-      tunnel.active = false;
       if (tunnel.bridgeInfo?.bridge) {
         try { conn.client?.removeListener("tcp connection", tunnel.bridgeInfo.bridge); } catch {}
       }
@@ -682,10 +763,15 @@ export const withConnections = (Base) => class extends Base {
     // forgotten allowAll in force after a network blip.
     record.execPolicyOverrides = new Map();
     record.sftp = null;
+    // A subsystem that was still opening belongs to the dead transport: let the
+    // next caller start a fresh attempt on the reconnected one instead of
+    // inheriting this attempt's failure.
+    record.sftpPending = null;
     for (const sessionId of [...record.sessions]) {
       const session = this.sessions.get(sessionId);
       if (session) {
         this.recordExit(session, { code: 1, reason: "transport-lost" });
+        this.detachBindingForSession?.(session);
         session.stream = null;
         this.rememberExit(sessionId, session.exited);
       }
@@ -695,8 +781,20 @@ export const withConnections = (Base) => class extends Base {
     record.ownerIndex = new Map();
     record.openQueue = Promise.resolve();
     record.ttyQueue = Promise.resolve();
-    record.execPolicyOverrides = new Map();
-    this.forgetActiveConnection(record.id);
+    // A new transport gets a fresh exec-channel verdict: a silent probe on the
+    // old link must not keep routing this connection to the interactive
+    // terminal after the self-healing reconnect.
+    record.loginShell = undefined;
+    record.loginShellProbe = undefined;
+    record.loginShellProbeFailures = 0;
+    record.loginShellRetryAt = undefined;
+    record.execStalled = false;
+    // The conversation's binding deliberately SURVIVES a transport loss: the
+    // self-healing reconnect below reuses this very record, and dropping the
+    // binding here made the next tool call fall through the resolution ladder
+    // to whatever other server the chat had a terminal on — the agent then ran
+    // a command on a machine nobody asked for. A record that is really gone
+    // (explicit disconnect) is forgotten there instead.
     this.closeConnectionTunnels(record);
     // The jump chain is rebuilt by the reconnect; keeping the old hop clients
     // would leak one SSH transport per hop on every network blip.
@@ -705,9 +803,18 @@ export const withConnections = (Base) => class extends Base {
     this.scheduleReconnect(record);
   }
 
-  /** Auto-reconnect a dead record with capped exponential backoff. */
+  /**
+   * Auto-reconnect a dead record with capped exponential backoff.
+   *
+   * Two bounds keep self-healing from turning into a login storm. A failure the
+   * connect path reports as permanent (rejected credential, unknown account,
+   * host-key mismatch) stops the loop at once, and a bounded attempt count stops
+   * it even when every failure looks transient — otherwise a password rotated
+   * while the link was down, or an account locked after the first retry, kept
+   * re-dialing the server every 30 seconds for the life of the process.
+   */
   scheduleReconnect(record) {
-    if (record.closing || !record.dead || record.reconnectTimer !== null) return;
+    if (record.closing || record.reconnectStopped || !record.dead || record.reconnectTimer !== null) return;
     const delay = Math.min(
       RECONNECT_MAX_DELAY_MS,
       RECONNECT_BASE_DELAY_MS * 2 ** Math.min(record.reconnectAttempts, 5)
@@ -720,24 +827,23 @@ export const withConnections = (Base) => class extends Base {
         const connected = await this.connectClient(record, 0);
         if (!connected.ok) {
           // A host-key mismatch/unseen must NOT trigger a reconnect storm against
-          // a possibly re-provisioned or impersonated server: stop retrying and
-          // let the operator decide (forget the key or investigate).
+          // a possibly re-provisioned or impersonated server — and nor must a
+          // refused login or an exhausted attempt budget. In all of those the
+          // loop ends and everyone waiting on this record hears "no" now, instead
+          // of each waiting out its own timeout for a retry that never comes.
           const code = connected.error?.code;
-          if (code === "host-key-mismatch" || code === "host-key-unseen" || code === "host-key-error") {
-            for (const waiter of record.reconnectWaiters.splice(0)) waiter(false);
+          const permanent = connected.retriable === false
+            || code === "host-key-mismatch" || code === "host-key-unseen" || code === "host-key-error";
+          if (permanent || record.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
+            record.reconnectStopped = true;
+            this.log(`SSH auto-reconnect stopped: connection=${record.id}, reason=${code ?? "unknown"}, attempts=${record.reconnectAttempts}`);
+            for (const waiter of record.reconnectWaiters.splice(0)) { try { waiter(false); } catch {} }
             return;
           }
           this.scheduleReconnect(record);
           return;
         }
-        this.attachTransportHandlers(record);
         this.log(`SSH transport restored: connection=${record.id}`);
-        for (const tunnel of record.tunnels.values()) {
-          if (tunnel.kind === "remote" && tunnel.bridgeInfo?.bridge) {
-            record.client.prependListener("tcp connection", tunnel.bridgeInfo.bridge);
-          }
-          tunnel.active = true;
-        }
         const waiters = record.reconnectWaiters.splice(0);
         for (const waiter of waiters) waiter(true);
       } catch (error) {
@@ -759,7 +865,7 @@ export const withConnections = (Base) => class extends Base {
    * explicitly closed or reconnect did not complete in time.
    */
   ensureAlive(record, timeoutMs = RECONNECT_WAIT_MS) {
-    if (record.closing) return Promise.resolve(false);
+    if (record.closing || record.reconnectStopped) return Promise.resolve(false);
     if (!record.dead) return Promise.resolve(true);
     return new Promise((resolve) => {
       const waiter = (alive) => {
@@ -784,6 +890,14 @@ export const withConnections = (Base) => class extends Base {
       clearTimeout(conn.reconnectTimer);
       conn.reconnectTimer = null;
     }
+    // A disconnect is reachable while the record still says `connecting`
+    // (the panel shows the row as soon as the attempt starts), and an operator
+    // may press it while a tool call is parked in ensureAlive(). Neither used to
+    // be told anything: the handshake kept its socket until readyTimeout and
+    // every waiter sat out its full RECONNECT_WAIT_MS before answering "no",
+    // long after the operator had already been shown "disconnected".
+    this.abortInflight(conn);
+    for (const waiter of (conn.reconnectWaiters ?? []).splice(0)) { try { waiter(false); } catch {} }
     for (const sessionId of [...conn.sessions]) {
       const session = this.sessions.get(sessionId);
       if (session) {
@@ -792,6 +906,7 @@ export const withConnections = (Base) => class extends Base {
           this.recordExit(session, { code: 0, reason: "operator-close" });
           try { session.stream.end(); } catch {}
         }
+        this.detachBindingForSession?.(session);
         this.rememberExit(sessionId, session.exited ?? { code: 0 });
       }
     }

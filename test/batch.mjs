@@ -38,6 +38,20 @@ service.batchTasks = new Map();
   assert.equal(tasks.length, 5);
 }
 
+// ── pending-task cap ──
+{
+  const capped = Object.create(HarborService.prototype);
+  capped.config = { maxCommandOutputBytes: 128 };
+  capped.batchTasks = new Map();
+  for (let index = 0; index < 50; index += 1) {
+    assert.equal(capped.batchPlan({ command: "free -h" }).ok, true);
+  }
+  const overflow = capped.batchPlan({ command: "free -h" });
+  assert.equal(overflow.ok, false, "a 51st pending plan is refused");
+  assert.equal(overflow.error.code, "batch-limit");
+  assert.equal(capped.batchTasks.size, 50, "the refusal does not grow the map");
+}
+
 // ── batchCancel: deletes once, then reports false ──
 {
   const [first] = service.batchTaskList().value.tasks;
@@ -91,6 +105,55 @@ service.batchTasks = new Map();
   assert.equal(bad.error, "connection refused");
   const good = r.value.results.find((x) => x.profileId === "good");
   assert.equal(good.ok, true);
+}
+
+// ── batchRun: a command killed by the deadline is not a success ──
+// The row used to be rebuilt without timedOut/truncated and with ok:true, so
+// a host whose command was killed (exit status unknown, output cut) rendered
+// in the panel exactly like a clean run.
+{
+  service.runCommandOnProfile = async (profileId) => ({
+    ok: true,
+    value: { profileId, name: "slow-box", host: "10.0.0.7", exitCode: null, stdout: "partial output", stderr: "", truncated: true, timedOut: true }
+  });
+  const task = service.batchPlan({ command: "sleep 999", timeoutMs: 15000 }).value.task;
+  const r = await service.batchRun({ batchId: task.batchId, profileIds: ["slow"] });
+  const row = r.value.results[0];
+  assert.equal(row.ok, false, "a killed command is not a success");
+  assert.equal(row.timedOut, true, "timedOut reaches the row");
+  assert.equal(row.truncated, true, "truncated reaches the row");
+  assert.equal(row.exitCode, null, "no exit status was obtained");
+  assert.equal(row.stdout, "partial output", "output received before the deadline is kept");
+  assert.equal(row.name, "slow-box", "a timed-out row keeps its server identity");
+  assert.match(row.error, /15 秒/, "the failure names the deadline");
+}
+
+// ── batchRun: a row that failed still says WHICH server failed ──
+// The failure branches rebuilt the row with name/host set to "", so the only
+// non-success rows in the table were the ones with an empty label: the
+// operator could see that a target failed but not which saved resource it was.
+{
+  const identityService = Object.create(HarborService.prototype);
+  identityService.config = { maxCommandOutputBytes: 128 };
+  identityService.batchTasks = new Map();
+  identityService.requireProfileTable = () => new Map([
+    ["bad", { name: "edge-router", host: "10.0.0.9" }],
+    ["boom", { name: "warehouse", host: "10.0.0.10" }]
+  ]);
+  identityService.runCommandOnProfile = async (profileId) => {
+    if (profileId === "boom") throw new Error("socket closed during connect");
+    return { ok: false, error: { message: "connection refused" } };
+  };
+  const task = identityService.batchPlan({ command: "uptime" }).value.task;
+  const r = await identityService.batchRun({ batchId: task.batchId, profileIds: ["bad", "boom", "gone"] });
+  const [refused, thrown, unknown] = r.value.results;
+  assert.equal(refused.ok, false);
+  assert.equal(refused.name, "edge-router", "a refused target keeps its resource name");
+  assert.equal(refused.host, "10.0.0.9", "and its host");
+  assert.equal(thrown.name, "warehouse", "a thrown failure keeps them too");
+  assert.equal(thrown.host, "10.0.0.10");
+  assert.equal(unknown.name, "", "an id that no longer exists degrades to empty, never undefined");
+  assert.equal(unknown.host, "");
 }
 
 // ── batchRun: concurrency is capped so N targets never open N simultaneous SSH sessions ──

@@ -2,14 +2,23 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import HarborService from "../src/index.js";
+import { RECONNECT_MAX_ATTEMPTS } from "../src/host/service/constants.js";
 
 function fixture(connectClient) {
   const service = Object.create(HarborService.prototype);
   service.connectClient = connectClient;
   service.attachTransportHandlers = () => {};
-  const conn = { dead: true, closing: false, reconnectAttempts: 0, reconnectTimer: null,
+  service.log = () => {};
+  const conn = { dead: true, closing: false, reconnectAttempts: 0, reconnectStopped: false, reconnectTimer: null,
     reconnectWaiters: [], tunnels: new Map(), hops: [], client: { end() {} } };
   return { service, conn };
+}
+
+/** Let the async reconnect callback finish after a mocked timer fires. */
+async function settle() {
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  await Promise.resolve();
 }
 
 test("connection list distinguishes a lost transport from a live one", async () => {
@@ -57,6 +66,45 @@ test("host-key rejection stops reconnect and wakes waiters without accepting the
   assert.equal(conn.reconnectTimer, null);
 });
 
+test("a permanent failure (rejected login) stops the loop instead of dialing forever", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  const { service, conn } = fixture(async () => {
+    calls += 1;
+    return { ok: false, retriable: false, error: { code: "connect-failed" } };
+  });
+  const waiting = service.ensureAlive(conn, 60 * 60 * 1000);
+  service.scheduleReconnect(conn);
+  t.mock.timers.tick(1000);
+  await settle();
+  assert.equal(await waiting, false, "the waiter hears the verdict instead of waiting out its timeout");
+  assert.equal(calls, 1, "a refused login is never retried");
+  assert.equal(conn.reconnectStopped, true);
+  assert.equal(conn.reconnectTimer, null);
+  assert.equal(conn.reconnectWaiters.length, 0);
+  const again = service.ensureAlive(conn, 60 * 60 * 1000);
+  assert.equal(await again, false, "later callers fail fast instead of waiting for a retry that will not happen");
+});
+
+test("even transient failures stop at the attempt cap", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0;
+  const { service, conn } = fixture(async () => {
+    calls += 1;
+    return { ok: false, retriable: true, error: { code: "connect-failed" } };
+  });
+  const waiting = service.ensureAlive(conn, 24 * 60 * 60 * 1000);
+  service.scheduleReconnect(conn);
+  for (let tick = 0; tick < RECONNECT_MAX_ATTEMPTS + 4; tick += 1) {
+    t.mock.timers.tick(30000);
+    await settle();
+  }
+  assert.equal(calls, RECONNECT_MAX_ATTEMPTS, "the loop is bounded, so a down server is not dialed forever");
+  assert.equal(conn.reconnectStopped, true);
+  assert.equal(conn.reconnectTimer, null);
+  assert.equal(await waiting, false);
+});
+
 test("successful reconnect wakes waiters; timed-out waiters are removed", async () => {
   const { service, conn } = fixture(async () => { conn.dead = false; return { ok: true }; });
   assert.equal(await service.ensureAlive(conn, 5), false);
@@ -65,6 +113,33 @@ test("successful reconnect wakes waiters; timed-out waiters are removed", async 
   service.scheduleReconnect(conn);
   assert.equal(await waiting, true);
   assert.equal(conn.reconnectWaiters.length, 0);
+});
+
+test("a transport that dies while the first host key is being stored is observed", async () => {
+  const { EventEmitter } = await import("node:events");
+  const service = Object.create(HarborService.prototype);
+  const client = new EventEmitter();
+  client.end = () => {};
+  client.connect = () => { setImmediate(() => client.emit("ready")); };
+  service.newClient = () => client;
+  service.knownHosts = null;
+  service.sessions = new Map();
+  service.log = () => {};
+  let lost = 0;
+  service.handleTransportLoss = () => { lost += 1; };
+  // The window under test: the handshake is done, the TOFU record is still
+  // being written, and the peer closes. Before the handlers moved here this
+  // close had no listener, so the record stayed "connected" forever.
+  service.persistFirstSeenHostKey = async () => { client.emit("close"); };
+  const record = {
+    id: "c1", host: "192.0.2.10", port: 22, username: "root",
+    connectConfig: { host: "192.0.2.10", port: 22, username: "root" },
+    proxyJump: [], hops: [], dead: true, closing: false, reconnectAttempts: 0,
+    reconnectStopped: false, reconnectWaiters: [], legacyAlgorithms: false
+  };
+  const result = await service.connectClient(record, 0);
+  assert.equal(result.ok, true);
+  assert.equal(lost, 1, "the close event is delivered to the loss handler, not dropped");
 });
 
 test("SSH client is resolved when a connection is built, not at module load", () => {

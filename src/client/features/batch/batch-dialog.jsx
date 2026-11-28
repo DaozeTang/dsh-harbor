@@ -110,20 +110,26 @@ export function BatchDialog({ api, task, onClose }) {
           <div className="hb-stack hb-stack--tight">
             <div className="hb-inline">
               <span className="hb-subtitle">{t("执行结果")}</span>
-              <Badge tone="ok">{results.filter((item) => item.ok).length} {t("成功")}</Badge>
-              {results.some((item) => !item.ok) && <Badge tone="err">{results.filter((item) => !item.ok).length} {t("失败")}</Badge>}
+              <Badge tone="ok">{results.filter((item) => item.ok && !item.timedOut).length} {t("成功")}</Badge>
+              {results.some((item) => item.timedOut) && <Badge tone="warn">{results.filter((item) => item.timedOut).length} {t("超时")}</Badge>}
+              {results.some((item) => !item.ok && !item.timedOut) && <Badge tone="err">{results.filter((item) => !item.ok && !item.timedOut).length} {t("失败")}</Badge>}
             </div>
             <div className="hb-scroll hb-stack hb-stack--tight" style={{ maxHeight: 280 }}>
               {results.map((result, index) => (
                 <div key={index} style={{ border: "1px solid var(--hb-border-faint)", borderRadius: 8, padding: "8px 10px" }}>
                   <div className="hb-inline" style={{ gap: 6 }}>
-                    <Icon name={result.ok ? "check-circle-fill" : "close-circle-fill"} size={14} style={{}} />
+                    <Icon name={result.timedOut ? "warning-triangle-outline" : result.ok ? "check-circle-fill" : "close-outline"} size={14} />
                     <span className="hb-strong">{result.name || result.host}</span>
+                    {result.timedOut && <Badge tone="warn">{t("超时")}</Badge>}
+                    {result.truncated && <Badge>{t("输出已截断")}</Badge>}
                     <span className="hb-spacer" />
                     {result.exitCode !== null && <span className="hb-quiet hb-mono">exit {result.exitCode}</span>}
                   </div>
+                  {result.error && (result.stdout || result.stderr) && (
+                    <div className="hb-quiet" style={{ marginTop: 6 }}>{result.error}</div>
+                  )}
                   <pre className="hb-mono" style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 160, overflow: "auto" }}>
-                    {result.error || result.stdout || result.stderr || t("(无输出)")}
+                    {`${result.stdout ?? ""}${result.stderr ?? ""}` || result.error || t("(无输出)")}
                   </pre>
                 </div>
  ))}

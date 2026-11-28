@@ -19,9 +19,6 @@ export function installStyles(doc = globalThis.document) {
   tag.textContent = CSS;
   doc.head.appendChild(tag);
 }
-
-/** The raw sheet — the preview harness inlines it, tests assert on it. */
-export const STYLESHEET = CSS;
 /**
  * Install one surface's own rules under its own tag. Each screen owns a small
  * sheet for what the kit's shared classes cannot express (a grid template, a

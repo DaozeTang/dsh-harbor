@@ -76,4 +76,38 @@ assert.throws(() => scpCommand("x", "/tmp/a"), /unsupported/);
   await assert.rejects(() => scpUpload(stream, "/tmp/a", Buffer.from("x")), /permission denied/);
 }
 
+// The deadline bounds silence, not the transfer. Bytes that keep arriving must
+// keep a slow transfer alive past the timeout: a single one-shot timer used to
+// fail every SCP transfer longer than 30 s, which is most of them on the hosts
+// where SCP is the only file channel (no SFTP subsystem).
+{
+  const body = Buffer.from("payload");
+  const header = Buffer.from("C0644 7 blob.bin\n");
+  const stream = mockChannel();
+  let index = 0;
+  const pump = setInterval(() => {
+    if (index < header.length) {
+      stream.emit("data", header.subarray(index, index + 1));
+      index += 1;
+      return;
+    }
+    clearInterval(pump);
+    stream.emit("data", Buffer.concat([body, Buffer.from([0])]));
+  }, 10);
+  try {
+    const result = await scpDownload(stream, 1024, { timeoutMs: 40 });
+    assert.equal(result.truncated, false);
+    assert.deepEqual(result.data, body);
+  } finally {
+    clearInterval(pump);
+  }
+}
+
+// A peer that stops answering is still bounded, so a hung channel cannot keep
+// the RPC open forever.
+{
+  const stream = mockChannel();
+  await assert.rejects(() => scpDownload(stream, 1024, { timeoutMs: 30 }), /timed out/);
+}
+
 console.log("scp legacy protocol: all cases passed");

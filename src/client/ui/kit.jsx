@@ -18,6 +18,7 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { ICONS } from "./icons.js";
+import { enterDialog, isTopDialog, leaveDialog, nextDialogOrder } from "./dialog-stack.js";
 import { t } from "../../i18n/core.js";
 
 const { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } = React;
@@ -281,23 +282,63 @@ export function SegmentedControl({ value, onChange, items, label, className }) {
  );
 }
 
-/** Underline tabs used for the workbench's view switcher. */
+/**
+ * Underline tabs: the workbench's view switcher.
+ *
+ * The label lives in `hb-tab__label` because the narrow layout hides it and
+ * keeps only the icon, so the class is part of the contract, not styling
+ * detail.
+ */
 export function Tabs({ value, onChange, items, className, ariaLabel }) {
+  const refs = useRef([]);
+  const current = items.findIndex((item) => item.value === value);
+  /** The next enabled tab from `from` walking `direction`, wrapping once. */
+  const walk = (from, direction) => {
+    for (let offset = 1; offset <= items.length; offset += 1) {
+      const index = ((from + direction * offset) % items.length + items.length) % items.length;
+      if (items[index]?.disabled !== true) return index;
+    }
+    return -1;
+  };
+  /**
+   * Keyboard model of the tablist: arrows move the selection (and the focus),
+   * Home/End jump to the first/last enabled tab. Without it `role="tab"`
+   * promised a tab pattern the component did not implement, and every tab was
+   * its own tab stop.
+   */
+  const onKeyDown = (event) => {
+    if (items.length === 0) return;
+    const from = current < 0 ? 0 : current;
+    const target = event.key === "ArrowRight" || event.key === "ArrowDown" ? walk(from, 1)
+      : event.key === "ArrowLeft" || event.key === "ArrowUp" ? walk(from, -1)
+      : event.key === "Home" ? walk(-1, 1)
+      : event.key === "End" ? walk(items.length, -1)
+      : null;
+    if (target === null) return;
+    event.preventDefault();
+    if (target < 0) return;
+    onChange(items[target].value);
+    refs.current[target]?.focus?.();
+  };
   return (
-    <div className={cx("hb-tabs", className)} role="tablist" aria-label={ariaLabel}>
-      {items.map((item) => (
+    <div className={cx("hb-tabs", className)} role="tablist" aria-label={ariaLabel} onKeyDown={onKeyDown}>
+      {items.map((item, index) => (
         <button
           key={item.value}
+          ref={(node) => { refs.current[index] = node; }}
           type="button"
           role="tab"
           className="hb-tab"
           aria-selected={item.value === value}
+          aria-label={item.ariaLabel}
           disabled={item.disabled}
+          // Roving tab order: the selected tab is the strip's single Tab stop.
+          tabIndex={item.value === value ? 0 : -1}
           onClick={() => onChange(item.value)}
-          title={item.title}
+          title={item.title ?? item.label}
         >
           {item.icon !== undefined && <Icon name={item.icon} size={14} />}
-          {item.label}
+          <span className="hb-tab__label">{item.label}</span>
           {item.count !== undefined && item.count > 0 && <span className="hb-tab__count">{item.count}</span>}
         </button>
  ))}
@@ -446,14 +487,25 @@ export function Dialog({
   onCloseRef.current = onClose;
   const titleId = useId();
   const descId = useId();
+  // Render order, not effect order: React mounts child effects before the
+  // parent's, so pushing in the effect would make a nested confirmation look
+  // older than the dialog that opened it.
+  const orderRef = useRef(0);
+  if (!open) orderRef.current = 0;
+  else if (orderRef.current === 0) orderRef.current = nextDialogOrder();
 
   useEffect(() => {
     if (!open) return undefined;
+    const dialogToken = enterDialog(orderRef.current);
     restoreRef.current = document.activeElement;
     const panel = panelRef.current;
     const first = panel?.querySelector("[data-modal-autofocus]") ?? panel?.querySelector(FOCUSABLE);
     first?.focus?.();
     const onKeyDown = (event) => {
+      // Only the topmost dialog may consume keys. Escape otherwise reached
+      // every open Dialog's document listener, closing a confirmation and the
+      // settings dialog behind it at the same time.
+      if (!isTopDialog(dialogToken)) return;
       // An open anchored menu owns Escape (it closes the menu, not the dialog).
       if (event.key === "Escape" && document.querySelector(".hb-menu") !== null) return;
       if (event.key === "Escape") { event.stopPropagation(); onCloseRef.current(); return; }
@@ -470,6 +522,11 @@ export function Dialog({
     document.addEventListener("keydown", onKeyDown, true);
     return () => {
       document.removeEventListener("keydown", onKeyDown, true);
+      const wasTop = isTopDialog(dialogToken);
+      leaveDialog(dialogToken);
+      // Only the dialog that owned focus may hand it back: a lower dialog
+      // unmounting under a live confirmation must not steal it.
+      if (!wasTop) return;
       // Focus restoration must survive a DOM-less test harness: the dialog
       // itself only ever runs in a browser, but component tests import the kit
       // under jsdom, where HTMLElement may not be a global at all.
@@ -729,11 +786,6 @@ export function MenuItem({ icon, danger = false, checked = false, disabled = fal
 export const MenuSeparator = () => <div className="hb-menu__sep" role="separator" />;
 export const MenuLabel = ({ children }) => <div className="hb-menu__label">{children}</div>;
 
-/** A hover tooltip expressed with the native title attribute — no extra layers over the terminal. */
-export function Hint({ text, children }) {
-  return <span title={text}>{children}</span>;
-}
-
 // ── toasts ─────────────────────────────────────────────────────────────────
 
 const toastListeners = new Set();
@@ -753,7 +805,7 @@ export function toast(message, { tone = "info", timeout = 3200 } = {}) {
   return id;
 }
 
-export function dismissToast(id) {
+function dismissToast(id) {
   emit(toasts.filter((item) => item.id !== id));
 }
 

@@ -1,12 +1,12 @@
 /**
- * PTY sessions: buffers, reads, cursor streams and terminal context history.
+ * PTY sessions: the output journal, cursor and poll reads, and terminal history.
  */
 import { createTerminalOutput } from "../terminal-output.js";
-import { isOwnedBy, normalizeOwner, unindexOwner } from "../terminal-owner.js";
-import { redactForModel } from "../redact.js";
+import { unindexOwner } from "../terminal-owner.js";
 import { noteTerminalInput } from "../ssh-upload-scheduling.js";
-import { buildCwdAwareCommand, extractExecCwd, posixLoginShell } from "../exec-cwd.js";
+import { buildCwdAwareCommand, censusPidFor, extractExecCwd, posixLoginShell } from "../exec-cwd.js";
 import { fail } from "../envelope.js";
+import { shellQuote } from "../safety.js";
 import { t } from "../../i18n/core.js";
 import { decodeData, encodeData } from "./text.js";
 import { MAX_EXITED_RETAINED, MAX_EXIT_TOMBSTONES } from "./constants.js";
@@ -58,15 +58,14 @@ export const withSessions = (Base) => class extends Base {
       if (!posixLoginShell(await this.resolveLoginShell(conn))) {
         return { ok: false, error: fail("unsupported-shell", t("无法确认此 shell 的空闲状态，请在终端手动切换目录")) };
       }
-      const probe = await this.collectExecOutput(client, buildCwdAwareCommand(":", { tty: session.tty ?? null }), 5000);
+      const probe = await this.collectExecOutput(client, buildCwdAwareCommand(":", { tty: session.tty ?? null, pid: censusPidFor(conn, session.tty) }), 5000);
       if (probe.exitCode !== 0 || extractExecCwd(probe.stdout).cwd === null) {
         return { ok: false, error: fail("terminal-busy", t("未确认空闲交互 shell，请结束前台程序后重试或手动 cd")) };
       }
       if (!ready() || client !== conn.client || revision !== (session.inputRevision ?? 0)) {
         return { ok: false, error: fail("terminal-changed", t("终端输入已变化，请检查后重试")) };
       }
-      const quoted = "'" + request.path.replace(/'/g, "'\\''") + "'";
-      if (!this.writeTerminalSession(session, `cd -- ${quoted}\r`)) {
+      if (!this.writeTerminalSession(session, `cd -- ${shellQuote(request.path)}\r`)) {
         return { ok: false, error: fail("write-failed", t("终端已停止写入")) };
       }
       return { ok: true, value: { written: 0 } };
@@ -109,9 +108,9 @@ export const withSessions = (Base) => class extends Base {
       });
     }
     if (session.exited !== null) {
-      return { ok: true, value: { data: this.drain(session), exit: session.exited } };
+      return { ok: true, value: { data: encodeData(this.readWithoutCursor(session)), exit: session.exited } };
     }
-    const pending = this.drain(session);
+    const pending = encodeData(this.readWithoutCursor(session));
     if (pending !== "") {
       return { ok: true, value: { data: pending, exit: null } };
     }
@@ -127,27 +126,11 @@ export const withSessions = (Base) => class extends Base {
         resolve(value);
       };
       const timer = setTimeout(() => {
-        finish({ ok: true, value: { data: this.drain(session), exit: null } });
+        finish({ ok: true, value: { data: encodeData(this.readWithoutCursor(session)), exit: null } });
       }, timeoutMs);
       const waiter = { resolve: finish, timer };
       session.waiters.push(waiter);
     });
-  }
-
-  listTerminalContexts(request = {}) {
-    // The caller's own terminals are what it usually wants, and the panel needs
-    // to tell "my terminal" from "another conversation's" for the same server.
-    const ownerSessionId = normalizeOwner(request.sessionId);
-    const sessions = [];
-    for (const session of this.sessions.values()) {
-      const connection = this.connections.get(session.connectionId);
-      if (!connection) continue;
-      const history = this.terminalContextHistory(session);
-      const item = { sessionId: session.id, connectionId: session.connectionId, host: connection.host, port: connection.port, openedAt: session.openedAt, openedBy: session.openedBy ?? "panel", alive: session.exited === null && session.stream !== null, historyStart: history.start, historyEnd: history.end, ownerSessionId: session.ownerSessionId ?? null, mine: isOwnedBy(session, ownerSessionId) };
-      if (connection.name !== undefined) item.name = connection.name;
-      sessions.push(item);
-    }
-    return { ok: true, value: { sessions } };
   }
 
   /**
@@ -205,16 +188,27 @@ export const withSessions = (Base) => class extends Base {
     }
   }
 
-  terminalContextHistory(session) {
-    const raw = this.terminalOutput(session).read();
-    const safe = redactForModel(raw.data);
-    const journal = createTerminalOutput(safe.text, Number.MAX_SAFE_INTEGER);
-    return { journal, start: raw.startOffset, end: raw.startOffset + safe.text.length, redacted: safe.redacted };
+  /**
+   * The session's append-only output journal — the ONE copy of everything the
+   * terminal has produced. Cursor readers (the live stream and every polling
+   * pane) read from it at their own offsets.
+   */
+  terminalOutput(session) {
+    session.outputJournal ??= createTerminalOutput("", this.config.maxBufferBytes);
+    return session.outputJournal;
   }
 
-  terminalOutput(session) {
-    session.outputJournal ??= createTerminalOutput(session.buffer ?? "", this.config.maxBufferBytes);
-    return session.outputJournal;
+  /**
+   * Output for a poll reader that carries no cursor (the pre-stream client
+   * shape). It gets the bytes it has not seen yet and the position is
+   * remembered on the session, which is exactly what the old destructive
+   * buffer did — minus the second capped string that had to be rebuilt on
+   * every chunk of every terminal.
+   */
+  readWithoutCursor(session) {
+    const item = this.terminalOutput(session).read(session.pollCursor);
+    session.pollCursor = item.offset;
+    return item.data;
   }
 
   async resize(request) {
@@ -244,6 +238,7 @@ export const withSessions = (Base) => class extends Base {
       this.recordExit(session, { code: 0, reason: "operator-close" });
       try { session.stream.end(); } catch {}
     }
+    this.detachBindingForSession?.(session);
     this.rememberExit(request.sessionId, session.exited ?? { code: 0 });
     return { ok: true, value: { closed: true } };
   }
@@ -271,6 +266,7 @@ export const withSessions = (Base) => class extends Base {
     const exited = [...this.sessions.entries()].filter(([, session]) => session.exited !== null);
     for (let index = 0; index < exited.length - keep; index += 1) {
       const [sessionId, session] = exited[index];
+      this.detachBindingForSession?.(session);
       this.rememberExit(sessionId, session.exited);
       this.sessions.delete(sessionId);
       const conn = this.connections.get(session.connectionId);
@@ -289,7 +285,7 @@ export const withSessions = (Base) => class extends Base {
     if (session.waiters.length === 0) return;
     session.waiters.shift().resolve({
       ok: true,
-      value: { data: this.drain(session), exit }
+      value: { data: encodeData(this.readWithoutCursor(session)), exit }
     });
     if (exit !== null) {
       for (const rest of session.waiters.splice(0)) {
@@ -304,11 +300,5 @@ export const withSessions = (Base) => class extends Base {
     for (const listener of session.streamListeners) {
       listener.wake?.();
     }
-  }
-
-  drain(session) {
-    const pending = session.buffer;
-    session.buffer = "";
-    return encodeData(pending);
   }
 };

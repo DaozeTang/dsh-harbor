@@ -19,7 +19,7 @@ export const COALESCE_MS = 60;
 // scroll (user wheel scrolling suppresses `term.onScroll` in xterm 5.5, see
 // Viewport.handleWheel -> BufferService.scrollLines). A cheap position poll
 // recovers within one interval even when no render/scroll event arrives.
-export const VIEWPORT_POLL_MS = 250;
+const VIEWPORT_POLL_MS = 250;
 // Failure backoff: a broken worker or a timed-out scheme must not make every
 // terminal scan (and clear) 16 times per second forever.
 const RETRY_DELAYS = [500, 1000, 2000, 5000];

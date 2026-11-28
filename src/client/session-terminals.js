@@ -22,6 +22,26 @@
  * @returns {{sessionId: string|null, own: object|null, others: object[], total: number}}
  *   the terminal to render, plus what else lives on that server.
  */
+/**
+ * Whether one terminal belongs to this conversation.
+ *
+ * The host resolves `mine` for the caller; comparing ownerSessionId as well
+ * keeps an older host (and the offline preview) correct when the payload omits
+ * the flag. This is the ONE definition: the pane resolver, the close-tab action
+ * and the status tab's "terminals of this conversation" counter all use it —
+ * the counter used to compare against `undefined` instead of a string, so with
+ * no session id at all an anonymous terminal counted as the viewer's own.
+ *
+ * @param {object|null|undefined} terminal - one entry of connection.terminals.
+ * @param {string|undefined} sessionId - the pane's DSH session id.
+ * @returns {boolean} true when this conversation owns that terminal.
+ */
+export function isMineTerminal(terminal, sessionId) {
+  if (terminal === null || terminal === undefined) return false;
+  return terminal.mine === true
+    || (terminal.mine === undefined && typeof sessionId === "string" && terminal.ownerSessionId === sessionId);
+}
+
 export function resolvePaneTerminal(connection, sessionId) {
   if (connection === null || connection === undefined) return { sessionId: null, own: null, others: [], total: 0 };
   const terminals = Array.isArray(connection.terminals) ? connection.terminals : null;
@@ -30,12 +50,8 @@ export function resolvePaneTerminal(connection, sessionId) {
     return { sessionId: connection.sessions?.[0] ?? null, own: null, others: [], total: (connection.sessions?.length ?? 0) };
   }
   const live = terminals.filter((terminal) => terminal.alive !== false);
-  // The host resolves `mine` for this caller; comparing ownerSessionId as well
-  // keeps the pane correct even when a payload omits the flag.
-  const isMine = (terminal) => terminal.mine === true
-    || (terminal.mine === undefined && typeof sessionId === "string" && terminal.ownerSessionId === sessionId);
-  const own = live.find(isMine) ?? null;
-  const others = live.filter((terminal) => !isMine(terminal));
+  const own = live.find((terminal) => isMineTerminal(terminal, sessionId)) ?? null;
+  const others = live.filter((terminal) => !isMineTerminal(terminal, sessionId));
   return { sessionId: own === null ? null : own.sessionId, own, others, total: live.length };
 }
 

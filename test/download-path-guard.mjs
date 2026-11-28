@@ -148,4 +148,36 @@ if (process.platform !== "win32") {
   }
 }
 
+// ── a remote symlink entry is reported and never followed ──
+{
+  const base = mkdtempSync(join(tmpdir(), "dsh-download-remote-link-"));
+  try {
+    const localRoot = join(base, "downloads");
+    mkdirSync(localRoot, { recursive: true });
+    const service = Object.create(HarborService.prototype);
+    service.resolveConnection = () => ({ ok: true, connectionId: "c1", connection: { id: "c1", dead: false, closing: false } });
+    const raw = {
+      stat(_path, cb) { cb(null, { mode: 0o040000 }); },
+      readdir(_path, cb) {
+        cb(null, [
+          { filename: "escape", attrs: { mode: 0o120777, size: 0 } },
+          { filename: "ok.txt", attrs: { mode: 0o100644, size: 2 } }
+        ]);
+      }
+    };
+    service.requireSftp = async () => ({ ok: true, sftp: raw });
+    const downloaded = [];
+    service.sftpDownloadFile = async (_sftp, remoteFile, localFile) => {
+      downloaded.push(remoteFile);
+      writeFileSync(localFile, "ok");
+    };
+    const result = await service.sftpDownloadDir({ connectionId: "c1", remotePath: "/remote", localPath: localRoot });
+    assert.equal(result.ok, true, result.error?.message);
+    assert.deepEqual(downloaded, ["/remote/ok.txt"], "the regular file downloads, the symlink does not");
+    assert.deepEqual(result.value.failed, [{ path: "escape", error: "symbolic links are not followed" }]);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
 console.log("download path guard: server-controlled names cannot escape the local root");

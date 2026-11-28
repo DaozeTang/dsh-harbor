@@ -1,22 +1,12 @@
 import assert from "node:assert/strict";
 import HarborService, { profileDomainSpec } from "../src/index.js";
 import { profileInfoSchema, profileSaveRequestSchema } from "../src/rpc/schemas.js";
+import { fakeTable } from "./support/fake-table.mjs";
 
 const identity = {
   name: "production app", host: "192.0.2.10", port: 22, username: "ops",
   authKind: "key", hostKeyMode: "accept-new"
 };
-
-function fakeTable(entries = []) {
-  const map = new Map(entries);
-  return {
-    get: (id) => map.get(id),
-    put: (id, record) => { map.set(id, record); },
-    delete: (id) => { map.delete(id); },
-    entries: () => [...map.entries()],
-    size: () => map.size
-  };
-}
 
 function makeService(table) {
   const service = Object.create(HarborService.prototype);

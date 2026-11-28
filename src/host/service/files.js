@@ -6,9 +6,10 @@ import { posix } from "node:path";
 import { joinRemotePath, splitRemotePath } from "../sftp-dir.js";
 import { scpCommand, scpDownload, scpUpload } from "../scp.js";
 import { saveEditorFile } from "../sftp-editor-save.js";
+import { writeRemoteFileAtomic } from "../sftp-write.js";
 import { fail } from "../envelope.js";
 import { MAX_FILE_READ_BYTES, MAX_COMMAND_OUTPUT_BYTES } from "./constants.js";
-import { tailCapped } from "./text.js";
+import { decodeBase64Bytes, tailCapped } from "./text.js";
 
 /**
  * Release one SCP channel. `end()` sends EOF so the remote `scp -t` exits;
@@ -27,9 +28,31 @@ function closeScpChannel(stream) {
 export const withFiles = (Base) => class extends Base {
   // ── SFTP (file management) ─────────────────────────────────────────────────
 
-  /** Lazily open (or reuse) the sftp subsystem of a connection. */
+  /**
+   * Lazily open (or reuse) the sftp subsystem of a connection.
+   *
+   * Single flight: the panel lists a directory while an upload starts, two
+   * panes poll, a batch fans out — every caller used to see `sftp === null` and
+   * open its OWN subsystem channel, and only the last one landed in
+   * `connection.sftp`. The others stayed open with no owner and no way to close
+   * them, eating into sshd's MaxSessions until the next transport loss. Whoever
+   * arrives first opens the channel; everybody else shares it and its failure.
+   */
   async requireSftp(connection, retried = false) {
     if (connection.sftp !== null) return { ok: true, sftp: connection.sftp };
+    const pending = connection.sftpPending;
+    if (pending !== undefined && pending !== null) return pending;
+    const opening = this.openSftp(connection, retried);
+    connection.sftpPending = opening;
+    try {
+      return await opening;
+    } finally {
+      if (connection.sftpPending === opening) connection.sftpPending = null;
+    }
+  }
+
+  /** Open the SFTP subsystem once (see requireSftp for the sharing contract). */
+  async openSftp(connection, retried) {
     if (!(await this.ensureAlive(connection))) {
       return { ok: false, error: fail("connection-lost", `connection "${connection.id}" is down and could not be re-established`) };
     }
@@ -53,11 +76,18 @@ export const withFiles = (Base) => class extends Base {
       sftp.once?.("close", drop);
       sftp.once?.("end", drop);
       sftp.once?.("error", drop);
+      // The transport can die while the channel is opening. Caching that
+      // wrapper would recreate the same permanent hang the drop handlers
+      // above exist to prevent, only with nothing left to ever emit 'close'.
+      if (connection.dead === true || connection.closing === true) {
+        try { sftp.end?.(); } catch {}
+        return { ok: false, error: fail("connection-lost", `connection "${connection.id}" went down while opening its SFTP subsystem`) };
+      }
       connection.sftp = sftp;
       return { ok: true, sftp };
     } catch (error) {
       if (!retried && connection.dead && (await this.ensureAlive(connection))) {
-        return this.requireSftp(connection, true);
+        return this.openSftp(connection, true);
       }
       return { ok: false, error: fail("sftp-failed", `could not open SFTP subsystem: ${error.message}`) };
     }
@@ -144,9 +174,22 @@ export const withFiles = (Base) => class extends Base {
     if (!selected.ok) return selected;
     const sftp = await this.requireSftp(selected.connection);
     if (!sftp.ok) return sftp;
-    const maxBytes = request.maxBytes ?? MAX_FILE_READ_BYTES;
+    // The RPC schema caps this, but agent tools call the service directly and
+    // the tool schema is advisory. Clamp here so no caller can ask the host to
+    // buffer an arbitrarily large file.
+    const requestedMax = Number(request.maxBytes);
+    const maxBytes = request.maxBytes === undefined || !Number.isFinite(requestedMax)
+      ? MAX_FILE_READ_BYTES
+      : Math.min(Math.max(0, Math.floor(requestedMax)), MAX_FILE_READ_BYTES);
+    // Read ONE byte past the cap: that byte is the only way to tell "the file
+    // ends exactly here" from "the file continues". Without it, a file whose
+    // size is a multiple of the read chunk size reached the budget exactly, the
+    // stream was destroyed, and the caller was told truncated:false about the
+    // first half of a 5 MiB file.
+    const budget = maxBytes + 1;
     const chunks = [];
-    let total = 0;
+    let received = 0;   // bytes seen, at most `budget` (maxBytes + 1)
+    let kept = 0;       // bytes of file content returned, at most maxBytes
     try {
       const stream = sftp.sftp.createReadStream(request.path);
       const done = new Promise((resolve, reject) => {
@@ -160,12 +203,19 @@ export const withFiles = (Base) => class extends Base {
           resolve();
         };
         stream.on("data", (chunk) => {
-          const remaining = maxBytes - total;
-          if (remaining > 0) {
-            chunks.push(chunk.length <= remaining ? chunk : chunk.subarray(0, remaining));
+          // One tick can deliver several chunks, and destroy() does not stop a
+          // queued one: a late chunk must never be counted after resolution.
+          if (settled) return;
+          const room = budget - received;
+          if (room <= 0) { finish(); return; }
+          const slice = chunk.length <= room ? chunk : chunk.subarray(0, room);
+          received += slice.length;
+          const take = Math.max(0, Math.min(slice.length, maxBytes - kept));
+          if (take > 0) {
+            chunks.push(take === slice.length ? slice : slice.subarray(0, take));
+            kept += take;
           }
-          total += chunk.length;
-          if (total >= maxBytes) finish();
+          if (received >= budget) finish();
         });
         stream.on("end", finish);
         stream.on("error", (error) => {
@@ -175,28 +225,35 @@ export const withFiles = (Base) => class extends Base {
         });
       });
       await done;
-      const truncated = total > maxBytes;
+      const truncated = received > maxBytes;
       const data = Buffer.concat(chunks).toString("base64");
-      return { ok: true, value: { path: request.path, data, truncated, bytes: total } };
+      return { ok: true, value: { path: request.path, data, truncated, bytes: kept } };
     } catch (error) {
       return { ok: false, error: fail("sftp-read-failed", `${request.path}: ${error.message}`) };
     }
   }
 
-  /** Write base64 content to a remote file. */
+  /**
+   * Write base64 content to a remote file.
+   *
+   * Bounded by the configured SFTP deadline (a server that never answers must
+   * not hold the RPC open) and atomic (see sftp-write.js): a failed write can
+   * leave a temporary file, never a truncated target.
+   */
   async sftpWriteFile(request) {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
     const sftp = await this.requireSftp(selected.connection);
     if (!sftp.ok) return sftp;
     try {
-      const buf = Buffer.from(request.data, "base64");
-      await new Promise((resolve, reject) => {
-        const stream = sftp.sftp.createWriteStream(request.path);
-        stream.on("close", resolve);
-        stream.on("error", reject);
-        stream.end(buf);
-      });
+      const buf = decodeBase64Bytes(request.data);
+      // The write cancels its own stream on abort/timeout and cleans up the
+      // temporary file. Racing the whole operation would report "failed" while
+      // the rename could still replace the target. `signal` comes from the
+      // agent tool (sftp_write passes the call's AbortSignal); the panel RPC is
+      // unary and carries none, so it is simply undefined there.
+      const timeoutMs = Math.max(1, this.config?.sftpOperationTimeoutMs ?? 30000);
+      await writeRemoteFileAtomic(sftp.sftp, request.path, buf, { signal: request.signal, timeoutMs });
       return { ok: true, value: { path: request.path, bytes: buf.length } };
     } catch (error) {
       return { ok: false, error: fail("sftp-write-failed", `${request.path}: ${error.message}`) };
@@ -209,7 +266,10 @@ export const withFiles = (Base) => class extends Base {
     const sftp = await this.requireSftp(selected.connection);
     if (!sftp.ok) return sftp;
     try {
-      const value = await saveEditorFile(sftp.sftp, request.path, Buffer.from(request.expected, "base64"), Buffer.from(request.data, "base64"));
+      const timeoutMs = Math.max(1, this.config?.sftpOperationTimeoutMs ?? 30000);
+      const expected = decodeBase64Bytes(request.expected);
+      const data = decodeBase64Bytes(request.data);
+      const value = await saveEditorFile(sftp.sftp, request.path, expected, data, { timeoutMs });
       return { ok: true, value };
     } catch (error) {
       return { ok: false, error: fail("editor-save-failed", error.message) };
@@ -241,7 +301,10 @@ export const withFiles = (Base) => class extends Base {
   async scpReadFile(request) {
     const selected = this.resolveConnection(request.connectionId);
     if (!selected.ok) return selected;
-    const maxBytes = request.maxBytes ?? MAX_FILE_READ_BYTES;
+    const requestedMax = Number(request.maxBytes);
+    const maxBytes = request.maxBytes === undefined || !Number.isFinite(requestedMax)
+      ? MAX_FILE_READ_BYTES
+      : Math.min(Math.max(0, Math.floor(requestedMax)), MAX_FILE_READ_BYTES);
     let stream;
     try {
       stream = await this.openScpChannel(selected.connection, scpCommand("f", request.path));
@@ -263,7 +326,7 @@ export const withFiles = (Base) => class extends Base {
     if (!selected.ok) return selected;
     let stream;
     try {
-      const data = Buffer.from(request.data, "base64");
+      const data = decodeBase64Bytes(request.data);
       stream = await this.openScpChannel(selected.connection, scpCommand("t", request.path));
       const result = await scpUpload(stream, request.path, data);
       return { ok: true, value: { path: request.path, bytes: result.bytes } };
@@ -305,8 +368,13 @@ export const withFiles = (Base) => class extends Base {
     const sftp = await this.requireSftp(selected.connection);
     if (!sftp.ok) return sftp;
     try {
+      // lstat, not stat: the entry's OWN type decides how it is removed, and
+      // stat reports the link target's. Deleting a symlink to a directory
+      // therefore sent rmdir for a link (ENOTDIR), and a BROKEN symlink could
+      // not be deleted at all because stat failed with ENOENT on a path lstat
+      // answers for. A symlink is an ordinary non-directory entry here.
       const isDir = await this.sftpDeadline(new Promise((resolve, reject) => {
-        sftp.sftp.stat(request.path, (error, attrs) => {
+        sftp.sftp.lstat(request.path, (error, attrs) => {
           if (error) reject(error);
           else resolve((attrs.mode & 0o170000) === 0o040000);
         });
@@ -381,7 +449,7 @@ export const withFiles = (Base) => class extends Base {
       const existing = await this.sftpDeadline(new Promise((resolve) => {
         sftp.sftp.lstat(request.to, (error, attrs) => resolve(error ? null : attrs));
       }));
-      if (existing !== null && !(await this.isSameRemoteEntry(sftp, request.from, existing))) {
+      if (existing !== null && !(await this.isSameRemoteEntry(sftp, request.from, request.to))) {
         return { ok: false, error: fail("target-exists", `${request.to} already exists; delete it first if you meant to replace it`) };
       }
       await this.sftpDeadline(new Promise((resolve, reject) => {
@@ -397,23 +465,59 @@ export const withFiles = (Base) => class extends Base {
   }
 
   /**
-   * Whether the destination of a rename is the SAME entry as the source — a
-   * case-only rename on a case-insensitive filesystem (`file` -> `File`), or a
-   * trailing-slash variation. SFTP v3 exposes no inode number, so equality is
-   * decided by the stable attributes a rename cannot change.
+   * Whether a rename's destination is the SAME entry as its source — a
+   * case-only rename on a case-insensitive export (`file` -> `File`), a
+   * trailing-slash or `.` variation. Only then may rename replace what it found
+   * on the destination; a different entry is refused by the caller.
+   *
+   * SFTP v3 exposes no inode, and the attribute triple (size, mtime, mode) is
+   * NOT identity: two unrelated files of equal size, written in the same second
+   * with the same permissions compare equal, so the old check let a rename
+   * silently destroy a file nobody selected — exactly the loss the caller's
+   * "target exists" refusal exists to prevent. Identity comes from the server:
+   * `realpath` resolves symlinks, `.`/`..`, duplicate separators and trailing
+   * slashes, and two distinct names never collapse into each other.
    */
-  async isSameRemoteEntry(sftp, from, toAttrs) {
-    let fromAttrs;
+  async isSameRemoteEntry(sftp, from, to) {
+    const [source, destination] = await Promise.all([
+      this.remoteCanonicalPath(sftp, from),
+      this.remoteCanonicalPath(sftp, to)
+    ]);
+    if (source === null || destination === null) return false;
+    if (source === destination) return true;
+    // Different canonical strings. On a case-insensitive export the server
+    // answers `lstat`/`realpath` for a spelling that is not stored, and the
+    // canonical path keeps the CASE IT WAS ASKED FOR, so the one-entry case
+    // also shows up as two different strings. The parent listing settles it:
+    // exactly ONE of the two spellings is a real directory entry, which is only
+    // possible when they name the same entry. On a case-sensitive export that
+    // has BOTH spellings (where this refusal matters most) both are listed, so
+    // this returns false.
+    if (posix.dirname(source) !== posix.dirname(destination)) return false;
+    const fromName = posix.basename(source);
+    const toName = posix.basename(destination);
+    if (fromName.toLowerCase() !== toName.toLowerCase()) return false;
+    let names;
     try {
-      fromAttrs = await this.sftpDeadline(new Promise((resolve, reject) => {
-        sftp.sftp.lstat(from, (error, attrs) => (error ? reject(error) : resolve(attrs)));
-      }));
+      const entries = await this.sftpDeadline(this.sftpCall(sftp, (cb) => sftp.sftp.readdir(posix.dirname(source), cb)));
+      if (!Array.isArray(entries)) return false;
+      names = new Set(entries.map((entry) => entry.filename));
     } catch {
+      // The server will not say which spelling is real; refusing is the
+      // recoverable answer, replacing a different file is not.
       return false;
     }
-    return fromAttrs.size === toAttrs.size
-      && fromAttrs.mtime === toAttrs.mtime
-      && fromAttrs.mode === toAttrs.mode;
+    return names.has(fromName) !== names.has(toName);
+  }
+
+  /** `realpath` on the remote, or null when the server cannot answer. */
+  async remoteCanonicalPath(sftp, path) {
+    try {
+      const resolved = await this.sftpDeadline(this.sftpCall(sftp, (cb) => sftp.sftp.realpath(path, cb)));
+      return typeof resolved === "string" && resolved !== "" ? resolved : null;
+    } catch {
+      return null;
+    }
   }
 
   // ── Directory batch transfer (SFTP) ────────────────────────────────────────

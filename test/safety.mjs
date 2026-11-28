@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assessShellCommand, canonicalCommandText, isPrefillable } from "../src/host/safety.js";
+import { assessShellCommand, canonicalCommandText } from "../src/host/safety.js";
 import { processTerminalInput } from "../src/host/terminal-input.js";
 import { redactForModel } from "../src/host/redact.js";
 import HarborService, { normalizeTerminalEol } from "../src/index.js";
@@ -76,10 +76,75 @@ const deleteEvasionCommands = [
   "(rm -rf /tmp/x)",
   "$'\\x72m' -rf /tmp/x",
   "$'\\162m' -rf /tmp/x",
-  "r\\\nm -rf /tmp/x"
+  "r\\\nm -rf /tmp/x",
+  // Inside double quotes a backslash-newline is a line continuation the shell
+  // removes. Keeping those two bytes in the canonical text made the spelling
+  // below contain no "rm" and slip past the gate entirely.
+  'r"\\\nm" -rf /tmp/x',
+  // ANSI-C quoting supports \u / \U from bash 4.2 on; not decoding them left
+  // the same deletion spelled as $'\u0072\u006d'.
+  "$'\\u0072\\u006d' -rf /tmp/x",
+  "$'\\U00000072\\U0000006d' -rf /tmp/x"
 ];
 for (const command of deleteEvasionCommands) {
   assert.equal(assessShellCommand(command).ok, false, `expected blocked: ${command}`);
+}
+
+// A program name built from shell expansion is invisible to every literal
+// pattern: `a=r;b=m;$a$b -rf /` IS `rm -rf /` to the shell. "Cannot judge"
+// must fail closed (operator approval), never run unprompted with no trash.
+const unresolvedProgramCommands = [
+  "a=r;b=m;$a$b -rf /tmp/x",
+  "R=r; M=m; $R$M -rf /tmp/x",
+  "sudo $A$B -rf /tmp/x",
+  "env $A$B -rf /tmp/x",
+  "command $A$B -rf /tmp/x",
+  "sh -c '$A$B -rf /tmp/x'",
+  "sh -c 'echo ok; $A$B -rf /tmp/x'",
+  "bash -lc '$A$B -rf /tmp/x'",
+  "su -c 'echo ok; $A$B -rf /tmp/x' root",
+  "xargs -I{} $A$B ::: /tmp/x",
+  "find /tmp -exec $A$B {} \\;",
+  "eval $A",
+  "echo $($A $B -rf /tmp/x)",
+  "for f in a b; do $CMD \"$f\"; done"
+];
+for (const command of unresolvedProgramCommands) {
+  const decision = assessShellCommand(command);
+  assert.equal(decision.ok, false, `expected blocked: ${command}`);
+  assert.equal(decision.categoryKey, "unresolved-program", `expected the unverifiable-program category: ${command}`);
+}
+// The custom tier may release a recognized category; it cannot release the
+// absence of a decision.
+assert.equal(
+  assessShellCommand("a=r;b=m;$a$b -rf /tmp/x", { mode: "custom", allow: ["delete-files"] }).ok,
+  false,
+  "releasing delete-files must not pre-approve an unverifiable program"
+);
+
+// Expansions in ARGUMENTS are still ordinary commands: word splitting cannot
+// turn an argument into a new program, so these must stay quiet.
+const expansionArgumentCommands = [
+  "ls $HOME",
+  "tail -f \"$LOG\"",
+  "systemctl restart \"$SERVICE\"",
+  "curl -fsSL \"$URL\" -o /tmp/pkg",
+  "for f in *.log; do grep -c error \"$f\"; done",
+  "if [ -f \"$CONF\" ]; then echo ok; fi",
+  "grep \"a|$PATTERN\" file",
+  "sudo systemctl restart nginx",
+  "sudo -u deploy systemctl restart nginx",
+  "timeout 30s tail -f $LOG",
+  "xargs echo done",
+  "echo $(date)",
+  "sh -c 'cd $DIR && make'",
+  "bash -lc 'echo $HOME; ls $DIR'",
+  "for f in a b; do echo \"$f\"; done",
+  "case \"$1\" in a) echo a;; esac",
+  "cd $DIR && ls"
+];
+for (const command of expansionArgumentCommands) {
+  assert.equal(assessShellCommand(command).ok, true, `expected safe: ${command}`);
 }
 
 // …while a boundary that is merely adjacent to "rm" keeps ordinary commands
@@ -102,14 +167,6 @@ assert.equal(canonicalCommandText("r''m -rf /tmp/x"), "rm -rf /tmp/x");
 assert.equal(canonicalCommandText("\\rm -rf /tmp/x"), "rm -rf /tmp/x");
 assert.equal(canonicalCommandText("$'\\x72m' -rf /tmp/x"), "rm -rf /tmp/x");
 assert.equal(canonicalCommandText("echo 'hello world'"), "echo hello world");
-
-assert.equal(isPrefillable("rm -rf /tmp/foo"), true);
-assert.equal(isPrefillable("rm -rf\t/tmp/x"), false, "Tab must block prefill");
-assert.equal(isPrefillable("rm -rf\n/tmp/x"), false, "LF must block prefill");
-assert.equal(isPrefillable("rm\x03rf"), false, "Ctrl-C must block prefill");
-assert.equal(isPrefillable(""), false);
-assert.equal(isPrefillable(null), false);
-assert.equal(isPrefillable("x".repeat(4097)), false, "oversized must block prefill");
 
 assert.equal(
   normalizeTerminalEol("$ command\nfirst row\r\nsecond row\rthird row"),
@@ -156,7 +213,7 @@ service.appendSessionOutput(service.sessions.get("capture"), "$ echo old\r\nold 
 const rememberedPrompt = service.sessions.get("capture").lastPrompt;
 service.appendSessionOutput(service.sessions.get("capture"), "root@iZ2vc27mmzgpr2oszj1kplZ:~# ");
 assert.equal(rememberedPrompt, "root@iZ2vc27mmzgpr2oszj1kplZ:~# ");
-assert.match(service.sessions.get("capture").buffer, /old output/);
+assert.match(service.terminalOutput(service.sessions.get("capture")).read().data, /old output/);
 
 const redacted = redactForModel("PASSWORD=top-secret\nAuthorization: Bearer abc.def\n");
 assert.equal(redacted.redacted, true);
@@ -170,6 +227,40 @@ assert.doesNotMatch(redactedSk.text, /sk-[A-Za-z0-9]{12,}/);
 // 短 token（sk- 后不足 12 字符）不应被误伤
 const shortSk = redactForModel("a short sk-abc word");
 assert.doesNotMatch(shortSk.text, /sk-\*\*\*/);
+
+// .env / CLI 写法：标识符前缀让 \b 失效（_ 是单词字符），
+// MYSQL_ROOT_PASSWORD= 之类原来是原样进入模型上下文的。
+{
+  const secrets = ["hunter2", "Pa55w0rd", "AKIAxxxxsecret", "correct horse", "abcdef", "letmein", "letsgo"];
+  const env = redactForModel([
+    "MYSQL_ROOT_PASSWORD=hunter2",
+    "DB_PASSWORD=Pa55w0rd",
+    "export AWS_SECRET_ACCESS_KEY=AKIAxxxxsecret",
+    "SSH_PASSPHRASE='correct horse'",
+    "x-auth-token: abcdef",
+    "sshpass -p letmein ssh ops@192.0.2.9",
+    "sshpass -pletsgo ssh ops@192.0.2.9"
+  ].join("\n"));
+  assert.equal(env.redacted, true, "env-style secrets are recognised as secrets");
+  for (const secret of secrets) {
+    assert.equal(env.text.includes(secret), false, `${secret} must not reach the model`);
+  }
+  assert.match(env.text, /MYSQL_ROOT_PASSWORD=\*\*\*/);
+  assert.match(env.text, /AWS_SECRET_ACCESS_KEY=\*\*\*/);
+}
+
+// 反过来，camelCase 代码和形近设置不能被误伤：过度脱敏会把普通输出也吞掉。
+{
+  const plain = [
+    "function getSecret(): string {}",
+    "TOKENIZERS_PARALLELISM=false",
+    "PUBLIC_KEY=ssh-ed25519 AAAA",
+    "docker run -p 8080:80 image"
+  ].join("\n");
+  const untouched = redactForModel(plain);
+  assert.equal(untouched.redacted, false, "non-credential identifiers are left alone");
+  assert.equal(untouched.text, plain);
+}
 
 let manualInput;
 service.sessions = new Map([["manual", {
@@ -200,7 +291,7 @@ assert.equal(deniedExec.blocked, true);
 assert.equal(deniedExec.value.command, "shred /tmp/x");
 assert.match(deniedExec.value.reason, /删除文件或目录/);
 assert.equal(deniedExec.value.queued, undefined, "nothing is queued anymore — the ask replaced the cards");
-assert.equal(service.sessions.get("live-sess").buffer, "", "no terminal notice: the gate suspends the call instead of queueing");
+assert.deepEqual(prefillWrites, [], "no terminal notice: the gate suspends the call instead of queueing");
 
 // The same deletion hidden behind an operator is denied on the same path: no
 // voucher is invented for a command the operator never saw.
@@ -215,7 +306,7 @@ assert.equal(service.sessions.get("live-sess").buffer, "", "no terminal notice: 
 // A voucher is bound to the exact command the operator saw: a different one
 // grants nothing, and consuming a voucher happens exactly once.
 service.recordOperatorApproval("call-1", "live", "shred /tmp/other");
-const mismatched = await service.execOnConnection("live", "shred /tmp/x", 30000, false, "call-1");
+const mismatched = await service.execOnConnection("live", "shred /tmp/x", 30000, "call-1");
 assert.equal(mismatched.blocked, true, "a voucher for another command grants nothing");
 assert.equal(service.operatorApprovals.size, 0, "the mismatched voucher is still consumed once");
 
@@ -251,13 +342,13 @@ assert.equal(service.operatorApprovals.size, 0, "the mismatched voucher is still
   // call: the trash move runs on the exec channel and the agent sees its
   // output. The PTY never sees the rm.
   trashService.recordOperatorApproval("call-trash", "live", "rm -rf /tmp/x");
-  const approved = await trashService.execOnConnection("live", "rm -rf /tmp/x", 30000, false, "call-trash");
+  const approved = await trashService.execOnConnection("live", "rm -rf /tmp/x", 30000, "call-trash");
   assert.equal(approved.blocked, undefined, "the approved command ran");
   assert.equal(approved.value.exitCode, 0);
   assert.ok(sent.includes(".dsh-trash") && sent.includes("manifest.tsv"), "approval executes the generated script");
   assert.ok(!trashWrites.some((w) => w.includes("rm")), "the real rm never reaches the PTY");
   assert.equal(trashService.operatorApprovals.size, 0, "the voucher is consumed exactly once");
-  const mirrored = trashService.sessions.get("live-sess").buffer;
+  const mirrored = trashService.terminalOutput(trashService.sessions.get("live-sess")).read().data;
   assert.ok(mirrored.includes("$ rm -rf /tmp/x"), "the terminal mirror echoes the original command");
   assert.ok(!mirrored.includes("__DSH_TRASH_V1__"), "the terminal mirror never shows protocol lines");
 
@@ -265,7 +356,7 @@ assert.equal(service.operatorApprovals.size, 0, "the mismatched voucher is still
   // literally on the exec channel, exactly as approved.
   sent = null;
   trashService.recordOperatorApproval("call-compound", "live", "rm -rf /tmp/x && echo done");
-  const compound = await trashService.execOnConnection("live", "rm -rf /tmp/x && echo done", 30000, false, "call-compound");
+  const compound = await trashService.execOnConnection("live", "rm -rf /tmp/x && echo done", 30000, "call-compound");
   assert.equal(compound.blocked, undefined);
   assert.ok(sent.endsWith("rm -rf /tmp/x && echo done"), "compound approval runs the literal command");
 
@@ -289,7 +380,7 @@ assert.equal(service.operatorApprovals.size, 0, "the mismatched voucher is still
     throw new Error("transport lost after dispatch");
   };
   ambiguousService.recordOperatorApproval("call-once", "live", "reboot");
-  const ambiguous = await ambiguousService.execOnConnection("live", "reboot", 30000, false, "call-once");
+  const ambiguous = await ambiguousService.execOnConnection("live", "reboot", 30000, "call-once");
   assert.equal(ambiguous.error.code, "exec-outcome-unknown");
   assert.equal(ambiguousRuns, 1, "an approved dangerous command is never transparently replayed");
   const ordinary = await ambiguousService.execOnConnection("live", "touch status");
@@ -340,6 +431,23 @@ assert.equal(execution.ok, true);
 assert.equal(execution.value.host, "192.0.2.10");
 assert.equal(execution.value.cwd, "/root", "the interactive cwd travels with the result");
 assert.deepEqual(Object.keys(execution.value).sort(), ["commandId", "connectionId", "cwd", "durationMs", "exitCode", "finishedAt", "host", "redacted", "startedAt", "stderr", "stdout", "timedOut", "truncated"]);
+
+// A trash run reports what happened to each target. The script always exits 0,
+// so this is the only signal that separates "moved" from "nothing was there".
+{
+  const outcome = [{ original: "/tmp/gone", status: "missing" }];
+  service.execOnConnection = async () => ({
+    ok: true,
+    value: {
+      exitCode: 0, stdout: "", stderr: "", cwd: "/root", commandId: "cmd-2",
+      startedAt: "2026-08-15T00:00:00.000Z", finishedAt: "2026-08-15T00:00:01.000Z",
+      durationMs: 1000, truncated: false, timedOut: false, trashed: outcome
+    }
+  });
+  const trashedExec = await service.executeCommand({ command: "rm -rf /tmp/gone" });
+  assert.equal(trashedExec.ok, true);
+  assert.deepEqual(trashedExec.value.trashed, outcome, "the per-target trash outcome reaches the tool renderer");
+}
 
 const registeredTools = [];
 service.registerTools({ tools: { register(tool) { registeredTools.push(tool); } } });
@@ -527,4 +635,4 @@ const deletedProfile = await profileService.profileDelete({ profileId: savedProf
 assert.equal(deletedProfile.value.deleted, true);
 assert.equal(secrets.size, 0);
 
-console.log(`safety policy: ${safeCommands.length + deleteLookalikeCommands.length} safe and ${blockedCommands.length + deleteEvasionCommands.length} blocked cases passed`);
+console.log(`safety policy: ${safeCommands.length + deleteLookalikeCommands.length + expansionArgumentCommands.length} safe and ${blockedCommands.length + deleteEvasionCommands.length + unresolvedProgramCommands.length} blocked cases passed`);

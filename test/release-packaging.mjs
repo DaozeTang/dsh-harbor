@@ -14,7 +14,8 @@ try {
   writeFileSync(join(root, "test", "manual", "private.mjs"), "secret\n");
   writeFileSync(join(root, "test", "unit", "public.mjs"), "ok\n");
 
-  for (const entry of ["docs", "tools", "README.en.md", "INSTALL.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md", "licenses"]) {
+  for (const entry of ["docs", "README.en.md", "INSTALL.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md",
+    "eslint.config.js", ".editorconfig", "preview"]) {
     assert.ok(RELEASE_ARCHIVE_ENTRIES.includes(entry), `release archive must include ${entry}`);
   }
   assert.equal(shouldCopyReleaseEntry(join(root, "test"), root), true);
@@ -22,6 +23,12 @@ try {
   assert.equal(shouldCopyReleaseEntry(join(root, "test", "unit", "public.mjs"), root), true);
   assert.equal(shouldCopyReleaseEntry(join(root, "test", "manual"), root), false);
   assert.equal(shouldCopyReleaseEntry(join(root, "test", "manual", "private.mjs"), root), false);
+
+  mkdirSync(join(root, "preview", "out"), { recursive: true });
+  assert.equal(shouldCopyReleaseEntry(join(root, "preview"), root), true);
+  assert.equal(shouldCopyReleaseEntry(join(root, "preview", "theme-fallback.css"), root), true);
+  assert.equal(shouldCopyReleaseEntry(join(root, "preview", "out"), root), false);
+  assert.equal(shouldCopyReleaseEntry(join(root, "preview", "out", "page.html"), root), false);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

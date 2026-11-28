@@ -44,10 +44,11 @@ export function useLanguage() {
  * The language DSH itself is showing, through whichever face the host
  * actually exposes (verified against dsh-client-locale on the real host):
  *  1. the documented LocaleFace read `getSnapshot().active`;
- *  2. `getLocale()`, which returns the same SNAPSHOT OBJECT (not a string);
- *  3. a dictionary probe: our own "harbor" namespace registers
- *     sidebarTabTitle in both languages, so bind() resolving it tells us the
- *     active language even on a face that hides both readers above.
+ *  2. `getLocale()`, which returns the same SNAPSHOT OBJECT (not a string).
+ *
+ * A dictionary probe cannot answer this: our own namespace registers
+ * "Harbor" in both languages, and a host that hides both readers above gives
+ * no reliable signal. Returning null lets the stored choice win instead.
  */
 export function readHostLanguage(locale) {
   const fromSnapshot = (snapshot) =>
@@ -59,12 +60,6 @@ export function readHostLanguage(locale) {
   try {
     const legacy = fromSnapshot(locale?.getLocale?.());
     if (legacy !== null) return legacy;
-  } catch {}
-  try {
-    const translate = locale?.bind?.("harbor");
-    const probe = typeof translate === "function" ? translate("sidebarTabTitle") : null;
-    if (probe === "SSH Terminal") return "en";
-    if (probe === "SSH 终端") return "zh"; // i18n-ignore: probes the HOST dictionary, not our UI
   } catch {}
   return null;
 }

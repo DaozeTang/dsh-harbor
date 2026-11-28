@@ -6,7 +6,7 @@ Harbor 不引入通用图标包：它的字形与 DeepSeek Harness 自带的图�
 
 1. 从宿主安装包里取出图标精灵表（`ICON_SYMBOLS` 的源对象，形如 `{"search-outline": {size: 16, svg: (w) => "<svg …/>"}}`）。
 2. 展开成 `名称 → { size, viewBox, body }`，写进 `src/client/ui/icons.js`。
-3. 只保留实际用到的图标；新增图标时同步更新 `docs/ui-guidelines.md` 里的清单。
+3. 只保留实际用到的图标：`src/client/ui/icons.js` 的键就是唯一清单，新增图标只改这个文件，不再另外维护一份文档列表。
 
 生成脚本是一次性工具，不随包发布——产物是纯数据，运行时对宿主内部模块没有任何依赖。
 

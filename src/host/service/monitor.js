@@ -54,6 +54,8 @@ export const withMonitor = (Base) => class extends Base {
         slowAt: 0,
         unsupportedAt: 0,
         failures: 0,
+        timeouts: 0,
+        silentAt: 0,
         retryAt: 0,
         inFlight: null
       };
@@ -91,13 +93,26 @@ export const withMonitor = (Base) => class extends Base {
     const refresh = input.refresh === true;
 
     if (connection.dead === true || connection.closing === true) {
+      // A reconnect earns a fresh attempt: a silence verdict belongs to the old
+      // transport, not to the server when it comes back.
+      state.silentAt = 0;
+      state.timeouts = 0;
       return { ok: false, error: fail("connection-lost", t("连接已断开，正在等待重连；链路恢复后状态会自动继续。")) };
     }
     if (refresh) {
       state.retryAt = 0;
       state.unsupportedAt = 0;
+      state.silentAt = 0;
+      state.timeouts = 0;
     }
     if (state.inFlight !== null) return state.inFlight;
+    // Two consecutive silent timeouts mean the probe is not getting through at
+    // all. Without this, a switch that opens an exec channel but never answers
+    // was probed every 2/4/8/30 seconds forever, abandoning one channel each
+    // time (the #33 device class the probe timeout itself exists for).
+    if (!refresh && state.silentAt > 0 && now - state.silentAt < UNSUPPORTED_TTL_MS) {
+      return { ok: false, error: fail("probe-unresponsive", t("状态采样连续超时，这台服务器可能没有响应；稍后会自动重试。")) };
+    }
     if (state.retryAt > now) {
       const seconds = Math.max(1, Math.ceil((state.retryAt - now) / 1000));
       return { ok: false, error: fail("probe-backoff", t(`采样暂停，${seconds} 秒后自动重试`)) };
@@ -143,14 +158,21 @@ export const withMonitor = (Base) => class extends Base {
       exec = await this.collectExecOutput(client, command, timeoutMs);
     } catch (error) {
       if (connection.dead === true || connection.closing === true || connection.client !== client) {
+        state.silentAt = 0;
+        state.timeouts = 0;
         return { ok: false, error: fail("connection-lost", t("采样过程中连接断开，请稍后重试。")) };
       }
+      // A channel that refused to open is not the same as one that opened and
+      // stayed silent, so it resets the silence streak.
+      state.timeouts = 0;
       return this.monitorFailure(state, t(`状态采样失败：${error?.message ?? String(error)}`));
     }
     if (connection.dead === true || connection.closing === true || connection.client !== client || client === undefined) {
       return { ok: false, error: fail("connection-lost", t("采样过程中连接断开，请稍后重试。")) };
     }
     if (exec.timedOut === true) {
+      state.timeouts = (state.timeouts ?? 0) + 1;
+      if (state.timeouts >= 2) state.silentAt = Date.now();
       return this.monitorFailure(state, t(`状态采样超时（${Math.max(1, Math.round(timeoutMs / 1000))} 秒），这台服务器可能没有响应；稍后会自动重试。`));
     }
 
@@ -187,6 +209,8 @@ export const withMonitor = (Base) => class extends Base {
     state.lastAt = Date.now();
     state.unsupportedAt = built.supported ? 0 : Date.now();
     state.failures = 0;
+    state.timeouts = 0;
+    state.silentAt = 0;
     state.retryAt = 0;
     return { ok: true, value: built.value };
   }

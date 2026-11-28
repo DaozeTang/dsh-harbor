@@ -7,17 +7,12 @@
  */
 import { t } from "../i18n/core.js";
 
-export const EXEC_POLICY_TIERS = ["standard", "custom", "allowAll"];
-
 /** Loosening is "a larger number"; every tier switch compares against this. */
 export const TIER_ORDER = { standard: 0, custom: 1, allowAll: 2 };
 
-/** Human name for a tier, for buttons, menus and confirmation titles. */
-export function execPolicyLabel(mode) {
-  if (mode === "custom") return t("自定义放行");
-  if (mode === "allowAll") return t("全部放行");
-  return t("标准");
-}
+// Tier names are shared with the host's approval copy (src/shared); this module
+// re-exports them so the panel keeps importing one presentation entry point.
+export { execPolicyLabel } from "../shared/exec-policy-label.js";
 
 /** What switching to `tier` releases, in the operator's words. */
 export function execPolicyLooseningDetail(tier, allowCount) {

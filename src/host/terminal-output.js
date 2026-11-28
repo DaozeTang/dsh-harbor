@@ -2,15 +2,34 @@
 export function createTerminalOutput(initial = '', maxBytes = 1024 * 1024) {
   let text = '';
   let end = 0;
+  let bytes = 0;
   const limit = Number.isFinite(maxBytes) ? Math.max(0, maxBytes) : 1024 * 1024;
+  /** UTF-8 width of one code point, without allocating a Buffer per character. */
+  const width = (codePoint) => (codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4);
   const journal = {
     append(chunk) {
       end += chunk.length;
-      const bytes = Buffer.from(text + chunk, 'utf8');
-      let start = Math.max(0, bytes.length - limit);
-      // Never retain half a UTF-8 code point: offsets must match decoded text.
-      while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
-      text = bytes.subarray(start).toString('utf8');
+      if (limit === 0) { text = ''; bytes = 0; return; }
+      text += chunk;
+      bytes += Buffer.byteLength(chunk, 'utf8');
+      const excess = bytes - limit;
+      if (excess <= 0) return;
+      // Drop whole code points from the front until at least `excess` bytes
+      // are gone. Scanning only the oldest characters keeps each append O(chunk)
+      // — re-encoding the whole journal here was O(n²) at the 2 MB cap.
+      let index = 0;
+      let dropped = 0;
+      while (index < text.length && dropped < excess) {
+        const codePoint = text.codePointAt(index);
+        dropped += width(codePoint);
+        index += codePoint > 0xffff ? 2 : 1;
+      }
+      text = text.slice(index);
+      bytes -= dropped;
+    },
+    /** The newest `chars` characters, for prompt detection and echo checks. */
+    tail(chars) {
+      return Number.isFinite(chars) && chars > 0 ? text.slice(-chars) : '';
     },
     read(after) {
       const start = end - text.length;
@@ -20,30 +39,6 @@ export function createTerminalOutput(initial = '', maxBytes = 1024 * 1024) {
       if (code >= 0xdc00 && code <= 0xdfff) from++;
       return { data: text.slice(from - start), startOffset: from, offset: end };
     },
-    readWindow(after, maxBytes) {
-      const start = end - text.length;
-      const limit = Number.isSafeInteger(maxBytes) ? Math.max(1, maxBytes) : 24 * 1024;
-      let from = Number.isSafeInteger(after) ? Math.min(end, Math.max(start, after)) : start;
-      const wasClamped = Number.isSafeInteger(after) && after < start;
-      const code = text.charCodeAt(from - start);
-      if (code >= 0xdc00 && code <= 0xdfff) from++;
-      let available = text.slice(from - start);
-      let bytes = Buffer.from(available, "utf8");
-      if (bytes.length > limit) {
-        if (after === undefined) {
-          bytes = bytes.subarray(bytes.length - limit);
-          while (bytes.length > 0 && (bytes[0] & 0xc0) === 0x80) bytes = bytes.subarray(1);
-          available = bytes.toString("utf8");
-          from = end - available.length;
-        } else {
-          bytes = bytes.subarray(0, limit);
-          while (bytes.length > 0 && (bytes[bytes.length - 1] & 0xc0) === 0x80) bytes = bytes.subarray(0, bytes.length - 1);
-          available = bytes.toString("utf8");
-        }
-      }
-      const nextOffset = from + available.length;
-      return { data: available, historyStart: start, historyEnd: end, offset: from, nextOffset, wasClamped, hasMore: nextOffset < end };
-    }
   };
   journal.append(initial);
   return journal;

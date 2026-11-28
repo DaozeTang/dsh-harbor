@@ -1,4 +1,4 @@
-// terminal-appearance-migration.mjs — MIGRATION.md §1.3 迁移矩阵逐条 + scheme.js 契约
+// terminal-appearance-migration.mjs — 迁移矩阵逐条 + scheme.js 契约
 //
 // 覆盖：迁移矩阵每一行在 getScheme 上的行为、旧 word/auto 模式归一化、
 // normalizeScheme 脏数据容错、patternProblem 错误标识、compileScheme 管线
@@ -47,7 +47,7 @@ function entryOf(scheme, id) {
 }
 
 // ---------------------------------------------------------------------------
-// 迁移矩阵（MIGRATION.md §1.3 逐条）
+// 迁移矩阵（逐条）
 // ---------------------------------------------------------------------------
 
 test("矩阵① 全新安装：无 v1 记录 → 直接获得新默认方案", () => {
@@ -177,7 +177,7 @@ test("旧 word/auto 模式条目归一化为 regex 条目", () => {
 });
 
 // ---------------------------------------------------------------------------
-// normalizeScheme / patternProblem / splitPatterns（TESTS.md §3）
+// normalizeScheme / patternProblem / splitPatterns
 // ---------------------------------------------------------------------------
 
 test("splitPatterns：按行拆分、trim、去重、去空", () => {
@@ -227,7 +227,7 @@ test("normalizeScheme：未知输入 → undefined；脏数据过滤；结果冻
 });
 
 // ---------------------------------------------------------------------------
-// compileScheme 管线契约（INTERFACES §4）
+// compileScheme 管线契约
 // ---------------------------------------------------------------------------
 
 test("compileScheme：默认方案 → 全量自动识别 + context 项", () => {
@@ -293,7 +293,7 @@ test("compileScheme：合法正则运行、非法正则跳过", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 导入导出往返（SPEC §6 / MIGRATION §1.4）
+// 导入导出往返（format + version 2）
 // ---------------------------------------------------------------------------
 
 test("exportScheme：格式标识、版本 2、往返一致", () => {

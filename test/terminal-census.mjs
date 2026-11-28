@@ -12,7 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { CENSUS_MARKER, buildCensusScript, isPtyPath, newestUnclaimedTty, parseCensus, pickNewTty } from "../src/host/terminal-census.js";
+import { CENSUS_MARKER, buildCensusScript, isPtyPath, parseCensus, pickNewTty } from "../src/host/terminal-census.js";
 import { buildCwdAwareCommand, extractExecCwd } from "../src/host/exec-cwd.js";
 
 // ── parser: only well-formed census lines count ─────────────────────────────
@@ -46,17 +46,6 @@ import { buildCwdAwareCommand, extractExecCwd } from "../src/host/exec-cwd.js";
   assert.equal(pickNewTty(before, before), null, "no new shell means nothing to learn");
   assert.equal(pickNewTty(before, [...before, { tty: "/dev/pts/3" }, { tty: "/dev/pts/4" }]), null, "an ambiguous diff is refused");
   assert.equal(pickNewTty([], [{ tty: "/dev/pts/3" }]), "/dev/pts/3");
-
-  const rows = [
-    { tty: "/dev/pts/1", pid: 10, startTime: 100 },
-    { tty: "/dev/pts/2", pid: 11, startTime: 200 },
-    { tty: "/dev/pts/3", pid: 12, startTime: 300 }
-  ];
-  assert.equal(newestUnclaimedTty(rows, new Set(["/dev/pts/1", "/dev/pts/2"])), "/dev/pts/3");
-  assert.equal(newestUnclaimedTty(rows, new Set(["/dev/pts/3"])), "/dev/pts/2", "newest first, skipping claimed ttys");
-  assert.equal(newestUnclaimedTty(rows, new Set(rows.map((row) => row.tty))), null);
-  // Equal start ticks fall back to the pid, which is also monotone.
-  assert.equal(newestUnclaimedTty([{ tty: "/dev/pts/7", pid: 5, startTime: 9 }, { tty: "/dev/pts/8", pid: 6, startTime: 9 }], new Set()), "/dev/pts/8");
 }
 
 // ── the generated script against a real /proc shape ─────────────────────────

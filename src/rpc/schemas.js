@@ -27,23 +27,23 @@ export function resultSchema(value) {
 // with `AuthenticationMethods password,publickey` or the reverse) require two
 // factors on the SAME connection, so a credential may carry a primary factor
 // plus an optional secondary of the opposite kind.
-export const passwordFactorSchema = z.object({
+const passwordFactorSchema = z.object({
   kind: z.literal("password"),
   password: z.string()
 });
 
-export const keyFactorSchema = z.object({
+const keyFactorSchema = z.object({
   kind: z.literal("key"),
   privateKey: z.string(),
   passphrase: z.string().optional()
 });
 
-export const passwordAuthSchema = passwordFactorSchema.extend({
+const passwordAuthSchema = passwordFactorSchema.extend({
   // Optional second factor: a key, when the primary factor is the password.
   secondary: keyFactorSchema.optional()
 });
 
-export const keyAuthSchema = keyFactorSchema.extend({
+const keyAuthSchema = keyFactorSchema.extend({
   // Optional second factor: a password, when the primary factor is the key.
   secondary: passwordFactorSchema.optional()
 });
@@ -55,7 +55,7 @@ export const authSchema = z.union([passwordAuthSchema, keyAuthSchema]);
 // verify:     reject unseen hosts, reject on change.
 // off:        skip host-key verification entirely (not recommended).
 
-export const hostKeyModeSchema = z.enum(["accept-new", "verify", "off"]);
+const hostKeyModeSchema = z.enum(["accept-new", "verify", "off"]);
 
 // ── terminal ownership ──────────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ export const hostKeyModeSchema = z.enum(["accept-new", "verify", "off"]);
  * through the anonymous path, which is why this never becomes a required
  * field. Absent means "no conversation to attribute this to", not "any".
  */
-export const ownerSessionIdSchema = z.string().min(1).max(128);
+const ownerSessionIdSchema = z.string().min(1).max(128);
 
 // ── connect ─────────────────────────────────────────────────────────────────
 
@@ -107,22 +107,28 @@ export const connectRequestSchema = z.object({
   message: "auth or credentialId is required"
 });
 
-export const connectResultSchema = resultSchema(
-  z.object({
-    connectionId: z.string(),
-    name: z.string().optional(),
-    host: z.string(),
-    port: z.number(),
-    username: z.string(),
-    // Set when the handshake needed the legacy KEX set; `warning` carries the
-    // user-facing explanation so a weakened transport is never silent.
-    legacyFallback: z.boolean().optional(),
-    // Set when the peer's identification string had to be normalized before
-    // ssh2 would accept it (see ssh-banner.js); also explained in `warning`.
-    bannerRepair: z.boolean().optional(),
-    warning: z.string().optional()
-  })
-);
+/**
+ * The payload of a successful connect. Exported on its own so the typert drift
+ * guard can compare every wire key against the hand-written declaration
+ * (`SshConnectResult`), which is how the missing legacy/banner/warning fields
+ * were caught.
+ */
+export const connectResultPayloadSchema = z.object({
+  connectionId: z.string(),
+  name: z.string().optional(),
+  host: z.string(),
+  port: z.number(),
+  username: z.string(),
+  // Set when the handshake needed the legacy KEX set; `warning` carries the
+  // user-facing explanation so a weakened transport is never silent.
+  legacyFallback: z.boolean().optional(),
+  // Set when the peer's identification string had to be normalized before
+  // ssh2 would accept it (see ssh-banner.js); also explained in `warning`.
+  bannerRepair: z.boolean().optional(),
+  warning: z.string().optional()
+});
+
+export const connectResultSchema = resultSchema(connectResultPayloadSchema);
 
 // ── list ────────────────────────────────────────────────────────────────────
 
@@ -133,7 +139,7 @@ export const listRequestSchema = z.object({ sessionId: ownerSessionIdSchema.opti
  * `mine` is resolved against the listing caller's session, which is what lets
  * the panel show its own terminal instead of "the first one".
  */
-export const terminalInfoSchema = z.object({
+const terminalInfoSchema = z.object({
   sessionId: z.string(),
   ownerSessionId: z.string().nullable(),
   openedBy: z.enum(["panel", "agent"]),
@@ -141,7 +147,7 @@ export const terminalInfoSchema = z.object({
   mine: z.boolean()
 });
 
-export const connectionInfoSchema = z.object({
+const connectionInfoSchema = z.object({
   connectionId: z.string(),
   name: z.string().optional(),
   host: z.string(),
@@ -168,7 +174,7 @@ export const connectionInfoSchema = z.object({
 
 // A saved SSH resource as the agent sees it: coordinates only —
 // no credentials, no credential ids, no jump chains.
-export const savedResourceInfoSchema = z.object({
+const savedResourceInfoSchema = z.object({
   profileId: z.string(),
   name: z.string(),
   host: z.string(),
@@ -191,8 +197,8 @@ export const listResultSchema = resultSchema(
 // The operator-level settings RPC now carries every global switch. The
 // execution-policy fields are optional so an older panel build (which only
 // knows agentAutoConnect) still round-trips through these schemas.
-export const execPolicyModeSchema = z.enum(["standard", "custom", "allowAll"]);
-export const execPolicyAllowSchema = z.array(z.string()).max(32);
+const execPolicyModeSchema = z.enum(["standard", "custom", "allowAll"]);
+const execPolicyAllowSchema = z.array(z.string()).max(32);
 
 export const agentSettingsGetRequestSchema = z.object({});
 export const featureSettingsSchema = z.object({
@@ -314,7 +320,7 @@ export const openSshImportResultSchema = resultSchema(z.union([
   }) })
 ]));
 export const resourceBackupImportResultSchema = resultSchema(z.object({ profiles: z.number().int(), groups: z.number().int(), credentials: z.number().int(), duplicates: z.array(z.string()).max(5000).optional(), skipped: z.number().int().optional(), retained: z.array(z.string()).max(5000).optional() }));
-export const profileAuthKindSchema = z.enum(["password", "key"]);
+const profileAuthKindSchema = z.enum(["password", "key"]);
 // A saved project directory is deliberately an absolute POSIX path.  It is
 // passed to SFTP and to the guarded `changeDirectory` RPC, so accepting shell
 // syntax, relative paths, or control characters here would create two subtly
@@ -352,6 +358,14 @@ const profileMetadataSchema = z.object({
 });
 
 export const profileSaveRequestSchema = profileMetadataSchema.extend({
+  // The stored record carries these defaults; the request must not invent
+  // them. A default here turns "this caller did not send hostKeyMode" into
+  // "accept-new", which silently downgrades a resource pinned to `verify` on
+  // every partial save. profileMetadataSchema keeps its defaults for the
+  // *output* shape, where a record saved before a field existed must still
+  // read back as a complete object.
+  hostKeyMode: hostKeyModeSchema.optional(),
+  agentForward: z.boolean().optional(),
   profileId: profileIdSchema.optional(),
   groupId: groupIdSchema.nullable().optional(),
   credentialId: credentialIdSchema.nullable().optional(),
@@ -364,7 +378,7 @@ export const profileSaveRequestSchema = profileMetadataSchema.extend({
   execPolicy: execPolicyModeSchema.nullable().optional()
 });
 
-export const profileCredentialRefsSchema = z.object({
+const profileCredentialRefsSchema = z.object({
   password: z.string(),
   privateKey: z.string(),
   passphrase: z.string(),
@@ -417,7 +431,7 @@ export const profileListResultSchema = resultSchema(
 // A workspace stays a host directory; only its *file work* is redirected to a
 // saved SSH resource. `workspacePath` is the canonical directory DSH stores for
 // the Workspace, so it doubles as the row identity.
-export const remoteWorkspaceBindingSchema = z.object({
+const remoteWorkspaceBindingSchema = z.object({
   workspacePath: z.string().min(1),
   remotePath: z.string().min(1),
   profileId: profileIdSchema,
@@ -432,7 +446,7 @@ export const remoteWorkspaceBindingSchema = z.object({
   missingResource: z.boolean().optional()
 });
 
-export const remoteWorkspaceCandidateSchema = z.object({
+const remoteWorkspaceCandidateSchema = z.object({
   path: z.string().min(1),
   title: z.string()
 });
@@ -477,7 +491,7 @@ export const profileConnectResultSchema = connectResultSchema;
 export const cancelProfileConnectRequestSchema = z.object({ profileId: profileIdSchema.optional() });
 export const cancelProfileConnectResultSchema = resultSchema(z.object({ cancelled: z.number().int().min(0) }));
 
-export const groupInfoSchema = z.object({
+const groupInfoSchema = z.object({
   groupId: groupIdSchema,
   name: z.string(),
   profileCount: z.number().int().nonnegative()
@@ -512,10 +526,15 @@ export const openSessionRequestSchema = z.object({
   // terminal, which the first conversation that asks may adopt.
   sessionId: ownerSessionIdSchema.optional(),
   // false refuses to adopt this connection's single anonymous terminal.
-  adopt: z.boolean().optional()
+  adopt: z.boolean().optional(),
+  // Open a fresh shell even when this conversation already owns one here. The
+  // panel re-requests its terminal on every layout change, so reuse is the
+  // default; this exists for the "the person took the shell over" path and for
+  // callers that really need a second PTY.
+  forceNew: z.boolean().optional()
 });
 
-export const sessionInfoSchema = z.object({
+const sessionInfoSchema = z.object({
   sessionId: z.string(),
   connectionId: z.string(),
   cols: z.number(),
@@ -530,31 +549,6 @@ export const sessionInfoSchema = z.object({
 
 export const openSessionResultSchema = resultSchema(sessionInfoSchema);
 
-export const terminalContextSessionSchema = z.object({
-  sessionId: z.string(), connectionId: z.string(), name: z.string().optional(), host: z.string(), port: z.number().int(),
-  openedAt: z.string(), openedBy: z.enum(["panel", "agent"]), alive: z.boolean(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(),
-  // Which conversation owns it (null = anonymous), and whether that is the caller.
-  ownerSessionId: z.string().nullable(), mine: z.boolean()
-});
-export const terminalContextListRequestSchema = z.object({ sessionId: ownerSessionIdSchema.optional() });
-export const terminalContextListResultSchema = resultSchema(z.object({ sessions: z.array(terminalContextSessionSchema) }));
-export const terminalContextReadRequestSchema = z.object({
-  sessionId: z.string().min(1), after: z.number().int().nonnegative().safe().optional(), maxBytes: z.number().int().min(1024).max(98304).optional()
-});
-export const shellIntegrationStateSchema = z.object({
-  atPrompt: z.boolean(),
-  lastExitCode: z.number().nullable(),
-  cwd: z.string().nullable(),
-  lastCommandAt: z.string().nullable(),
-  commands: z.number().int().nonnegative()
-});
-
-export const terminalContextReadResultSchema = resultSchema(z.object({
-  sessionId: z.string(), data: z.string(), historyStart: z.number().int().nonnegative(), historyEnd: z.number().int().nonnegative(), offset: z.number().int().nonnegative(), nextOffset: z.number().int().nonnegative(), wasClamped: z.boolean(), hasMore: z.boolean(), alive: z.boolean(), exit: z.union([z.object({ code: z.number(), signal: z.number().optional(), reason: z.enum(["remote-exit", "remote-signal", "channel-closed", "channel-error", "transport-lost", "operator-close", "session-closed"]).optional() }), z.null()]), redacted: z.boolean(),
-  // OSC 133 state when the shell emits it (enableShellIntegration); null before that.
-  shell: shellIntegrationStateSchema.nullable()
-}));
-
 // ── write ───────────────────────────────────────────────────────────────────
 
 export const writeRequestSchema = z.object({
@@ -568,7 +562,7 @@ export const writeResultSchema = resultSchema(
 
 // ── known-hosts management (operator only) ──────────────────────────────────
 
-export const knownHostInfoSchema = z.object({
+const knownHostInfoSchema = z.object({
   host: z.string(),
   port: z.number().int(),
   algorithm: z.string(),
@@ -651,13 +645,18 @@ export const disconnectResultSchema = resultSchema(
 
 // ── SFTP ────────────────────────────────────────────────────────────────────
 
-const sftpEntrySchema = z.object({
-  name: z.string(),
+// The attributes a listing entry and a stat result share. `name` is
+// deliberately not one of them: `sftpStat` answers "what is at this path", and
+// its caller already knows the path it asked about, so requiring a `name` here
+// made every stat result fail the strict codec.
+const sftpAttributesSchema = z.object({
   isDirectory: z.boolean(),
   size: z.number(),
   mtime: z.number(),
   mode: z.number()
 });
+
+const sftpEntrySchema = z.object({ name: z.string(), ...sftpAttributesSchema.shape });
 
 export const sftpListRequestSchema = z.object({
   connectionId: z.string().optional(),
@@ -673,7 +672,7 @@ export const sftpStatRequestSchema = z.object({
   path: z.string().min(1)
 });
 
-export const sftpStatResultSchema = resultSchema(sftpEntrySchema.and(z.object({ path: z.string() })));
+export const sftpStatResultSchema = resultSchema(z.object({ path: z.string(), ...sftpAttributesSchema.shape }));
 
 export const sftpReadRequestSchema = z.object({
   connectionId: z.string().optional(),
@@ -682,6 +681,8 @@ export const sftpReadRequestSchema = z.object({
 });
 
 export const sftpReadResultSchema = resultSchema(
+  // `bytes` is the length of the returned content (min(file size, maxBytes)),
+  // so it is only the file size when `truncated` is false.
   z.object({ path: z.string(), data: z.string(), truncated: z.boolean(), bytes: z.number() })
 );
 
@@ -760,28 +761,6 @@ export const sftpTransferCancelRequestSchema = z.object({ connectionId: z.string
 export const sftpTransferCancelResultSchema = resultSchema(z.object({ cancelled: z.boolean() }));
 export const sftpTransferDiscardResultSchema = resultSchema(z.object({ discarded: z.boolean() }));
 
-export const sftpUploadDirRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  localPath: z.string().min(1),
-  remotePath: z.string().min(1)
-});
-
-export const sftpDownloadDirRequestSchema = z.object({
-  connectionId: z.string().optional(),
-  remotePath: z.string().min(1),
-  localPath: z.string().min(1)
-});
-
-export const sftpTransferDirResultSchema = resultSchema(
-  z.object({
-    source: z.string(),
-    target: z.string(),
-    directories: z.number(),
-    files: z.number(),
-    bytes: z.number(),
-    failed: z.array(z.object({ path: z.string(), error: z.string() }))
-  })
-);
 
 // ── Port forwarding ──────────────────────────────────────────────────────────
 
@@ -873,14 +852,9 @@ export const tunnelListResultSchema = resultSchema(
   })
 );
 
-export const enableShellIntegrationRequestSchema = z.object({ sessionId: z.string().min(1) });
-export const enableShellIntegrationResultSchema = resultSchema(
-  z.object({ sessionId: z.string(), enabled: z.boolean() })
-);
-
 // ── session logs (recording) ─────────────────────────────────────────────────
 
-export const sessionLogInfoSchema = z.object({
+const sessionLogInfoSchema = z.object({
   sessionId: z.string(),
   connectionId: z.string().nullable(),
   name: z.string().nullable(),
@@ -941,7 +915,7 @@ export const batchPlanRequestSchema = z.object({
   timeoutMs: z.number().int().min(1000).max(120000).optional()
 });
 
-export const batchTaskSchema = z.object({
+const batchTaskSchema = z.object({
   batchId: z.string(),
   command: z.string(),
   timeoutMs: z.number(),
@@ -960,22 +934,30 @@ export const batchRunRequestSchema = z.object({
   profileIds: z.array(z.string()).min(1)
 });
 
-export const batchRunResultSchema = resultSchema(
-  z.object({
-    results: z.array(
-      z.object({
-        profileId: z.string(),
-        name: z.string(),
-        host: z.string(),
-        ok: z.boolean(),
-        exitCode: z.union([z.number(), z.null()]),
-        stdout: z.string(),
-        stderr: z.string(),
-        error: z.string().nullable()
-      })
- )
-  })
-);
+/**
+ * One per-host outcome row.
+ *
+ * `ok` means the command reached an exit status. A command killed by the
+ * per-host deadline reports ok:false with timedOut:true and keeps the output
+ * that arrived first; `truncated` says the tail was cut by the output cap.
+ * Every field has to be declared here: the codec strips what it does not
+ * know, which is how a killed command used to reach the panel looking exactly
+ * like a clean success.
+ */
+export const batchRunRowSchema = z.object({
+  profileId: z.string(),
+  name: z.string(),
+  host: z.string(),
+  ok: z.boolean(),
+  timedOut: z.boolean(),
+  truncated: z.boolean(),
+  exitCode: z.union([z.number(), z.null()]),
+  stdout: z.string(),
+  stderr: z.string(),
+  error: z.string().nullable()
+});
+
+export const batchRunResultSchema = resultSchema(z.object({ results: z.array(batchRunRowSchema) }));
 
 export const batchCancelRequestSchema = z.object({ batchId: z.string() });
 export const batchCancelResultSchema = resultSchema(z.object({ cancelled: z.boolean() }));
@@ -995,7 +977,7 @@ export const systemStatsRequestSchema = z.object({
 const statBytes = z.number().min(0);
 const statPercent = z.number().min(0).max(100).nullable();
 
-export const systemStatsHostSchema = z.object({
+const systemStatsHostSchema = z.object({
   hostname: z.string().optional(),
   os: z.string().optional(),
   kernel: z.string().optional(),
@@ -1005,7 +987,7 @@ export const systemStatsHostSchema = z.object({
   uptimeSeconds: z.number().min(0).optional()
 });
 
-export const systemStatsCpuSchema = z.object({
+const systemStatsCpuSchema = z.object({
   usagePercent: statPercent,
   perCore: z.array(statPercent).nullable(),
   iowaitPercent: statPercent.optional(),
@@ -1015,7 +997,7 @@ export const systemStatsCpuSchema = z.object({
   model: z.string().nullable().optional()
 });
 
-export const systemStatsMemorySchema = z.object({
+const systemStatsMemorySchema = z.object({
   totalBytes: statBytes,
   freeBytes: statBytes,
   availableBytes: statBytes,
@@ -1025,7 +1007,7 @@ export const systemStatsMemorySchema = z.object({
   swapFreeBytes: statBytes
 });
 
-export const systemStatsGpuSchema = z.object({
+const systemStatsGpuSchema = z.object({
   index: z.number().int().min(0),
   name: z.string(),
   utilizationPercent: statPercent,
@@ -1035,7 +1017,7 @@ export const systemStatsGpuSchema = z.object({
   powerW: z.number().nullable()
 });
 
-export const systemStatsDiskSchema = z.object({
+const systemStatsDiskSchema = z.object({
   mount: z.string(),
   device: z.string(),
   totalBytes: statBytes,
@@ -1044,12 +1026,12 @@ export const systemStatsDiskSchema = z.object({
   usePercent: z.number().min(0).max(100)
 });
 
-export const systemStatsDiskIoSchema = z.object({
+const systemStatsDiskIoSchema = z.object({
   readBytesPerSec: z.number().min(0),
   writeBytesPerSec: z.number().min(0)
 });
 
-export const systemStatsNetworkSchema = z.object({
+const systemStatsNetworkSchema = z.object({
   name: z.string(),
   rxBytesPerSec: z.number().min(0).nullable(),
   txBytesPerSec: z.number().min(0).nullable(),
@@ -1057,20 +1039,20 @@ export const systemStatsNetworkSchema = z.object({
   txTotalBytes: statBytes
 });
 
-export const systemStatsProcessSchema = z.object({
+const systemStatsProcessSchema = z.object({
   pid: z.number().int().min(0),
   name: z.string(),
   cpuPercent: z.number().min(0),
   memPercent: z.number().min(0)
 });
 
-export const systemStatsProcessesSchema = z.object({
+const systemStatsProcessesSchema = z.object({
   total: z.number().int().nullable(),
   running: z.number().int().nullable(),
   top: z.array(systemStatsProcessSchema)
 });
 
-export const systemStatsCapabilitiesSchema = z.object({
+const systemStatsCapabilitiesSchema = z.object({
   processes: z.boolean(),
   gpu: z.boolean(),
   disks: z.boolean(),

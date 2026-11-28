@@ -114,31 +114,54 @@ function fakeConnection(overrides = {}) {
   assert.match(listed.error.message, /timed out/);
 }
 
-// ── 4. rename refuses to overwrite an existing destination ────────────────
+// ── 4. rename refuses to overwrite a DIFFERENT entry ──────────────────────
+// POSIX rename(2) silently replaces the destination and SFTP v3 exposes no
+// inode, so "is this the same entry?" has to be answered from what the server
+// can tell. Equal attributes are not identity: two unrelated files of the same
+// size, written in the same second with the same mode used to compare equal and
+// one of them was destroyed by the rename.
 {
   const service = makeService();
   let renamed = null;
-  const attributes = { size: 10, mtime: 5, mode: 0o100644 };
-  const sftp = {
+  service.resolveConnection = () => ({ ok: true, connectionId: "c1", connection: fakeConnection() });
+  /**
+   * Minimal SFTP export: `entries` are the names actually stored, and
+   * `foldCase` makes the server answer for any capitalisation, as a
+   * case-insensitive filesystem does.
+   */
+  const makeSftp = ({ entries, foldCase }) => ({
+    realpath(path, callback) { callback(null, path); },
+    readdir(path, callback) { callback(null, entries.map((filename) => ({ filename }))); },
     lstat(path, callback) {
-      if (path === "/a") return callback(null, attributes);
-      if (path === "/b") return callback(null, { size: 99, mtime: 7, mode: 0o100644 });
-      if (path === "/File") return callback(null, attributes);
-      return callback(Object.assign(new Error("No such file"), { code: 2 }));
+      const name = path.slice(path.lastIndexOf("/") + 1);
+      const found = entries.find((entry) => entry === name || (foldCase && entry.toLowerCase() === name.toLowerCase()));
+      if (found === undefined) return callback(Object.assign(new Error("No such file"), { code: 2 }));
+      callback(null, { size: 10, mtime: 5, mode: 0o100644 });
     },
     rename(from, to, callback) { renamed = { from, to }; callback(null); }
-  };
-  service.resolveConnection = () => ({ ok: true, connectionId: "c1", connection: fakeConnection() });
-  service.requireSftp = async () => ({ ok: true, sftp });
+  });
+  const use = (options) => { renamed = null; service.requireSftp = async () => ({ ok: true, sftp: makeSftp(options) }); };
 
+  // A genuinely different file at the destination is never replaced.
+  use({ entries: ["a", "b"], foldCase: false });
   const refused = await service.sftpRename({ connectionId: "c1", from: "/a", to: "/b" });
   assert.equal(refused.ok, false);
   assert.equal(refused.error.code, "target-exists", "an implicit overwrite is refused");
   assert.equal(renamed, null, "nothing is renamed when the target exists");
 
-  const caseOnly = await service.sftpRename({ connectionId: "c1", from: "/a", to: "/File" });
+  // Case-only rename on a case-insensitive export: one entry, two spellings.
+  use({ entries: ["a"], foldCase: true });
+  const caseOnly = await service.sftpRename({ connectionId: "c1", from: "/a", to: "/A" });
   assert.equal(caseOnly.ok, true, "a case-only rename of the same entry still works");
-  assert.deepEqual(renamed, { from: "/a", to: "/File" });
+  assert.deepEqual(renamed, { from: "/a", to: "/A" });
+
+  // A case-SENSITIVE export that really holds both spellings is two entries,
+  // and replacing one with the other is exactly the loss this guard prevents.
+  use({ entries: ["a", "A"], foldCase: false });
+  const both = await service.sftpRename({ connectionId: "c1", from: "/a", to: "/A" });
+  assert.equal(both.ok, false, "equal attributes on a case-sensitive export are still two files");
+  assert.equal(both.error.code, "target-exists");
+  assert.equal(renamed, null);
 }
 
 // ── 5. session log: begin/end in the same tick ────────────────────────────

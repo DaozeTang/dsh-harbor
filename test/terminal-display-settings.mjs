@@ -1,8 +1,8 @@
-import { acquireTestMatcher } from "./helpers/highlight-worker.mjs";
+import { acquireTestMatcher } from "./support/highlight-worker.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import xterm from "@xterm/xterm";
-import { createDisplaySettings, getDisplaySettings, setDisplaySettings, setDisplayColor, resetDisplayColors, saveDisplayRule, deleteDisplayRule, moveDisplayRule, setDisplayBackground, resetDisplayBackground, resetDisplayBackgrounds } from "../src/client/terminal-display/settings.js";
+import { createDisplaySettings, getDisplaySettings, setDisplaySettings, setDisplayBackground, resetDisplayBackground } from "../src/client/terminal-display/settings.js";
 import { OutputHighlightAddon } from "../src/client/terminal-display/addon.js";
 import { COLORS, LIGHT_COLORS } from "../src/client/terminal-display/rules.js";
 import { DARK_THEME, LIGHT_THEME, resolveDisplayTheme, terminalTheme } from "../src/client/terminal-display/theme.js";
@@ -113,7 +113,7 @@ test("theme and highlighting apply to all live terminals, including while disabl
     setDisplaySettings({ backgrounds: { dark: "#000000" } });
     assert.ok(terminals.every((term) => term.options.theme.background === "#000000"), "live terminals take the custom background");
     assert.ok(terminals.every((term) => term.options.theme.foreground === "#e6edf3"), "a dark custom background keeps a light foreground");
-    resetDisplayBackgrounds();
+    setDisplaySettings({ backgrounds: undefined });
     assert.ok(terminals.every((term) => term.options.theme.background === DARK_THEME.background), "resetting returns to the DSH background");
     const added = new xterm.Terminal({ allowProposedApi: true }); added.loadAddon(new OutputHighlightAddon({ acquireMatcher: acquireTestMatcher }));
     assert.equal(added.options.theme.background, DARK_THEME.background); added.dispose();
@@ -148,12 +148,14 @@ test("all live terminals recolor immediately, reset per theme, and reject invali
   const addons = terminals.map((term) => { const addon = new OutputHighlightAddon({ acquireMatcher: acquireTestMatcher }); term.loadAddon(addon); return addon; });
   try {
     for (const term of terminals) await new Promise((resolve) => term.write('ERROR', resolve));
-    setDisplayColor("dark", "error", "#FF8800");
+    setDisplaySettings((state) => ({ colors: { ...state.colors, dark: { error: "#FF8800" } } }));
     for (const addon of addons) { await addon.scan(); assert.ok(addon.rows[0].signature.includes("#ff8800")); }
     const snapshot = getDisplaySettings();
-    setDisplayColor("dark", "error", "red"); setDisplayColor("unknown", "error", "#123456");
-    assert.equal(getDisplaySettings(), snapshot);
-    setDisplayColor("light", "error", "#0055aa"); resetDisplayColors("dark");
+    setDisplaySettings({ colors: { ...snapshot.colors, unknown: { error: "#123456" } } });
+    assert.equal(getDisplaySettings(), snapshot, "an unknown theme is dropped before it reaches the snapshot");
+    setDisplaySettings({ colors: { ...snapshot.colors, dark: { error: "red" } } });
+    assert.equal(getDisplaySettings().colors, undefined, "an invalid color drops the override instead of storing raw text");
+    setDisplaySettings({ colors: { light: { error: "#0055aa" } } });
     assert.equal(getDisplaySettings().colors.light.error, "#0055aa");
     for (const addon of addons) { await addon.scan(); assert.ok(addon.rows[0].signature.includes(COLORS.error)); }
     setDisplaySettings({ theme: "light" });
@@ -184,30 +186,25 @@ test("custom rule normalization, persistence and cross-window updates", () => {
   off();
 });
 
-test("rule add/edit/reorder/toggle/delete update every live terminal and preserve remote styles", async () => {
+test("legacy saved rules render live, honor enabled:false, and never overpaint remote colors", async () => {
   const original = getDisplaySettings();
   setDisplaySettings({ theme: "dark", highlightEnabled: true, builtinEnabled: false, customRules: [] });
   const terminals = [0, 1].map(() => new xterm.Terminal({ cols: 60, rows: 3, allowProposedApi: true }));
   const addons = terminals.map((term) => { const addon = new OutputHighlightAddon({ acquireMatcher: acquireTestMatcher }); term.loadAddon(addon); return addon; });
-  const first = { id: "one", text: "业务失败", color: "error" };
+  const rule = { id: "one", text: "业务失败", color: "error" };
   try {
     for (const term of terminals) await new Promise((resolve) => term.write("业务失败 ERROR \x1b[36m业务失败\x1b[0m", resolve));
     for (const addon of addons) { await addon.scan(); assert.equal(addon.rows.length, 0); }
-    assert.equal(saveDisplayRule(first), true);
-    for (const addon of addons) { await addon.scan(); assert.ok(addon.rows[0].signature.includes(COLORS.error)); }
-    assert.equal(saveDisplayRule({ id: "two", text: "业务失败", color: "success" }), true);
-    moveDisplayRule("two", -1);
-    for (const addon of addons) { await addon.scan(); assert.ok(addon.rows[0].signature.includes(COLORS.success)); }
-    saveDisplayRule({ ...getDisplaySettings().customRules[0], enabled: false });
-    for (const addon of addons) { await addon.scan(); assert.ok(addon.rows[0].signature.includes(COLORS.error)); }
-    saveDisplayRule({ ...first, color: "info" });
+    setDisplaySettings({ customRules: [rule] });
     for (const addon of addons) {
-      await addon.scan(); assert.ok(addon.rows[0].signature.includes(COLORS.info));
+      await addon.scan();
+      assert.ok(addon.rows[0].signature.includes(COLORS.error));
       assert.equal(addon.rows[0].decorations.length, 1, "the remote-colored copy remains untouched");
     }
-    deleteDisplayRule("one");
+    setDisplaySettings({ customRules: [{ ...rule, enabled: false }] });
     for (const addon of addons) { await addon.scan(); assert.equal(addon.rows.length, 0); }
-    assert.equal(saveDisplayRule({ ...first, text: "" }), false);
+    setDisplaySettings({ customRules: [{ ...rule, text: "" }] });
+    for (const addon of addons) { await addon.scan(); assert.equal(addon.rows.length, 0, "an empty rule is dropped by normalization"); }
   } finally {
     terminals.forEach((term) => term.dispose());
     setDisplaySettings({ ...original, customRules: original.customRules ?? [], builtinEnabled: original.builtinEnabled !== false });
@@ -242,7 +239,7 @@ test("theme schemes persist, synchronize and reset independently, preserving mig
     setDisplaySettings({ backgrounds: { dark: "#000000" } });
     assert.equal(JSON.parse(exportScheme(getDisplaySettings(), "dark")).background, "#000000", "a custom background is backed up");
     assert.equal(JSON.parse(exportScheme(getDisplaySettings(), "light")).background, "#f7f8fa", "the other theme keeps its default background");
-    resetDisplayBackgrounds();
+    setDisplaySettings({ backgrounds: undefined });
     const f = fixture({ [KEY]: JSON.stringify(getDisplaySettings()) }), store = createDisplaySettings(f);
     assert.deepEqual(getScheme(store.getSnapshot(), "dark"), dark);
     const off = store.subscribe(() => {});
@@ -289,12 +286,12 @@ test("custom backgrounds are validated, persisted per theme and reset to the DSH
     assert.deepEqual(getDisplaySettings().backgrounds, { dark: "#000000", light: "#ffeedd" }, "invalid updates are ignored");
     resetDisplayBackground("dark");
     assert.deepEqual(getDisplaySettings().backgrounds, { light: "#ffeedd" }, "one theme can return to the DSH background while the other stays custom");
-    resetDisplayBackgrounds();
+    setDisplaySettings({ backgrounds: undefined });
     assert.equal(getDisplaySettings().backgrounds, undefined, "reset drops every override");
     const f = fixture();
     createDisplaySettings(f).update({ backgrounds: { dark: "#000000", light: "#ffeedd", extra: "#123456" } });
     assert.deepEqual(createDisplaySettings(f).getSnapshot().backgrounds, { dark: "#000000", light: "#ffeedd" });
-  } finally { resetDisplayBackgrounds(); setDisplaySettings(original); }
+  } finally { setDisplaySettings({ backgrounds: undefined }); setDisplaySettings(original); }
 });
 
 test("restoring a backup changes only its own theme and rejects invalid files atomically", async () => {

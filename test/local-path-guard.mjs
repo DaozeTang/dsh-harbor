@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { inspectLocalAgentPath, isLocalPathInside, resolveLocalAgentPath } from "../src/host/local-path-guard.js";
+import { assertLocalWriteTarget, canonicalizeLocalPath, inspectLocalAgentPath, isLocalPathInside, resolveLocalAgentPath } from "../src/host/local-path-guard.js";
 import { registerSftpTools } from "../src/host/tools/sftp.js";
 
 function sandbox() {
@@ -156,4 +156,42 @@ function harness({ workspace, outcome, withApproval = true }) {
   } finally { box.cleanup(); }
 }
 
-console.log("local path guard: workspace boundary and one-call operator approval verified");
+// -- an unresolvable symlink is not an "inside" destination ----------------
+// realpath fails for a dangling link and for a loop. Treating that failure as
+// "this component does not exist yet" walked up to the nearest real ancestor,
+// re-appended the unresolved name and compared THAT with the root, so
+// downloads/vendor -> /outside/newdir was reported inside: the guard, the one
+// place meant to be authoritative, said yes while the write would have
+// followed the link out of the workspace.
+{
+  const box = sandbox();
+  try {
+    const downloads = join(box.workspace, "downloads");
+    mkdirSync(downloads, { recursive: true });
+    symlinkSync(join(box.outside, "not-created-yet"), join(downloads, "vendor"));
+    await assert.rejects(
+      () => assertLocalWriteTarget(box.workspace, join(downloads, "vendor", "file.txt")),
+      /symbolic link/,
+      "a dangling link below the root is refused, not canonicalized away"
+    );
+    await assert.rejects(() => canonicalizeLocalPath(join(downloads, "vendor")), /symbolic link/);
+
+    symlinkSync(join(downloads, "loop"), join(downloads, "loop"));
+    await assert.rejects(
+      () => assertLocalWriteTarget(box.workspace, join(downloads, "loop", "file.txt")),
+      /cannot be resolved/,
+      "a symlink loop is refused instead of being walked past"
+    );
+
+    // The ordinary cases still work.
+    assert.equal(await assertLocalWriteTarget(box.workspace, join(downloads, "new", "file.txt")), join(downloads, "new", "file.txt"));
+    assert.equal(isLocalPathInside(await canonicalizeLocalPath(box.workspace), await canonicalizeLocalPath(join(box.workspace, "inside.txt"))), true, "an existing file still canonicalizes inside the root");
+    await assert.rejects(
+      () => assertLocalWriteTarget(box.workspace, join(box.outside, "x")),
+      /escapes/,
+      "a destination outside the root is still refused"
+    );
+  } finally { box.cleanup(); }
+}
+
+console.log("local path guard: workspace boundary, unresolved links and one-call operator approval verified");

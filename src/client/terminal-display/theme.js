@@ -1,10 +1,10 @@
 // theme.js — 终端显示主题：宿主 chrome + 独立设计的 ANSI 调色板 + 背景极性自适应
 //
-// 本文件的 ANSI 16 色调色板为独立设计产物（SPEC §5.2），依据 WCAG 相对亮度与
+// 本文件的 ANSI 16 色调色板为独立设计产物，依据 WCAG 相对亮度与
 // 通用终端惯例自行推导，不含任何第三方终端项目的派生内容。
 //
 // 终端外观的其余部分（背景、前景、光标、选区）来自宿主 DSH 终端主题
-// （../terminal-theme.js，INTERFACES §7），极性反转时从中重选。
+// （../terminal-theme.js），极性反转时从中重选。
 
 import {
   DARK_TERMINAL_THEME,
@@ -22,7 +22,7 @@ const HOST_CHROME = Object.freeze({
   light: LIGHT_TERMINAL_THEME,
 });
 
-// WCAG 相对亮度：高于该阈值视为浅底极性（SPEC §5.3，阈值取浅底一侧）。
+// WCAG 相对亮度：高于该阈值视为浅底极性（阈值取浅底一侧）。
 const LIGHT_POLARITY_THRESHOLD = 0.179;
 
 function channelValue(c) {
@@ -39,7 +39,7 @@ export function relativeLuminance(hex) {
 }
 
 // ---------------------------------------------------------------------------
-// 独立设计的 ANSI 16 色调色板（dark/light 各一套，SPEC §5.2）
+// 独立设计的 ANSI 16 色调色板（dark/light 各一套）
 // ---------------------------------------------------------------------------
 
 const DARK_ANSI = Object.freeze({
@@ -148,7 +148,7 @@ export function subscribeHostTheme(listener) {
 }
 
 // ---------------------------------------------------------------------------
-// 主题解析与背景极性自适应（SPEC §5.3）
+// 主题解析与背景极性自适应
 // ---------------------------------------------------------------------------
 
 export function resolveDisplayTheme(theme, host = getHostTheme()) {

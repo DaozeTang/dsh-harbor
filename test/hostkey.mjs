@@ -6,6 +6,7 @@ import {
   makeKeyBlob,
   knownHostKey,
   decideHostKey,
+  knownKeys,
   KnownHosts,
   HOST_KEY_MODES
 } from "../src/host/hostkey.js";
@@ -116,6 +117,59 @@ await kh.record("10.0.0.2", 2222, { fingerprint: fpB, algorithm: "ssh-rsa" });
 const all = kh.list();
 assert.equal(all.length, 1, "list reflects remaining entries");
 assert.equal(all[0].host, "10.0.0.2");
+
+// ── multi-algorithm records ─────────────────────────────────────────────────
+// One server legitimately offers several host keys, and which one a handshake
+// picks can change without the host changing (a firmware update adds ed25519,
+// an old client can only negotiate ssh-rsa). Trust is per algorithm, the way
+// OpenSSH's known_hosts is.
+const rsaKey = makeKeyBlob("ssh-rsa", 11);
+const fpRsa = keyFingerprint(rsaKey);
+const multi = new KnownHosts(makeTable());
+await multi.record("10.0.0.9", 22, { fingerprint: fpA, algorithm: "ssh-ed25519" });
+await multi.record("10.0.0.9", 22, { fingerprint: fpRsa, algorithm: "ssh-rsa" });
+const multiRow = multi.get("10.0.0.9", 22);
+assert.equal(knownKeys(multiRow).length, 2, "both key types stay in one host record");
+assert.equal(multiRow.algorithm, "ssh-rsa", "the top-level pair is the most recently seen key");
+assert.equal(knownKeys(multiRow).find((key) => key.algorithm === "ssh-ed25519").fingerprint, fpA);
+
+const secondAlgorithm = decideHostKey({ mode: "accept-new", known: multiRow, presentedFingerprint: fpRsa, algorithm: "ssh-rsa" });
+assert.equal(secondAlgorithm.accept, true, "a known second algorithm is not a changed host key");
+assert.equal(secondAlgorithm.record, undefined, "an already-recorded algorithm is not re-recorded");
+
+const ecKey = makeKeyBlob("ecdsa-sha2-nistp256", 12);
+const newAlgorithm = decideHostKey({ mode: "accept-new", known: multiRow, presentedFingerprint: keyFingerprint(ecKey), algorithm: "ecdsa-sha2-nistp256" });
+assert.equal(newAlgorithm.accept, true, "a new algorithm of a trusted host is recorded, not refused");
+assert.equal(newAlgorithm.record.algorithm, "ecdsa-sha2-nistp256");
+
+const rotated = decideHostKey({ mode: "accept-new", known: multiRow, presentedFingerprint: keyFingerprint(makeKeyBlob("ssh-rsa", 99)), algorithm: "ssh-rsa" });
+assert.equal(rotated.accept, false, "the same algorithm with a different key is still a change");
+assert.equal(rotated.reason, "host-key-mismatch");
+assert.equal(rotated.expected, fpRsa);
+
+const strictNewAlgorithm = decideHostKey({ mode: "verify", known: multiRow, presentedFingerprint: keyFingerprint(makeKeyBlob("ecdsa-sha2-nistp256", 13)), algorithm: "ecdsa-sha2-nistp256" });
+assert.equal(strictNewAlgorithm.accept, false, "verify mode never trusts a key type it has not verified");
+assert.equal(strictNewAlgorithm.reason, "unseen-host");
+
+// Records written before multi-algorithm support carry one pair and no `keys`.
+const legacyRecord = { host: "10.0.0.9", port: 22, algorithm: "", fingerprint: fpA };
+assert.equal(decideHostKey({ mode: "accept-new", known: legacyRecord, presentedFingerprint: fpA, algorithm: "ssh-ed25519" }).accept, true);
+assert.equal(decideHostKey({ mode: "accept-new", known: legacyRecord, presentedFingerprint: fpB, algorithm: "ssh-ed25519" }).accept, false, "an unattributed record still detects a changed key");
+
+// Two handshakes recording different algorithms at once must not lose either:
+// the merge is a read-modify-write across an awaited storage write.
+const slowMap = new Map();
+const slow = new KnownHosts({
+  get: (key) => slowMap.get(key),
+  put: async (key, value) => { await new Promise((resolve) => setTimeout(resolve, 5)); slowMap.set(key, value); },
+  delete: async (key) => slowMap.delete(key),
+  entries: () => slowMap.entries()
+});
+await Promise.all([
+  slow.record("10.0.0.10", 22, { fingerprint: fpA, algorithm: "ssh-ed25519" }),
+  slow.record("10.0.0.10", 22, { fingerprint: fpRsa, algorithm: "ssh-rsa" })
+]);
+assert.equal(knownKeys(slow.get("10.0.0.10", 22)).length, 2, "concurrent records keep both algorithms");
 
 // ── proxyJump TOFU propagation ──────────────────────────────────────────────
 // A rejected jump host must retain its structured code so connectClient neither

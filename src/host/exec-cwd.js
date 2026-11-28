@@ -21,15 +21,43 @@ export function posixLoginShell(name) {
  * terminal's tty (see terminal-census.js) and passes it here, which makes the
  * match exact again while every idle/foreground rule stays in force.
  */
-export function buildCwdResolverPrefix({ procRoot = '/proc', tty = null } = {}) {
+/**
+ * The pid the tty census learned for one terminal, when it knows one.
+ *
+ * `buildCwdResolverPrefix` uses it as a hint so the common case costs one
+ * pid instead of a scan of every process on the machine.
+ */
+export function censusPidFor(conn, tty) {
+  if (typeof tty !== 'string' || tty === '') return null;
+  const row = (conn?.ttyCensus ?? []).find((candidate) => candidate?.tty === tty);
+  return Number.isSafeInteger(row?.pid) && row.pid > 0 ? row.pid : null;
+}
+
+export function buildCwdResolverPrefix({ procRoot = '/proc', tty = null, pid = null } = {}) {
+  const ttyFilter = typeof tty === 'string' && tty.startsWith('/') ? tty : '';
+  // The hint is only meaningful together with the tty filter: without it a
+  // recycled pid could point at an unrelated interactive shell.
+  const pidHint = ttyFilter !== '' && Number.isSafeInteger(pid) && pid > 0 ? String(pid) : '';
   return `
-__dsh_tty_filter=${shellQuote(typeof tty === 'string' && tty.startsWith('/') ? tty : '')}
+__dsh_tty_filter=${shellQuote(ttyFilter)}
+__dsh_hint=${shellQuote(pidHint)}
 __dsh_find_shell() {
   __dsh_count=0; __dsh_seen=0; __dsh_busy=0; __dsh_nonint=0; __dsh_pid=''; __dsh_detail=''
+  __dsh_hint_tried=''; __dsh_hint_path=''
+  # A hint only helps together with a tty filter, and it is tried first: one
+  # pid instead of every process on the machine.
+  if [ -z "$__dsh_tty_filter" ]; then __dsh_hint=''; fi
+  if [ -n "$__dsh_hint" ]; then __dsh_hint_path=${shellQuote(procRoot)}/"$__dsh_hint"; fi
   [ -n "$SSH_CONNECTION" ] || return 1
-  for __dsh_p in ${shellQuote(procRoot)}/[0-9]*; do
+  for __dsh_p in $__dsh_hint_path ${shellQuote(procRoot)}/[0-9]*; do
     __dsh_n=\${__dsh_p##*/}
     case $__dsh_n in ''|*[!0-9]*) continue ;; esac
+    # The hinted pid is in this list twice (explicitly, then through the
+    # glob): inspect it once.
+    if [ -n "$__dsh_hint_path" ] && [ "$__dsh_p" = "$__dsh_hint_path" ]; then
+      if [ -n "$__dsh_hint_tried" ]; then continue; fi
+      __dsh_hint_tried=1
+    fi
     __dsh_t=$(readlink "$__dsh_p/fd/0" 2>/dev/null) || continue
     case $__dsh_t in /dev/pts/*|/dev/tty[0-9]*|/dev/ttys[0-9]*) ;; *) continue ;; esac
     if [ -n "$__dsh_tty_filter" ] && [ "$__dsh_t" != "$__dsh_tty_filter" ]; then continue; fi
@@ -69,6 +97,8 @@ EOF
       continue
     }
     __dsh_count=$((__dsh_count + 1)); __dsh_pid=$__dsh_n
+    # The tty filter makes the hint's answer unique: no need to scan on.
+    if [ -n "$__dsh_hint" ] && [ "$__dsh_n" = "$__dsh_hint" ]; then break; fi
   done
   if [ "$__dsh_count" -eq 1 ]; then printf '%s' "$__dsh_pid"; return 0; fi
   [ "$__dsh_count" -gt 1 ] && return 2

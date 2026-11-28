@@ -5,35 +5,45 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+/**
+ * The source archive (the ZIP) carries this tree; the tarball beside it is the
+ * installable package and is defined by package.json `files`. Two different
+ * artifacts on purpose — but every entry here must exist, because a stale name
+ * used to be skipped without a word.
+ */
 export const RELEASE_ARCHIVE_ENTRIES = [
-  "assets",
   "lib",
   "src",
   "scripts",
   "test",
-  "tools",
   "locale",
   "docs",
   "package.json",
   "package-lock.json",
+  "eslint.config.js",
+  ".editorconfig",
   "cordis.patch.yml",
   "icon.svg",
+  "preview",
   "README.md",
   "README.en.md",
   "INSTALL.md",
   "LICENSE",
   "THIRD_PARTY_NOTICES.md",
-  "licenses",
   "CHANGELOG.md"
 ];
 
-/** Local manual integration files are ignored in Git and must never reach ZIPs. */
+/**
+ * Local manual integration files are ignored in Git and must never reach ZIPs;
+ * the preview's generated `out/` is rebuilt by `npm run preview:ui` and would
+ * only bloat the archive with stale screenshots.
+ */
 export function shouldCopyReleaseEntry(source, root = DEFAULT_ROOT) {
-  const manual = join(root, "test", "manual");
-  return source !== manual && !source.startsWith(`${manual}${sep}`);
+  const excluded = [join(root, "test", "manual"), join(root, "preview", "out")];
+  return excluded.every((directory) => source !== directory && !source.startsWith(`${directory}${sep}`));
 }
 
-export function packageRelease(root = DEFAULT_ROOT) {
+function packageRelease(root = DEFAULT_ROOT) {
   const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   const release = join(root, "release");
   const archiveRoot = `${pkg.name}-${pkg.version}`;
@@ -44,12 +54,11 @@ export function packageRelease(root = DEFAULT_ROOT) {
 
   for (const entry of RELEASE_ARCHIVE_ENTRIES) {
     const source = join(root, entry);
-    if (existsSync(source)) {
-      cpSync(source, join(stage, basename(entry)), {
-        recursive: true,
-        filter: (candidate) => shouldCopyReleaseEntry(candidate, root)
-      });
-    }
+    if (!existsSync(source)) throw new Error(`release archive entry does not exist: ${entry} (${source})`);
+    cpSync(source, join(stage, basename(entry)), {
+      recursive: true,
+      filter: (candidate) => shouldCopyReleaseEntry(candidate, root)
+    });
   }
 
   // --ignore-scripts: prepare (which builds lib/) must not re-run during pack —

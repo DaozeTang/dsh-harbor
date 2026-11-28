@@ -2,6 +2,7 @@
 // real round trip through the proxy into an upstream echo server for IPv4,
 // domain and IPv6-preference paths, plus every refusal branch.
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import net from "node:net";
 import { SOCKS_REPLY, attachSocks5, parseGreeting, parseRequest, replyBytes, replyCodeForError } from "../src/host/socks5.js";
 
@@ -278,6 +279,58 @@ assert.ok(forwardCalls >= 3, `each accepted client opens its own channel (saw ${
   await close(counted);
 }
 
+// ── a client that never finishes negotiating is closed, not held forever ────
+// The listener is reachable by anything on the host and ssh -D has no
+// second-stage timeout of its own: a socket that connected and then said
+// nothing used to hold its descriptor, its connection-counter slot and its
+// tunnel record for the life of the process.
+{
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /** A stand-in accepted socket: enough of net.Socket for attachSocks5. */
+  const fakeSocket = () => {
+    const socket = new EventEmitter();
+    socket.destroyed = false;
+    socket.write = () => true;
+    socket.pipe = () => socket;
+    socket.destroy = () => { if (socket.destroyed) return; socket.destroyed = true; socket.emit("close"); };
+    return socket;
+  };
+  const fakeChannel = () => {
+    const channel = new EventEmitter();
+    channel.destroyed = false;
+    channel.write = () => true;
+    channel.pipe = () => channel;
+    channel.destroy = () => { channel.destroyed = true; };
+    return channel;
+  };
+
+  const silent = fakeSocket();
+  attachSocks5(silent, { forwardOut: () => {}, handshakeTimeoutMs: 20 });
+  assert.equal(silent.destroyed, false, "a fresh client is not closed immediately");
+  await sleep(80);
+  assert.equal(silent.destroyed, true, "a client that never sends a greeting is closed after the budget");
+
+  let closes = 0;
+  const greeted = fakeSocket();
+  attachSocks5(greeted, { forwardOut: () => {}, onClose: () => { closes += 1; }, handshakeTimeoutMs: 20 });
+  greeted.emit("data", Buffer.from([0x05, 0x01, 0x00]));
+  await sleep(80);
+  assert.equal(greeted.destroyed, true, "a half-negotiated client (greeting only) is closed too");
+  assert.equal(closes, 1, "its close is counted exactly once");
+
+  const done = fakeSocket();
+  attachSocks5(done, { forwardOut: (_host, _port, callback) => callback(null, fakeChannel()), handshakeTimeoutMs: 20 });
+  done.emit("data", Buffer.from([0x05, 0x01, 0x00]));
+  done.emit("data", Buffer.from([0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0x1f, 0x90]));
+  await sleep(80);
+  assert.equal(done.destroyed, false, "a completed handshake cancels the budget: a tunnelled stream is never cut later");
+
+  const unarmed = fakeSocket();
+  attachSocks5(unarmed, { forwardOut: () => {}, handshakeTimeoutMs: 0 });
+  await sleep(60);
+  assert.equal(unarmed.destroyed, false, "0 disables the budget explicitly");
+  unarmed.destroy();
+}
 await close(proxy);
 await close(echo);
 console.log("socks5: greeting/request parsing, reply mapping and end-to-end forwarding all passed");

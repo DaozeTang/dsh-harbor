@@ -5,7 +5,7 @@
  * converts base64 wire payloads (file contents are binary bytes, other fields
  * UTF-8 strings).
  */
-export class HarborApiError extends Error {
+class HarborApiError extends Error {
   constructor(code, message) {
     super(message);
     this.name = "HarborApiError";
@@ -209,15 +209,17 @@ export class HarborApi {
    * @param {string} connectionId - the server.
    * @param {number} [cols] - initial width.
    * @param {number} [rows] - initial height.
-   * @param {{sessionId?: string, openedBy?: "panel"|"agent", adopt?: boolean}} [options]
+   * @param {{sessionId?: string, openedBy?: "panel"|"agent", adopt?: boolean, forceNew?: boolean}} [options]
    *   `sessionId` is the owning conversation; `adopt` allows claiming the
-   *   connection's single unclaimed terminal instead of opening a new one.
+   *   connection's single unclaimed terminal instead of opening a new one;
+   *   `forceNew` skips reuse and opens a second shell for the same owner.
    */
   openSession(connectionId, cols, rows, options = {}) {
     const request = { connectionId, cols, rows };
     if (options.sessionId !== undefined) request.sessionId = options.sessionId;
     if (options.openedBy !== undefined) request.openedBy = options.openedBy;
     if (options.adopt !== undefined) request.adopt = options.adopt;
+    if (options.forceNew !== undefined) request.forceNew = options.forceNew;
     return this.call("openSession", request);
   }
 
@@ -383,10 +385,6 @@ export class HarborApi {
 
   tunnelStartLocal(input) {
     return this.call("tunnelStartLocal", input);
-  }
-
-  enableShellIntegration(sessionId) {
-    return this.call("enableShellIntegration", { sessionId });
   }
 
   sessionLogList() {

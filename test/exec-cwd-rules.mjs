@@ -2,9 +2,10 @@
  * Cross-platform guard for the exec-cwd resolver's *rules*.
  *
  * `test/exec-cwd.mjs` drives the real generated shell script against a fake
- * /proc, so it can only run on Linux (it is skipped on win32). That leaves the
- * Windows CI leg with zero coverage of this module, and the two classes of bug
- * we actually hit are both rule-level, not OS-level:
+ * /proc, so it can only run on Linux (it is skipped on win32). A Windows
+ * checkout therefore has no coverage of this module at all — and the two
+ * classes of bug we actually hit are both rule-level, not OS-level, so this
+ * file runs everywhere:
  *
  *   1. argv whitelist too narrow — UGREEN NAS runs `exec "$SHELL" -` from sshd
  *      ForceCommand, so the login shell's argv is `bash -`; stock shells may

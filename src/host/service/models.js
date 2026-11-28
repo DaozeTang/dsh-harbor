@@ -80,13 +80,25 @@ export const credentialDomainSpec = defineDomain({
   tables: { credentials: domainTable(credentialRecordSchema) }
 });
 
+// One host can present several host keys (ed25519, rsa, ecdsa), and which one a
+// handshake negotiates can change without the host changing, so trust is kept
+// per algorithm. Optional: a record written before this field existed still
+// loads, and the boot schema must not STRIP what a newer build stored.
+const knownHostKeysSchema = z.array(z.object({
+  algorithm: z.string(),
+  fingerprint: z.string(),
+  firstSeenAt: z.string().nullable().optional(),
+  lastSeenAt: z.string().nullable().optional()
+}));
+
 const knownHostRecordSchema = z.object({
   host: z.string(),
   port: z.number().int(),
   algorithm: z.string(),
   fingerprint: z.string(),
   firstSeenAt: z.string(),
-  lastSeenAt: z.string()
+  lastSeenAt: z.string(),
+  keys: knownHostKeysSchema.optional()
 });
 
 export const knownHostDomainSpec = defineDomain({

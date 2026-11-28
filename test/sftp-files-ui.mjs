@@ -127,7 +127,7 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
     [/sftpEditorSave\(connectionId, editing\.path, editing\.originalBytes, replacement\)/, "saving checks the original bytes"],
     [/toggleFavorite\(favorites, cwd\)/, "the star pins the current directory"],
     [/writeFavorites\(globalThis\.localStorage, favoritesStorageKey, next\)/, "favorites persist per server key"],
-    [/readFavorites\(globalThis\.localStorage, key\)/, "favorites load from storage on connect"],
+    [/readFavorites\(globalThis\.localStorage, favoritesStorageKey\)/, "favorites load from the connection's stable key"],
     [/favorites\.map\(\(path\) => \(/, "pinned paths render as chips"]
   ];
   for (const [pattern, label] of checks) {

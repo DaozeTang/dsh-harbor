@@ -1,8 +1,8 @@
-// terminal-appearance-semantic.mjs — TESTS.md §2 语义断言 + fixtures 样例
+// terminal-appearance-semantic.mjs — 语义级断言 + fixtures 样例
 //
 // 直接跑仓库真实的 matcher 管线（互斥优先级、上下文门控、accept 过滤、
 // 选项/权限子段着色都由 matcher.js 实现），对 HIGHLIGHT_RULES 与默认方案
-// 验证 SPEC/TESTS 的语义契约。
+// 验证语义契约。
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -17,7 +17,7 @@ import { compileScheme, defaultScheme } from "../src/client/terminal-display/sch
 const here = dirname(fileURLToPath(import.meta.url));
 const samplesDir = join(here, "fixtures", "terminal-appearance");
 
-// matcher 输出的是最终前景色；断言以类别标识符表达（TESTS.md 的语义级断言）。
+// matcher 输出的是最终前景色；断言以类别标识符表达，不依赖具体色值。
 // 这里只把默认色表反查回类别 id，管线本身仍是仓库真实实现。
 const HEX_TO_ID = new Map(Object.entries(COLORS).map(([id, hex]) => [hex, id]));
 const matchText = (text, rules, colors, limit) =>

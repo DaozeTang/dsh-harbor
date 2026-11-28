@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { TYPERT } from "../src/rpc/typert.js";
 import { DESCRIPTORS } from "../src/rpc/descriptors.js";
+import { batchRunRowSchema, connectResultPayloadSchema, profileInfoSchema } from "../src/rpc/schemas.js";
 
 const types = new Map(TYPERT.model.services[0].types.map((entry) => [entry.name, entry.declaration]));
 const members = TYPERT.model.services[0].members.map((member) => member.name);
@@ -39,4 +40,27 @@ for (const descriptor of DESCRIPTORS) {
   assert.ok(members.includes(descriptor.method), `descriptor ${descriptor.id} has no member row for ${descriptor.method}`);
 }
 
-console.log("typert sync: descriptor references, member rows and driver unions all match");
+// ── declarations carry every wire key of the shapes that already drifted ───
+// The declarations are hand-written and the schemas are the contract, so a new
+// field can silently be missing from the published types. Both of these had
+// drifted (profile metadata and the connect warnings).
+for (const [typeName, schema] of [["SshProfileInfo", profileInfoSchema], ["SshConnectResult", connectResultPayloadSchema]]) {
+  // Interfaces write `readonly key:`, type aliases write `key:`; both count.
+  const declared = new Set([...types.get(typeName).matchAll(/([A-Za-z0-9_]+)\??:/g)].map((match) => match[1]));
+  for (const key of Object.keys(schema.shape)) {
+    assert.ok(declared.has(key), `${typeName} declaration is missing the wire field "${key}"`);
+  }
+}
+
+// ── the batch outcome row is rebuilt field by field at runtime ──
+// timedOut and truncated were dropped from the row AND from the schema; a
+// hand-written declaration is the other place they can go missing, so the
+// published type is checked against the row schema itself.
+{
+  const declared = new Set([...types.get("BatchRunResult").matchAll(/([A-Za-z0-9_]+)\??:/g)].map((match) => match[1]));
+  for (const key of Object.keys(batchRunRowSchema.shape)) {
+    assert.ok(declared.has(key), `BatchRunResult declaration is missing the wire field "${key}"`);
+  }
+}
+
+console.log("typert sync: descriptor references, member rows, declaration fields and driver unions all match");

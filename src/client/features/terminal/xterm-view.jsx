@@ -66,21 +66,10 @@ const terminalPool = createTerminalPool({
   max: 8
 });
 
-/** The pooled terminal for a session, created on first use. */
-export function terminalFor(sessionId) {
-  return terminalPool.get(sessionId);
-}
-
-export function disposeTerminal(sessionId) {
-  // The host session is gone: release its xterm instance too.
-  terminalPool.drop(sessionId);
-}
-
 export function XtermView({ api, sessionId, connectionId }) {
   const containerRef = useRef(null);
   const searchInputRef = useRef(null);
   const entryRef = useRef(null);
-  const [closed, setClosed] = useState(() => terminalPool.get(sessionId)?.closed ?? false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState(null);
@@ -116,6 +105,11 @@ export function XtermView({ api, sessionId, connectionId }) {
     updateJump();
 
     let alive = true;
+    // The host said this terminal is gone (exit item or no-session). The
+    // pooled xterm then belongs to a dead PTY: keep it for the scrollback
+    // while the pane is open, but drop it on unmount instead of letting LRU
+    // eviction be the only thing that ever disposes it.
+    let ended = false;
     let writing = false;
     let pendingInput = "";
     const MAX_PENDING_INPUT = 64 * 1024;
@@ -192,15 +186,11 @@ export function XtermView({ api, sessionId, connectionId }) {
  : t(`远端终端已退出（退出码 ${exit.code}）。`);
       return `\r\n\x1b[90m[${message}]\x1b[0m\r\n`;
     };
-    const markClosed = () => {
-      terminalPool.setClosed(sessionId, true);
-      setClosed(true);
-    };
     const showItem = ({ data, exit, startOffset, offset }) => {
       const fresh = entry.consume(data ?? "", startOffset, offset);
       if (fresh) term.write(fresh);
       if (exit !== null) {
-        markClosed();
+        ended = true;
         term.write(exitNotice(exit));
         return true;
       }
@@ -231,7 +221,7 @@ export function XtermView({ api, sessionId, connectionId }) {
         } catch (error) {
           if (!alive) return true;
           if (error?.code === "no-session") {
-            markClosed();
+            ended = true;
             term.write(noSessionNotice);
             return true;
           }
@@ -259,7 +249,7 @@ export function XtermView({ api, sessionId, connectionId }) {
         } catch (error) {
           if (!alive) return;
           if (error?.code === "no-session") {
-            markClosed();
+            ended = true;
             term.write(noSessionNotice);
             return;
           }
@@ -316,9 +306,12 @@ export function XtermView({ api, sessionId, connectionId }) {
       viewport?.removeEventListener("scroll", updateJump);
       scrollSubscription?.dispose?.();
       inputSubscription.dispose();
-      // Detach only — the pooled terminal survives this unmount, and the host
-      // session is untouched either way.
+      // Detach — a live session's pooled terminal survives this unmount so a
+      // remount keeps its scrollback. A session the host already ended is not
+      // worth keeping: drop it now, otherwise the dead xterm (buffer, viewport
+      // timer, addons) waits for LRU eviction.
       terminalPool.release(sessionId, owner);
+      if (ended) terminalPool.drop(sessionId, { owner });
     };
   }, [sessionId, connectionId, api]);
 
@@ -336,7 +329,7 @@ export function XtermView({ api, sessionId, connectionId }) {
   const isMac = isMacPlatform(globalThis.navigator?.platform ?? globalThis.navigator?.userAgent);
 
   return (
-    <div className="hb-term" data-closed={closed || undefined}>
+    <div className="hb-term">
       <div className="hb-term__host" ref={containerRef} />
 
       {searchOpen && (

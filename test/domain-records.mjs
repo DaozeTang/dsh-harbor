@@ -18,17 +18,7 @@ import HarborService, {
   settingsDomainSpec
 } from "../src/index.js";
 import { KnownHosts } from "../src/host/hostkey.js";
-
-function fakeTable(entries = []) {
-  const map = new Map(entries);
-  return {
-    get: (id) => map.get(id),
-    put: (id, record) => { map.set(id, record); },
-    delete: (id) => { map.delete(id); },
-    entries: () => [...map.entries()],
-    size: () => map.size
-  };
-}
+import { fakeTable } from "./support/fake-table.mjs";
 
 /** Service shell carrying only what the credential save path touches. */
 function makeService({ credentials }) {

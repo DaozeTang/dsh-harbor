@@ -60,6 +60,27 @@ export function cliPageRequested(collected) {
 }
 
 /**
+ * Replay the backspaces in one collected line.
+ *
+ * A paging device erases its own marker by sending one backspace per marker
+ * character and then continues the SAME output line. Dropping every line that
+ * mentioned the marker therefore threw away one real output line per page —
+ * the data that shared the line with the marker — and left the raw \b bytes in
+ * whatever survived. A backspace is the terminal's own "erase the previous
+ * character", so replaying it removes exactly the marker and rejoins the line
+ * with its continuation.
+ */
+function applyBackspaces(line) {
+  if (!line.includes("\b")) return line;
+  const out = [];
+  for (const character of line) {
+    if (character === "\b") out.pop();
+    else out.push(character);
+  }
+  return out.join("");
+}
+
+/**
  * Build the stdout for a completed CLI command: drop the echoed command line
  * (prompt + command) at the head and the returned prompt at the tail, then
  * trim. When the command did not finish (timedOut), only the head is dropped
@@ -68,17 +89,28 @@ export function cliPageRequested(collected) {
 export function stripCliOutput(collected, promptLine, command, { timedOut = false } = {}) {
   // The paging marker is terminal chrome, not device output: the keypress
   // that advances the page erases it on screen, so the collected bytes must
-  // not carry it into the result either.
+  // not carry it into the result either — but the data printed on the same
+  // line must.
   let lines = stripAnsiCodes(collected)
  .split("\n")
- .map((line) => line.replace(/\r/g, ""))
- .filter((line) => !line.includes("---- More ----"));
+ .map((line) => applyBackspaces(line.replace(/\r/g, "")))
+ // A marker that still stands alone is a page break the device did not erase
+ // (the shape the test fixture uses, and what a differently-behaving pager
+ // produces). Its line carries no output.
+ .filter((line) => !/^\s*-{4} More -{4}\s*$/.test(line))
+ // A marker that survived inside a line belongs to an unfinished page: drop
+ // the chrome, keep the text around it.
+ .map((line) => line.replace(/ *-{4} More -{4} */g, ""));
+  // Devices often answer with a bare CRLF before the echoed command. The echo
+  // check used to look at the literal first line only, so that blank line made
+  // it miss and the echoed command was handed to the model as output.
+  while (lines.length > 0 && lines[0].trim() === "") lines.shift();
   if (lines.length > 0 && lines[0].trimEnd().endsWith(command.trim())) lines = lines.slice(1);
   if (!timedOut) {
     while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
     if (lines.length > 0 && lines[lines.length - 1].trim() === promptLine) lines.pop();
   }
-  while (lines.length > 0 && lines[0].trim() === "") lines.shift();
+  // The head was already trimmed above; only the tail can gain blanks here.
   while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
   return lines.join("\n");
 }

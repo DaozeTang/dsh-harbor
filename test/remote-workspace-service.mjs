@@ -134,6 +134,23 @@ function withDirectory(service, fallback) {
   const unbound = await makeService().resolveRemoteToolPath({ path: "/etc/hosts" }, exec("/tmp/other"));
   assert.deepEqual(unbound, { connectionId: undefined, path: "/etc/hosts", bound: false }, "an unbound session keeps historical behavior");
 
+  // An absent or blank path is not an absolute path. It used to be passed
+  // through untouched, and joinRemotePath("") meant "/": sftp_upload_dir with
+  // remote_path "" re-rooted the whole local tree at the server's filesystem
+  // root instead of failing the call.
+  for (const blank of ["", "   ", undefined, null, 42]) {
+    await assert.rejects(
+      () => makeService().resolveRemoteToolPath({ path: blank }, exec("/tmp/other")),
+      (error) => error.code === REMOTE_WORKSPACE_OUTSIDE,
+      `an unbound session refuses path ${JSON.stringify(blank)}`
+    );
+  }
+  await assert.rejects(
+    () => makeService().resolveRemoteToolPath({ path: "/etc/ho\u0000sts" }, exec("/tmp/other")),
+    (error) => error.code === REMOTE_WORKSPACE_OUTSIDE,
+    "a control byte is refused on the unbound path too"
+  );
+
   const relative = await service.resolveRemoteToolPath({ path: "config/app.yml" }, exec("/Users/me/work/app"));
   assert.deepEqual(relative, { connectionId: "c1", path: "/srv/app/config/app.yml", bound: true, workspaceRoot: "/srv/app" });
   assert.equal((await service.resolveRemoteToolPath({ path: "." }, exec("/Users/me/work/app/sub"))).path, "/srv/app/sub", "the session subdirectory maps 1:1 under the root");
