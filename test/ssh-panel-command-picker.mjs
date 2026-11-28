@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 // The command library is a workbench view, not a popover over the server
 // strip: it must stay usable while a server is connected, keep its own search
 // state, and manage custom commands in place.
-const panel = await readFile(new URL("../src/client/HarborPanel.jsx", import.meta.url), "utf8");
+const panel = await readFile(new URL("../src/client/shell/HarborPanel.jsx", import.meta.url), "utf8");
 const view = await readFile(new URL("../src/client/features/snippets/snippets-view.jsx", import.meta.url), "utf8");
 
 assert.match(

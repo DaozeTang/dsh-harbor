@@ -13,10 +13,10 @@
 import * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Button, Checkbox, EmptyState, ErrorNote, Icon, IconButton, TextInput, confirmAction, cx } from "../../ui/kit.jsx";
-import { readableLine, toReadableText } from "../../../host/terminal-text.js";
-import { classifyLogLine, segmentLogText } from "../../log-highlight.js";
+import { readableLine, toReadableText } from "../../../shared/terminal-text.js";
+import { classifyLogLine, segmentLogText } from "./log-highlight.js";
 import { t } from "../../../i18n/core.js";
-import { formatBytes, formatWhen } from "../../format.js";
+import { formatBytes, formatWhen } from "../../core/format.js";
 
 const PAGE_BYTES = 48 * 1024;
 

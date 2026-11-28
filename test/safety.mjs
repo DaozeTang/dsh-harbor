@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { assessShellCommand, canonicalCommandText } from "../src/host/safety.js";
-import { processTerminalInput } from "../src/host/terminal-input.js";
-import { redactForModel } from "../src/host/redact.js";
+import { assessShellCommand, canonicalCommandText } from "../src/host/policy/safety.js";
+import { processTerminalInput } from "../src/host/terminal/input.js";
+import { redactForModel } from "../src/host/policy/redact.js";
 import HarborService, { normalizeTerminalEol } from "../src/index.js";
 
 const safeCommands = [
@@ -176,7 +176,7 @@ assert.equal(
 
 // ── connect retry classification: code-first, auth never retried ──
 {
-  const { isTransientConnectError } = await import("../src/host/net-errors.js");
+  const { isTransientConnectError } = await import("../src/host/ssh/net-errors.js");
   assert.equal(isTransientConnectError({ code: "ECONNRESET", message: "read ECONNRESET" }), true);
   assert.equal(isTransientConnectError({ code: "ETIMEDOUT", message: "connect ETIMEDOUT" }), true);
   assert.equal(isTransientConnectError({ code: "ECONNREFUSED", message: "connect ECONNREFUSED" }), true, "scanner-induced refusals stay retryable");

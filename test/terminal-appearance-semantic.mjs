@@ -10,9 +10,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
-import { matchText as rawMatchText } from "../src/client/terminal-display/matcher.js";
-import { COLORS } from "../src/client/terminal-display/rules.js";
-import { compileScheme, defaultScheme } from "../src/client/terminal-display/scheme.js";
+import { matchText as rawMatchText } from "../src/client/features/terminal-display/matcher.js";
+import { COLORS } from "../src/client/features/terminal-display/rules.js";
+import { compileScheme, defaultScheme } from "../src/client/features/terminal-display/scheme.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const samplesDir = join(here, "fixtures", "terminal-appearance");

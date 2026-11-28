@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { checkpointDestination, checkpointFile, createDownloadCheckpoint, listDownloadCheckpoints, withDownloadLock } from "../src/client/download-checkpoints.js";
-import { streamDownload } from "../src/client/stream-download.js";
+import { checkpointDestination, checkpointFile, createDownloadCheckpoint, listDownloadCheckpoints, withDownloadLock } from "../src/client/features/files/download-checkpoints.js";
+import { streamDownload } from "../src/client/features/files/stream-download.js";
 
 class FakeFile {
   constructor() { this.bytes = new Uint8Array(); this.kind = "file"; }

@@ -10,7 +10,7 @@
 // test/terminal-stream.mjs, which cover them directly.)
 import assert from "node:assert/strict";
 import HarborService from "../src/index.js";
-import { EXEC_CWD_MARKER } from "../src/host/exec-cwd.js";
+import { EXEC_CWD_MARKER } from "../src/host/exec/cwd.js";
 import { changeDirectoryRequestSchema } from "../src/rpc/schemas.js";
 
 const svc = Object.create(HarborService.prototype);

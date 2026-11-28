@@ -139,7 +139,7 @@ for (const file of hostFiles) {
 }
 
 // ── the client facade never sends a key the schema strips ──────────────────
-const facade = fs.readFileSync(path.join(ROOT, "src/client/api.js"), "utf8");
+const facade = fs.readFileSync(path.join(ROOT, "src/client/core/api.js"), "utf8");
 const facadeMethods = new Set();
 for (const match of facade.matchAll(/this\.call\("([A-Za-z0-9_]+)"/g)) {
   facadeMethods.add(match[1]);

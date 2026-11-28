@@ -19,7 +19,7 @@ import { Duplex } from "node:stream";
 import ssh2 from "ssh2";
 import { generateKeyPairSync } from "node:crypto";
 import HarborService from "../src/index.js";
-import { planBannerRepair, isIdentMismatchError } from "../src/host/ssh-banner.js";
+import { planBannerRepair, isIdentMismatchError } from "../src/host/ssh/banner.js";
 
 const { Server, Client } = ssh2;
 const SHELL_MARKER = "REPAIRED-SHELL-OK";

@@ -2,10 +2,10 @@ import { acquireTestMatcher } from "./support/highlight-worker.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import xterm from "@xterm/xterm";
-import { createDisplaySettings, getDisplaySettings, setDisplaySettings, setDisplayBackground, resetDisplayBackground } from "../src/client/terminal-display/settings.js";
-import { OutputHighlightAddon } from "../src/client/terminal-display/addon.js";
-import { COLORS, LIGHT_COLORS } from "../src/client/terminal-display/rules.js";
-import { DARK_THEME, LIGHT_THEME, resolveDisplayTheme, terminalTheme } from "../src/client/terminal-display/theme.js";
+import { createDisplaySettings, getDisplaySettings, setDisplaySettings, setDisplayBackground, resetDisplayBackground } from "../src/client/features/terminal-display/settings.js";
+import { OutputHighlightAddon } from "../src/client/features/terminal-display/addon.js";
+import { COLORS, LIGHT_COLORS } from "../src/client/features/terminal-display/rules.js";
+import { DARK_THEME, LIGHT_THEME, resolveDisplayTheme, terminalTheme } from "../src/client/features/terminal-display/theme.js";
 const KEY = "dsh-harbor.terminal-display.v1";
 function fixture(entries = {}) {
   const values = new Map(Object.entries(entries)), listeners = new Set();
@@ -218,8 +218,8 @@ test("default highlighting is off, with explicit and legacy opt-ins preserved", 
 });
 
 test("theme schemes persist, synchronize and reset independently, preserving migrated settings", async () => {
-  const { getScheme, defaultScheme, exportScheme } = await import("../src/client/terminal-display/scheme.js");
-  const { updateScheme, resetScheme } = await import("../src/client/terminal-display/settings.js");
+  const { getScheme, defaultScheme, exportScheme } = await import("../src/client/features/terminal-display/scheme.js");
+  const { updateScheme, resetScheme } = await import("../src/client/features/terminal-display/settings.js");
   const original = getDisplaySettings();
   try {
     setDisplaySettings({ theme: "dark", schemes: {}, colors: { dark: { error: "#123456" }, light: { error: "#654321" } },
@@ -252,7 +252,7 @@ test("theme schemes persist, synchronize and reset independently, preserving mig
 });
 
 test("editing a scheme entry replaces its matching text, toggles locally and updates both terminals", async () => {
-  const { updateScheme } = await import("../src/client/terminal-display/settings.js");
+  const { updateScheme } = await import("../src/client/features/terminal-display/settings.js");
   const original = getDisplaySettings();
   setDisplaySettings({ theme: "dark", highlightEnabled: true, schemes: {}, colors: {}, customRules: [], builtinEnabled: true });
   const terminals = [0, 1].map(() => new xterm.Terminal({ cols: 50, rows: 3, allowProposedApi: true }));
@@ -295,8 +295,8 @@ test("custom backgrounds are validated, persisted per theme and reset to the DSH
 });
 
 test("restoring a backup changes only its own theme and rejects invalid files atomically", async () => {
-  const { exportScheme, getScheme } = await import("../src/client/terminal-display/scheme.js");
-  const { restoreDisplayBackup } = await import("../src/client/terminal-display/settings.js");
+  const { exportScheme, getScheme } = await import("../src/client/features/terminal-display/scheme.js");
+  const { restoreDisplayBackup } = await import("../src/client/features/terminal-display/settings.js");
   const original = getDisplaySettings();
   try {
     setDisplayBackground("dark", "#101010");
@@ -314,8 +314,8 @@ test("restoring a backup changes only its own theme and rejects invalid files at
 });
 
 test("restoring a backup preserves the other theme when legacy built-ins are disabled", async () => {
-  const { exportScheme, getScheme } = await import("../src/client/terminal-display/scheme.js");
-  const { restoreDisplayBackup } = await import("../src/client/terminal-display/settings.js");
+  const { exportScheme, getScheme } = await import("../src/client/features/terminal-display/scheme.js");
+  const { restoreDisplayBackup } = await import("../src/client/features/terminal-display/settings.js");
   const original = getDisplaySettings();
   try {
     const backup = exportScheme({}, "dark");

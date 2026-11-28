@@ -3,8 +3,8 @@
  */
 import { homedir } from "node:os";
 import { join as joinPath } from "node:path";
-import { SessionLogStore } from "../session-log.js";
-import { fail } from "../envelope.js";
+import { SessionLogStore } from "../terminal/session-log.js";
+import { fail } from "../../rpc/envelope.js";
 import { t } from "../../i18n/core.js";
 
 export const withSessionLogs = (Base) => class extends Base {

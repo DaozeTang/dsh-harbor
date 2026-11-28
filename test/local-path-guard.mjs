@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertLocalWriteTarget, canonicalizeLocalPath, inspectLocalAgentPath, isLocalPathInside, resolveLocalAgentPath } from "../src/host/local-path-guard.js";
+import { assertLocalWriteTarget, canonicalizeLocalPath, inspectLocalAgentPath, isLocalPathInside, resolveLocalAgentPath } from "../src/host/files/local-path-guard.js";
 import { registerSftpTools } from "../src/host/tools/sftp.js";
 
 function sandbox() {

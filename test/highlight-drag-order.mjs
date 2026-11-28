@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dropSlot, dropIndex, previewOrder, previewShifts, insertionOffset } from "../src/client/terminal-display/drag-order.js";
+import { dropSlot, dropIndex, previewOrder, previewShifts, insertionOffset } from "../src/client/features/terminal-display/drag-order.js";
 
 const rows = [
   { id: "a", top: 0, height: 50 },

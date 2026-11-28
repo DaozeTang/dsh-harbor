@@ -8,7 +8,7 @@ import {
   createWheelZoom,
   loadTerminalFontSize,
   saveTerminalFontSize
-} from "../src/client/terminal-zoom.js";
+} from "../src/client/features/terminal/terminal-zoom.js";
 
 // 终端 Ctrl+滚轮缩放的纯逻辑：范围钳制、持久化、滚轮累积判步。
 

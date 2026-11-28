@@ -3,7 +3,7 @@
 // isolation. Uses the prototype stub — no ssh2 transport.
 import assert from "node:assert/strict";
 import HarborService from "../src/index.js";
-import { createTerminalOutput } from "../src/host/terminal-output.js";
+import { createTerminalOutput } from "../src/host/terminal/output.js";
 
 function makeService(heartbeatMs = 40) {
   const service = Object.create(HarborService.prototype);

@@ -3,11 +3,11 @@
  */
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
-import { joinRemotePath, splitRemotePath } from "../sftp-dir.js";
-import { scpCommand, scpDownload, scpUpload } from "../scp.js";
-import { saveEditorFile } from "../sftp-editor-save.js";
-import { writeRemoteFileAtomic } from "../sftp-write.js";
-import { fail } from "../envelope.js";
+import { joinRemotePath, splitRemotePath } from "../files/sftp-dir.js";
+import { scpCommand, scpDownload, scpUpload } from "../files/scp.js";
+import { saveEditorFile } from "../files/sftp-editor-save.js";
+import { writeRemoteFileAtomic } from "../files/sftp-write.js";
+import { fail } from "../../rpc/envelope.js";
 import { MAX_FILE_READ_BYTES, MAX_COMMAND_OUTPUT_BYTES } from "./constants.js";
 import { decodeBase64Bytes, tailCapped } from "./text.js";
 

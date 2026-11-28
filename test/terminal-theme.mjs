@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { applyTerminalTheme, createTerminalThemeWatcher, getTerminalTheme } from "../src/client/terminal-theme.js";
+import { applyTerminalTheme, createTerminalThemeWatcher, getTerminalTheme } from "../src/client/features/terminal/chrome-theme.js";
 
 function fakeRoot({ className = "", colorScheme = "normal" } = {}) {
   return {

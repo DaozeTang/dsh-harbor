@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = await readFile(new URL("../src/client/HarborResources.jsx", import.meta.url), "utf8");
+const source = await readFile(new URL("../src/client/features/resources/HarborResources.jsx", import.meta.url), "utf8");
 
 assert.match(
   source,

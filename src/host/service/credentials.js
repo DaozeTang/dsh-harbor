@@ -3,7 +3,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
-import { fail } from "../envelope.js";
+import { fail } from "../../rpc/envelope.js";
 import { t } from "../../i18n/core.js";
 import { sharedCredentialRefs } from "./models.js";
 

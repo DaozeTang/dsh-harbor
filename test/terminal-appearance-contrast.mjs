@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { COLORS, LIGHT_COLORS, colorsForTheme } from "../src/client/terminal-display/rules.js";
+import { COLORS, LIGHT_COLORS, colorsForTheme } from "../src/client/features/terminal-display/rules.js";
 import {
   DARK_THEME,
   LIGHT_THEME,
@@ -16,7 +16,7 @@ import {
   resolveDisplayTheme,
   subscribeHostTheme,
   terminalTheme,
-} from "../src/client/terminal-display/theme.js";
+} from "../src/client/features/terminal-display/theme.js";
 import { contrast, relativeLuminance } from "./support/contrast.mjs";
 
 const ANSI_NAMES = [

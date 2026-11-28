@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { searchRemoteFiles } from '../src/client/remote-file-search.js';
+import { searchRemoteFiles } from '../src/client/features/files/remote-file-search.js';
 
 test('search stays under root, skips symlinks and reports unreadable directories', async () => {
   const seen = [];

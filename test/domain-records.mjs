@@ -17,7 +17,7 @@ import HarborService, {
   loadSettingsRecord,
   settingsDomainSpec
 } from "../src/index.js";
-import { KnownHosts } from "../src/host/hostkey.js";
+import { KnownHosts } from "../src/host/ssh/hostkey.js";
 import { fakeTable } from "./support/fake-table.mjs";
 
 /** Service shell carrying only what the credential save path touches. */

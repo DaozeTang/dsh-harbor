@@ -1,12 +1,12 @@
 /**
  * Operator settings: agent switches, execution policy, interface language.
  */
-import { fail } from "../envelope.js";
+import { fail } from "../../rpc/envelope.js";
 import { setLanguage, t } from "../../i18n/core.js";
-import { normalizeAllowList, normalizeExactRules, normalizePolicy, ALL_CATEGORY_KEYS, CATEGORY_LABELS, EXEC_POLICY_MODES } from "../safety.js";
+import { normalizeAllowList, normalizeExactRules, normalizePolicy, ALL_CATEGORY_KEYS, CATEGORY_LABELS, EXEC_POLICY_MODES } from "../policy/safety.js";
 import { SETTINGS_ROW_ID, loadSettingsRecord, normalizeDefaultUsername, normalizeFeatureSettings } from "./models.js";
-import { normalizeOwner, ownerKey } from "../terminal-owner.js";
-import { composeExecPolicy, dshPolicyRefusal, readDshPermission } from "../dsh-permission.js";
+import { normalizeOwner, ownerKey } from "../terminal/owner.js";
+import { composeExecPolicy, dshPolicyRefusal, readDshPermission } from "../policy/dsh-permission.js";
 
 export const withSettings = (Base) => class extends Base {
   // ── agent auto-connect + operator-level switches ───────────────

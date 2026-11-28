@@ -5,11 +5,11 @@
  * `harbor-ssh`), so this file no longer defines read/write tools.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import { assessShellCommand, CATEGORY_DELETE_FILES } from "../safety.js";
-import { parseSimpleDeleteCommand } from "../trash.js";
+import { assessShellCommand, CATEGORY_DELETE_FILES } from "../policy/safety.js";
+import { parseSimpleDeleteCommand } from "../files/trash.js";
 import { t } from "../../i18n/core.js";
 import { OPERATOR_APPROVAL_TIMEOUT_MS } from "../service/constants.js";
-import { processTerminalInput } from "../terminal-input.js";
+import { processTerminalInput } from "../terminal/input.js";
 import { execPolicyLabel } from "../../shared/exec-policy-label.js";
 
 /** Whole seconds a prompt waits before Harbor withdraws it, for operator-facing copy. */

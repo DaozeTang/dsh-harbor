@@ -4,7 +4,7 @@
 // instead of hanging the caller forever.
 import assert from "node:assert/strict";
 import HarborService from "../src/index.js";
-import { extractCliPrompt, promptReturned, cliPageRequested, stripCliOutput, sanitizeCliCommand, stripAnsiCodes } from "../src/host/network-cli.js";
+import { extractCliPrompt, promptReturned, cliPageRequested, stripCliOutput, sanitizeCliCommand, stripAnsiCodes } from "../src/host/exec/network-cli.js";
 
 // ── pure helpers ────────────────────────────────────────────────────────────
 {

@@ -4,7 +4,7 @@
 // to fit, and a partial is recognised by SHAPE before it is ever unlinked.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isOwnSiblingTemp, siblingTempPath } from "../src/host/sftp-write.js";
+import { isOwnSiblingTemp, siblingTempPath } from "../src/host/files/sftp-write.js";
 
 const bytes = (text) => Buffer.byteLength(text, "utf8");
 

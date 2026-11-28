@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import HarborService from "../src/index.js";
 import { authSchema, credentialListResultSchema, profileSaveResultSchema } from "../src/rpc/schemas.js";
-import { createAuthTracker, makeAuthHandler } from "../src/host/ssh-auth.js";
+import { createAuthTracker, makeAuthHandler } from "../src/host/ssh/auth.js";
 
 // ── wire schema ──────────────────────────────────────────────────────────────
 

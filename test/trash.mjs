@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseSimpleDeleteCommand, buildTrashCommand, parseTrashOutput, TRASH_RETENTION_MS } from "../src/host/trash.js";
+import { parseSimpleDeleteCommand, buildTrashCommand, parseTrashOutput, TRASH_RETENTION_MS } from "../src/host/files/trash.js";
 
 // The parser/serialiser halves run anywhere, but the end-to-end half executes
 // the generated scripts through /bin/sh in a sandbox with HOME overrides and

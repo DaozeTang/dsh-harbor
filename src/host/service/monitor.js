@@ -18,7 +18,7 @@
  *   a second);
  * - failure backoff 2/4/8/30s, reported to the panel as an honest retry time.
  */
-import { fail } from "../envelope.js";
+import { fail } from "../../rpc/envelope.js";
 import { buildProbeCommand } from "../monitor/probe-script.js";
 import { parseProbe } from "../monitor/parse.js";
 import { buildSample } from "../monitor/sample.js";

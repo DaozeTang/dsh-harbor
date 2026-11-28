@@ -3,14 +3,14 @@
  */
 import net from "node:net";
 import { randomUUID } from "node:crypto";
-import { fail } from "../envelope.js";
+import { fail } from "../../rpc/envelope.js";
 import { t } from "../../i18n/core.js";
-import { isTransientConnectError } from "../net-errors.js";
-import { isIdentMismatchError, withRepairedBanner } from "../ssh-banner.js";
-import { createAuthTracker, makeAuthHandler, classifyConnectFailure, formatConnectFailure, wasAuthCut } from "../ssh-auth.js";
-import { applyAgentForwarding } from "../ssh-agent.js";
-import { decideHostKey, keyFingerprint, blobAlgorithm, DEFAULT_HOST_KEY_MODE } from "../hostkey.js";
-import { noConnectionGuidance } from "../agent-connect.js";
+import { isTransientConnectError } from "../ssh/net-errors.js";
+import { isIdentMismatchError, withRepairedBanner } from "../ssh/banner.js";
+import { createAuthTracker, makeAuthHandler, classifyConnectFailure, formatConnectFailure, wasAuthCut } from "../ssh/auth.js";
+import { applyAgentForwarding } from "../ssh/agent.js";
+import { decideHostKey, keyFingerprint, blobAlgorithm, DEFAULT_HOST_KEY_MODE } from "../ssh/hostkey.js";
+import { noConnectionGuidance } from "../resources/agent-connect.js";
 import { sharedCredentialRefs, profileCredentialRefs } from "./models.js";
 import { KEEPALIVE_INTERVAL_MS, KEEPALIVE_COUNT_MAX, CONNECT_RETRIES, MAX_CONNECTIONS, LEGACY_VRP_ALGORITHMS, isKexMismatchError, RECONNECT_BASE_DELAY_MS, RECONNECT_MAX_DELAY_MS, RECONNECT_MAX_ATTEMPTS, RECONNECT_WAIT_MS } from "./constants.js";
 

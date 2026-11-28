@@ -2,14 +2,14 @@ import { acquireTestMatcher } from "./support/highlight-worker.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import xterm from "@xterm/xterm";
-import { matchText, readLogicalLine, matchLogicalLine } from "../src/client/terminal-display/matcher.js";
-import { COLORS, HIGHLIGHT_RULES } from "../src/client/terminal-display/rules.js";
-import { DARK_THEME, LIGHT_THEME } from "../src/client/terminal-display/theme.js";
-import { OutputHighlightAddon } from "../src/client/terminal-display/addon.js";
-import { getDisplaySettings, setDisplaySettings } from "../src/client/terminal-display/settings.js";
+import { matchText, readLogicalLine, matchLogicalLine } from "../src/client/features/terminal-display/matcher.js";
+import { COLORS, HIGHLIGHT_RULES } from "../src/client/features/terminal-display/rules.js";
+import { DARK_THEME, LIGHT_THEME } from "../src/client/features/terminal-display/theme.js";
+import { OutputHighlightAddon } from "../src/client/features/terminal-display/addon.js";
+import { getDisplaySettings, setDisplaySettings } from "../src/client/features/terminal-display/settings.js";
 
-import { normalizeCustomRules, MAX_CUSTOM_RULES } from "../src/client/terminal-display/custom-rules.js";
-import { getScheme, compileScheme } from "../src/client/terminal-display/scheme.js";
+import { normalizeCustomRules, MAX_CUSTOM_RULES } from "../src/client/features/terminal-display/custom-rules.js";
+import { getScheme, compileScheme } from "../src/client/features/terminal-display/scheme.js";
 
 const write = (term, text) => new Promise((resolve) => term.write(text, resolve));
 function colorAt(text, target) {
@@ -254,7 +254,7 @@ test("stored custom rules reject invalid fields and remain bounded", () => {
 });
 
 test("default schemes preserve semantic classification and category switches", async () => {
-  const { defaultScheme, compileScheme } = await import("../src/client/terminal-display/scheme.js");
+  const { defaultScheme, compileScheme } = await import("../src/client/features/terminal-display/scheme.js");
   const compiled = compileScheme(defaultScheme("dark"));
   for (const text of ['"ERROR 123"', 'not successful', "can't be supported", '192.168.1.5', 'root@host:~$ cat /var/log | grep --color=auto "ERROR"', 'drwxr-xr-x user']) {
     assert.deepEqual(matchText(text, compiled.rules, compiled.colors), matchText(text), text);
@@ -266,7 +266,7 @@ test("default schemes preserve semantic classification and category switches", a
 });
 
 test("scheme normalization validates entries and accepts multiline literal text", async () => {
-  const { defaultScheme, normalizeScheme, MAX_SCHEME_ENTRIES } = await import("../src/client/terminal-display/scheme.js");
+  const { defaultScheme, normalizeScheme, MAX_SCHEME_ENTRIES } = await import("../src/client/features/terminal-display/scheme.js");
   const valid = { ...defaultScheme("dark")[0], text: "a+b\r\nERROR", color: "#ABCDEF" };
   const normalized = normalizeScheme([valid, valid, { ...valid, id: "bad", color: "red" }, { ...valid, id: "long", text: "x".repeat(8193) }]);
   assert.equal(normalized.length, 1);
@@ -275,7 +275,7 @@ test("scheme normalization validates entries and accepts multiline literal text"
 });
 
 test("legacy whole-word schemes retain Unicode boundaries and escape literal metacharacters", async () => {
-  const { normalizeScheme, compileScheme } = await import("../src/client/terminal-display/scheme.js");
+  const { normalizeScheme, compileScheme } = await import("../src/client/features/terminal-display/scheme.js");
   const entries = normalizeScheme([{ id: 'custom:old', text: '失败\na+b', mode: 'word', color: '#123456', enabled: true }]);
   const compiled = compileScheme(entries);
   const spans = matchText('失败 未失败 a+b axb', compiled.rules, compiled.colors);

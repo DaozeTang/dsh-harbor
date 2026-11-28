@@ -13,7 +13,7 @@ import {
   dshPolicyRefusal,
   normalizeDshPermission,
   readDshPermission
-} from "../src/host/dsh-permission.js";
+} from "../src/host/policy/dsh-permission.js";
 
 // ── pure mapping ────────────────────────────────────────────────────────────
 const auto = normalizeDshPermission({ preset: "auto", sandbox: "danger-full-access", approval: "ask" });

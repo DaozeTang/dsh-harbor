@@ -14,7 +14,7 @@ import {
   planCaseSafeDownloads,
   CASE_INSENSITIVE_LOCAL_FS,
   SFTP_DIR_SMALL_CONCURRENCY
-} from "../src/host/sftp-dir.js";
+} from "../src/host/files/sftp-dir.js";
 import HarborService from "../src/index.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

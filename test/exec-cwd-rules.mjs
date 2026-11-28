@@ -25,11 +25,11 @@ import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { buildCwdResolverPrefix } from '../src/host/exec-cwd.js';
+import { buildCwdResolverPrefix } from '../src/host/exec/cwd.js';
 
 // Normalize CRLF: Windows checkouts made with core.autocrlf hand us \r\n, and
 // the literal structural matches below must not depend on checkout config.
-const SOURCE = readFileSync(new URL('../src/host/exec-cwd.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const SOURCE = readFileSync(new URL('../src/host/exec/cwd.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 
 // ---- the authoritative argv whitelist, taken from the script under test ----
 const whitelistMatch = SOURCE.match(/case \$__dsh_arg in ([^)]*)\) ;; \*\) __dsh_valid=no/);

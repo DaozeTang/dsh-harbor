@@ -7,8 +7,8 @@
  * session on this connection" is exactly what it used to do).
  */
 import assert from "node:assert/strict";
-import { closeTabAction, hasOwnTerminal, resolvePaneTerminal } from "../src/client/session-terminals.js";
-import { HarborApi } from "../src/client/api.js";
+import { closeTabAction, hasOwnTerminal, resolvePaneTerminal } from "../src/client/state/session-terminals.js";
+import { HarborApi } from "../src/client/core/api.js";
 
 const connection = (terminals, sessions = terminals.map((terminal) => terminal.sessionId)) => ({
   connectionId: "c1",

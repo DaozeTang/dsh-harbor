@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectInstallation, installationKind } from '../src/client/update-guidance.js';
+import { inspectInstallation, installationKind } from '../src/client/features/resources/update-guidance.js';
 
 test('classifies installation source without modifying it', () => {
   for (const source of ['link:/tmp/dev', 'file:../dev', '/tmp/dev', 'C:\\dev\\plugin']) assert.equal(installationKind({ source }), 'local');

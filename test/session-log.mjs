@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import HarborService from "../src/index.js";
-import { SESSION_LOG_LIMITS, SessionLogStore } from "../src/host/session-log.js";
+import { SESSION_LOG_LIMITS, SessionLogStore } from "../src/host/terminal/session-log.js";
 
 const dir = mkdtempSync(join(tmpdir(), "dsh-harbor-logs-"));
 const store = new SessionLogStore({ dir, limits: { maxSessionBytes: 64, maxTotalBytes: 200 } });
@@ -238,9 +238,9 @@ try {
 // ── wiring contract: the service and the panel expose exactly these hooks ──
 {
   const index = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
-  const panel = await readFile(new URL("../src/client/HarborPanel.jsx", import.meta.url), "utf8");
+  const panel = await readFile(new URL("../src/client/shell/HarborPanel.jsx", import.meta.url), "utf8");
   const logs = await readFile(new URL("../src/client/features/logs/logs-pane.jsx", import.meta.url), "utf8");
-  const api = await readFile(new URL("../src/client/api.js", import.meta.url), "utf8");
+  const api = await readFile(new URL("../src/client/core/api.js", import.meta.url), "utf8");
   const tools = await readFile(new URL("../src/host/tools/session-log.js", import.meta.url), "utf8");
   const checks = [
     [index, /store\.append\(session\.id, text\)/, "every session chunk is appended to its log"],

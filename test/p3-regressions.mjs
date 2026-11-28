@@ -9,8 +9,8 @@ import HarborService from "../src/index.js";
 import { BATCH_TASK_TTL_MS } from "../src/host/service/batch.js";
 import { registerTunnelTools } from "../src/host/tools/tunnel.js";
 import { registerSshSessionTools } from "../src/host/tools/ssh-session.js";
-import { stripCliOutput } from "../src/host/network-cli.js";
-import { buildCwdAwareCommand, extractExecCwd } from "../src/host/exec-cwd.js";
+import { stripCliOutput } from "../src/host/exec/network-cli.js";
+import { buildCwdAwareCommand, extractExecCwd } from "../src/host/exec/cwd.js";
 
 function makeService() {
   const service = Object.create(HarborService.prototype);

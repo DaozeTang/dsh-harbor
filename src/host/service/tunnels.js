@@ -3,8 +3,8 @@
  */
 import net from "node:net";
 import { randomUUID } from "node:crypto";
-import { attachSocks5, SOCKS_HANDSHAKE_TIMEOUT_MS } from "../socks5.js";
-import { fail } from "../envelope.js";
+import { attachSocks5, SOCKS_HANDSHAKE_TIMEOUT_MS } from "../tunnels/socks5.js";
+import { fail } from "../../rpc/envelope.js";
 
 /**
  * A TCP port usable by forwardIn/forwardOut/net.connect: 0 means "let the OS

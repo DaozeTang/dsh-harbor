@@ -3,7 +3,7 @@
  * send settlement, signals and the take-over handoff.
  */
 import assert from "node:assert/strict";
-import { HarborSshBackend, SshTerminalSession, SUBAGENT_REFUSAL, TAKEN_OVER, HARBOR_SSH_BACKEND_TYPE, SEND_TIMEOUT_MS } from "../src/host/terminal-backend.js";
+import { HarborSshBackend, SshTerminalSession, SUBAGENT_REFUSAL, TAKEN_OVER, HARBOR_SSH_BACKEND_TYPE, SEND_TIMEOUT_MS } from "../src/host/terminal/backend.js";
 
 function makeSession(overrides = {}) {
   return {

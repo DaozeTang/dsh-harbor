@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import HarborService from "../src/index.js";
-import { TransferTasks, transferConnectionIdentity } from "../src/host/transfer-tasks.js";
+import { TransferTasks, transferConnectionIdentity } from "../src/host/files/transfer-tasks.js";
 import { registerSftpTools } from "../src/host/tools/sftp.js";
 import { sftpTransferListResultSchema, sftpTransferCancelResultSchema } from "../src/rpc/schemas.js";
 

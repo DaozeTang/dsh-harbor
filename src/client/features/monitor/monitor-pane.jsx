@@ -19,10 +19,10 @@ import {
 import { installSurfaceStyles } from "../../ui/styles.js";
 import { t } from "../../../i18n/core.js";
 import CSS from "./monitor.css";
-import { formatBytePair, formatBytes, formatClock, formatPercent, formatRate, formatUptime, usageTone } from "./format.js";
+import { formatBytePair, formatBytes, formatClock, formatPercent, formatRate, formatUptime, usageTone } from "./metrics-format.js";
 import { CoreBars, Sparkline, Stat } from "./monitor-charts.jsx";
 import { hostMethodMissing } from "./errors.js";
-import { isMineTerminal } from "../../session-terminals.js";
+import { isMineTerminal } from "../../state/session-terminals.js";
 
 installSurfaceStyles("monitor", CSS);
 

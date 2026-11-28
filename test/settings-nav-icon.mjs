@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { registerSettingsNavIcon } from "../src/client/settings-nav-icon.js";
+import { registerSettingsNavIcon } from "../src/client/shell/settings-nav-icon.js";
 
 function host({ failInject = false, failRegister = false } = {}) {
   let callback;

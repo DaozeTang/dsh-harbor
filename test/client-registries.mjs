@@ -4,8 +4,8 @@
 // the per-connection file-transfer entry.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { beginFileTask, getFileTransfers, subscribeFileTransfers } from "../src/client/file-transfers.js";
-import { harborUiAnnounceAgentConnections, harborUiResetAgentAnnouncements } from "../src/client/store.js";
+import { beginFileTask, getFileTransfers, subscribeFileTransfers } from "../src/client/features/files/file-transfers.js";
+import { harborUiAnnounceAgentConnections, harborUiResetAgentAnnouncements } from "../src/client/state/store.js";
 
 test("an empty transfer entry is forgotten when its last pane unmounts", () => {
   const connectionId = "p3-prune-empty";

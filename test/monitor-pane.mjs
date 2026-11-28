@@ -16,13 +16,13 @@ import { readFile } from "node:fs/promises";
 import { getLanguage, setLanguage } from "../src/i18n/core.js";
 import {
   formatBytePair, formatBytes, formatClock, formatPercent, formatRate, formatUptime, niceCeiling, sparklinePoints, truncateMiddle, usageTone
-} from "../src/client/features/monitor/format.js";
+} from "../src/client/features/monitor/metrics-format.js";
 import { hostMethodMissing } from "../src/client/features/monitor/errors.js";
 
 const pane = await readFile(new URL("../src/client/features/monitor/monitor-pane.jsx", import.meta.url), "utf8");
 const css = await readFile(new URL("../src/client/features/monitor/monitor.css", import.meta.url), "utf8");
-const panel = await readFile(new URL("../src/client/HarborPanel.jsx", import.meta.url), "utf8");
-const api = await readFile(new URL("../src/client/api.js", import.meta.url), "utf8");
+const panel = await readFile(new URL("../src/client/shell/HarborPanel.jsx", import.meta.url), "utf8");
+const api = await readFile(new URL("../src/client/core/api.js", import.meta.url), "utf8");
 const models = await readFile(new URL("../src/host/service/settings.js", import.meta.url), "utf8");
 const harborservice = await readFile(new URL("../src/host/service/harbor-service.js", import.meta.url), "utf8");
 

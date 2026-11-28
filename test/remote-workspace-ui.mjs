@@ -8,10 +8,10 @@ import { readFile } from "node:fs/promises";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-const panel = await read("src/client/HarborPanel.jsx");
-const resources = await read("src/client/HarborResources.jsx");
-const workspaces = await read("src/client/ResourceWorkspaces.jsx");
-const api = await read("src/client/api.js");
+const panel = await read("src/client/shell/HarborPanel.jsx");
+const resources = await read("src/client/features/resources/HarborResources.jsx");
+const workspaces = await read("src/client/features/resources/ResourceWorkspaces.jsx");
+const api = await read("src/client/core/api.js");
 const descriptors = await read("src/rpc/descriptors.js");
 const typert = await read("src/rpc/typert.js");
 const messages = await read("src/i18n/messages.en.js");

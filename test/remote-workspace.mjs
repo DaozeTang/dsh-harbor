@@ -15,7 +15,7 @@ import {
   resolveRemotePath,
   workspaceRelativePart,
   REMOTE_WORKSPACE_OUTSIDE
-} from "../src/host/remote-workspace.js";
+} from "../src/host/resources/remote-workspace.js";
 
 /** Minimal stand-in for a storage-domain table. */
 function memoryTable() {

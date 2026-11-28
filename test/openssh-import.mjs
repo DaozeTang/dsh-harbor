@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { scanOpenSshConfig } from "../src/host/openssh-import.js";
+import { scanOpenSshConfig } from "../src/host/resources/openssh-import.js";
 import HarborService from "../src/index.js";
 import { openSshImportRequestSchema, openSshImportResultSchema } from "../src/rpc/schemas.js";
 

@@ -6,8 +6,8 @@
 // 满足 WCAG AA 正文对比度 ≥ 4.5:1（WCAG 2.x 相对亮度公式）。
 // 任一类别不达标时打印明细并以非零码退出。
 
-import { COLORS, LIGHT_COLORS } from "../../src/client/terminal-display/rules.js";
-import { DEFAULT_BACKGROUNDS, relativeLuminance } from "../../src/client/terminal-display/theme.js";
+import { COLORS, LIGHT_COLORS } from "../../src/client/features/terminal-display/rules.js";
+import { DEFAULT_BACKGROUNDS, relativeLuminance } from "../../src/client/features/terminal-display/theme.js";
 
 export { relativeLuminance };
 

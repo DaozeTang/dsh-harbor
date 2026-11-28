@@ -9,7 +9,7 @@
  */
 import * as React from "react";
 import { t } from "../../../i18n/core.js";
-import { formatPercent, sparklinePoints, usageTone } from "./format.js";
+import { formatPercent, sparklinePoints, usageTone } from "./metrics-format.js";
 
 /**
  * A trend line over a fixed or window-scaled peak. The faint area under it is

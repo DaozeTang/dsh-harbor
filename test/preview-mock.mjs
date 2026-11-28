@@ -9,12 +9,12 @@
  * One-directional on purpose: the mock implements the methods its screens need,
  * and the Proxy default exists for everything else, so listing every real
  * method as "must be stubbed" would fail for legitimate reasons. What must
- * never happen is a stub that names a method `src/client/api.js` does not
+ * never happen is a stub that names a method `src/client/core/api.js` does not
  * serve.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { HarborApi } from "../src/client/api.js";
+import { HarborApi } from "../src/client/core/api.js";
 import { createMockApi } from "../preview/mock-api.js";
 
 test("every preview stub names a method the client API really serves", () => {

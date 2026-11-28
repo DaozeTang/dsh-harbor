@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { encryptResourceBackup, decryptResourceBackup } from "../src/host/resource-backup-crypto.js";
+import { encryptResourceBackup, decryptResourceBackup } from "../src/host/resources/backup-crypto.js";
 
 test("encrypted backup round trips without exposing credentials", async () => {
   const data = { servers: [{ host: "private-host", password: "example-secret" }] };

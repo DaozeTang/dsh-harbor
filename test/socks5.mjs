@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import net from "node:net";
-import { SOCKS_REPLY, attachSocks5, parseGreeting, parseRequest, replyBytes, replyCodeForError } from "../src/host/socks5.js";
+import { SOCKS_REPLY, attachSocks5, parseGreeting, parseRequest, replyBytes, replyCodeForError } from "../src/host/tunnels/socks5.js";
 
 // ── greeting parsing ────────────────────────────────────────────────────────
 assert.equal(parseGreeting(Buffer.from([0x05])), null, "one byte is not enough");

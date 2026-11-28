@@ -11,10 +11,10 @@
  * waiting. Keeping it here rather than in the backend module means the same
  * rules apply to the backend, the safety gate and the panel bridge.
  */
-import { toReadableText } from "../terminal-text.js";
-import { redactForModel } from "../redact.js";
-import { normalizeOwner } from "../terminal-owner.js";
-import { harborHub } from "../../shared/service-hub.js";
+import { toReadableText } from "../../shared/terminal-text.js";
+import { redactForModel } from "../policy/redact.js";
+import { normalizeOwner } from "../terminal/owner.js";
+import { harborHub } from "../runtime/service-hub.js";
 
 /** How long an agent terminal may take to reach its first prompt. */
 const AGENT_STARTUP_TIMEOUT_MS = 15000;

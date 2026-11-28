@@ -16,7 +16,7 @@ import {
   Badge, Button, Checkbox, Dialog, ErrorNote, Field, Icon, IconButton, Menu, MenuItem, MenuLabel,
   MenuSeparator, SegmentedControl, Select, TextArea, TextInput, toast
 } from "../../ui/kit.jsx";
-import { privateKeyProblem } from "../../pemkey.js";
+import { privateKeyProblem } from "./pemkey.js";
 import { t } from "../../../i18n/core.js";
 
 

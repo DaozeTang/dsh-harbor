@@ -7,10 +7,10 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import HarborService from "../src/index.js";
-import { SessionLogStore } from "../src/host/session-log.js";
-import { createAuthTracker } from "../src/host/ssh-auth.js";
+import { SessionLogStore } from "../src/host/terminal/session-log.js";
+import { createAuthTracker } from "../src/host/ssh/auth.js";
 import { registerTunnelTools } from "../src/host/tools/tunnel.js";
-import { resolvePaneTerminal } from "../src/client/session-terminals.js";
+import { resolvePaneTerminal } from "../src/client/state/session-terminals.js";
 
 /** Prototype stub: never runs the constructor, so tests wire what they use. */
 function makeService(extra = {}) {

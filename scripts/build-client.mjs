@@ -19,7 +19,7 @@ const clientOut = resolve(rootDir, "lib/client.js");
 const manifest = JSON.parse(readFileSync(resolve(rootDir, "package.json"), "utf8"));
 
 const worker = await build({
-  entryPoints: [resolve(rootDir, "src/client/terminal-display/highlight-worker.js")],
+  entryPoints: [resolve(rootDir, "src/client/features/terminal-display/highlight-worker.js")],
   bundle: true, write: false, platform: "browser", format: "iife", target: "es2022", minify: true
 });
 

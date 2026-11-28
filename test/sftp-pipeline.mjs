@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { uploadPipeline } from "../src/host/sftp-pipeline.js";
+import { uploadPipeline } from "../src/host/files/sftp-pipeline.js";
 
 test("out-of-order writes advance only the contiguous prefix", async () => {
   const dir = await mkdtemp(join(tmpdir(), "sftp-pipeline-"));

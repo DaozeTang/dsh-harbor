@@ -75,6 +75,61 @@ test("every relative import in src, test and scripts resolves", () => {
   assert.deepEqual(broken, [], "unresolved relative imports:\n" + broken.join("\n"));
 });
 
+
+/** Resolve a relative specifier to a repo-relative path, or null. */
+function resolveRelative(fromFile, spec) {
+  const base = path.resolve(path.dirname(fromFile), spec);
+  for (const candidate of [base, base + ".js", base + ".jsx", base + ".mjs", base + ".css", path.join(base, "index.js")]) {
+    if (fs.existsSync(candidate)) return path.relative(ROOT, candidate).split(path.sep).join("/");
+  }
+  return null;
+}
+
+test("layer roots keep only their entry files", () => {
+  const hostRoot = walk(path.join(ROOT, "src/host")).filter((file) => path.dirname(file) === path.join(ROOT, "src/host"));
+  assert.deepEqual(hostRoot.map((file) => path.basename(file)), [], "src/host/ must hold directories only");
+
+  const clientRoot = fs
+    .readdirSync(path.join(ROOT, "src/client"), { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name);
+  assert.deepEqual(clientRoot, ["index.jsx"], "src/client/ must hold only the plugin entry");
+});
+
+test("client and host never import each other", () => {
+  const violations = [];
+  for (const [own, forbidden] of [
+    ["src/client", "src/host"],
+    ["src/host", "src/client"],
+    ["src/shared", "src/host"],
+    ["src/shared", "src/client"],
+  ]) {
+    for (const file of walk(path.join(ROOT, own))) {
+      if (file.endsWith(".css")) continue;
+      for (const spec of readImports(file)) {
+        const target = resolveRelative(file, spec);
+        if (target?.startsWith(forbidden + "/")) {
+          violations.push(`${path.relative(ROOT, file)} -> ${spec}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(violations, [], "layer boundary crossed:\n" + violations.join("\n"));
+});
+
+test("feature directories carry code, not only stylesheets", () => {
+  const features = path.join(ROOT, "src/client/features");
+  const styleOnly = fs
+    .readdirSync(features, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => {
+      const files = walk(path.join(features, name));
+      return files.length > 0 && files.every((file) => file.endsWith(".css"));
+    });
+  assert.deepEqual(styleOnly, [], "feature directories must contain components or helpers");
+});
+
 test("shared/ stays platform neutral", () => {
   const shared = path.join(ROOT, "src/shared");
   if (!fs.existsSync(shared)) return;

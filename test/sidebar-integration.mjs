@@ -9,9 +9,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 const entry = await readFile(new URL("../src/client/index.jsx", import.meta.url), "utf8");
-const panel = await readFile(new URL("../src/client/HarborPanel.jsx", import.meta.url), "utf8");
-const body = await readFile(new URL("../src/client/HarborSidebarBody.jsx", import.meta.url), "utf8");
-const pool = await readFile(new URL("../src/client/terminal-pool.js", import.meta.url), "utf8");
+const panel = await readFile(new URL("../src/client/shell/HarborPanel.jsx", import.meta.url), "utf8");
+const body = await readFile(new URL("../src/client/shell/HarborSidebarBody.jsx", import.meta.url), "utf8");
+const pool = await readFile(new URL("../src/client/features/terminal/terminal-pool.js", import.meta.url), "utf8");
 const xterm = await readFile(new URL("../src/client/features/terminal/xterm-view.jsx", import.meta.url), "utf8");
 
 // ── the Sidebar body is a thin host: shared workspace, no own chrome ──

@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { resolveSsh2Client, createSsh2Client } from "../src/host/ssh2-client.js";
+import { resolveSsh2Client, createSsh2Client } from "../src/host/ssh/client.js";
 import HarborService from "../src/index.js";
 
 function quietEnd(client) {
@@ -67,7 +67,7 @@ test("the host entry never captures Client from a static ssh2 import", () => {
   assert.doesNotMatch(entry, /import\s+ssh2\s+from\s+["']ssh2["']/);
   assert.doesNotMatch(entry, /const\s*\{\s*Client\s*\}\s*=\s*ssh2/);
   assert.match(entry, /createSsh2Client\(\)/);
-  const resolver = readFileSync(new URL("../src/host/ssh2-client.js", import.meta.url), "utf8");
+  const resolver = readFileSync(new URL("../src/host/ssh/client.js", import.meta.url), "utf8");
   assert.match(resolver, /createRequire\(import\.meta\.url\)/);
   assert.match(resolver, /load\("ssh2"\)/);
   assert.match(resolver, /load = requireFromHarbor/);
@@ -93,7 +93,7 @@ test("a dependency captured mid-evaluation reproduces the field error, and the r
       "await new Promise((resolve) => setTimeout(resolve, 80));",
       'try { new Client(); console.log("ok"); } catch (error) { console.log(error.message); }'
     ].join("\n"));
-    const resolverUrl = pathToFileURL(fileURLToPath(new URL("../src/host/ssh2-client.js", import.meta.url))).href;
+    const resolverUrl = pathToFileURL(fileURLToPath(new URL("../src/host/ssh/client.js", import.meta.url))).href;
     const newScript = join(root, "new.mjs");
     writeFileSync(newScript, [
       'import { createRequire } from "node:module";',

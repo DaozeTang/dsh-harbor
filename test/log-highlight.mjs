@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { classifyLogLine, segmentLogText } from "../src/client/log-highlight.js";
+import { classifyLogLine, segmentLogText } from "../src/client/features/logs/log-highlight.js";
 
 // 会话日志查看器的 warning/error 行高亮：分类与分段纯逻辑。
 

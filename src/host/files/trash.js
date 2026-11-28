@@ -1,0 +1,286 @@
+/**
+ * Reversible deletion for agent-initiated file removal (ssh_exec, sftp_delete).
+ *
+ * When the safety gate blocks a *simple* `rm`/`unlink`/`rmdir` command, the
+ * command is rewritten into a trash move: targets are moved into
+ * `$HOME/.dsh-trash/` on the remote host and recorded in that directory's
+ * `manifest.tsv` (trash name, original absolute path, epoch, ISO time). Every
+ * trash run first purges manifest entries older than the retention window, so
+ * expired copies disappear without ever installing a cron/at job on the
+ * server. Restore is an ordinary `mv` of the manifest line back to the
+ * recorded path.
+ *
+ * Only fully literal, single-command deletions are rewritten: anything with
+ * pipelines, redirection, command substitution, globs, expansions, exotic
+ * flags or unknown programs keeps the original operator-approval flow. The
+ * generated script contains the word `rm` itself (the purge step), so it must
+ * never be re-fed through assessShellCommand — callers rewrite before the
+ * gate or keep the rewritten command inside the prepared-exec path.
+ */
+
+import { shellQuote } from "../policy/safety.js";
+
+const TRASH_DIR = "$HOME/.dsh-trash";
+const TRASH_MARKER = "__DSH_TRASH_V1__";
+export const TRASH_RETENTION_MS = 24 * 60 * 60 * 1000;
+const TRASH_MANIFEST = "manifest.tsv";
+
+const DELETE_PROGRAMS = new Set(["rm", "unlink", "rmdir"]);
+// Bundles of these short flags are understood; anything else (long options,
+// -p for rmdir, -i prompts whose semantics a move cannot reproduce) falls
+// back to the operator-approval path.
+const RM_FLAGS = new Set(["r", "R", "f", "v", "d", "i"]);
+const RMDIR_FLAGS = new Set(["v"]);
+// Characters that make a command line "not a simple delete": operators,
+// redirection, substitution, globs, brace/grouping syntax, comments. A path
+// containing a tab would also corrupt the TSV manifest.
+const UNSAFE_CHARS = new Set([";", "&", "|", "<", ">", "`", "$", "*", "?", "[", "]", "(", ")", "{", "}", "#", "\t", "\n", "\r"]);
+
+/**
+ * Tokenize a command line the way a shell would for a purely literal command:
+ * single-quoted (verbatim), double-quoted (escape-aware, expansion rejected)
+ * and bare words. Each token records whether its first character came from
+ * inside quotes, because tilde expansion only happens for an unquoted `~` —
+ * `rm '~/x'` and `rm ~/x` mean different directories. Returns null whenever
+ * anything ambiguous or dynamic is present — the caller then keeps the
+ * conservative approval flow.
+ */
+function tokenizeLiteralCommand(command) {
+  const tokens = [];
+  let current = "";
+  let hasToken = false;
+  let firstQuoted = false;
+  let i = 0;
+  const n = command.length;
+  const startToken = (fromQuote) => {
+    if (!hasToken) { hasToken = true; firstQuoted = fromQuote; }
+  };
+  const endToken = () => {
+    if (hasToken) { tokens.push({ text: current, quoted: firstQuoted }); current = ""; hasToken = false; }
+  };
+  while (i < n) {
+    const ch = command[i];
+    if (ch === "'") {
+      const end = command.indexOf("'", i + 1);
+      if (end === -1) return null;
+      startToken(true);
+      current += command.slice(i + 1, end);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      let part = "";
+      let closed = false;
+      while (j < n) {
+        const c = command[j];
+        if (c === "\\") {
+          const next = command[j + 1];
+          if (next === '"' || next === "\\" || next === "$" || next === "`") { part += next; j += 2; continue; }
+          return null;
+        }
+        if (c === '"') { closed = true; j++; break; }
+        if (c === "$" || c === "`") return null;
+        part += c;
+        j++;
+      }
+      if (!closed) return null;
+      startToken(true);
+      current += part;
+      i = j;
+      continue;
+    }
+    if (ch === "\\") {
+      const next = command[i + 1];
+      if (next === undefined) return null;
+      // A backslash-escaped character is a LITERAL byte for the shell, so it
+      // may legitimately be $, a backtick, or a quote. Control bytes are still
+      // refused: they would break the generated script's line structure and
+      // the TSV manifest.
+      const code = next.charCodeAt(0);
+      if (code < 32 || code === 127) return null;
+      startToken(false);
+      current += next;
+      i += 2;
+      continue;
+    }
+    if (ch === " " || ch === "\t") {
+      endToken();
+      i++;
+      continue;
+    }
+    if (UNSAFE_CHARS.has(ch)) return null;
+    if (ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127) return null;
+    startToken(false);
+    current += ch;
+    i++;
+  }
+  endToken();
+  return tokens;
+}
+
+/**
+ * Parse an agent-issued command line as a simple, fully literal deletion.
+ * Returns `{ targets }` (each `{ kind: "plain"|"home", path }`) when the whole
+ * line is one rm/unlink/rmdir invocation with recognized flags and explicit
+ * literal paths; null otherwise, meaning the caller must keep the
+ * operator-approval flow.
+ */
+export function parseSimpleDeleteCommand(command) {
+  if (typeof command !== "string") return null;
+  const tokens = tokenizeLiteralCommand(command.trim());
+  if (tokens === null || tokens.length < 2) return null;
+  const program = tokens[0].text;
+  if (!DELETE_PROGRAMS.has(program)) return null;
+
+  const targets = [];
+  let noMoreFlags = false;
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i].text;
+    if (!noMoreFlags && token === "--") { noMoreFlags = true; continue; }
+    if (!noMoreFlags && token.startsWith("-") && token.length > 1) {
+      if (token.startsWith("--")) return null; // long options → card
+      for (const flag of token.slice(1)) {
+        const allowed = program === "rmdir" ? RMDIR_FLAGS : RM_FLAGS;
+        if (!allowed.has(flag)) return null;
+      }
+      continue;
+    }
+    // A lone "-" is a stdin convention, not a path we can move.
+    if (token === "-" || token.length === 0) return null;
+    // A tab/newline inside a quoted path would corrupt the TSV manifest —
+    // such targets keep the operator-approval flow instead.
+    if (/[\t\n\r\0]/.test(token)) return null;
+    if (token === "/" || token === "." || token === "..") return null;
+    if (token.startsWith("~")) {
+      if (tokens[i].quoted) {
+        // A quoted `~` is a literal directory name for the shell too, so the
+        // move must keep it verbatim — identical to what rm would remove.
+        targets.push({ kind: "plain", path: token });
+      } else if (token === "~" || !token.startsWith("~/")) {
+        return null; // bare ~ or ~user paths: refuse / cannot resolve
+      } else if (token.length === 2) {
+        return null; // bare ~/
+      } else {
+        targets.push({ kind: "home", path: token.slice(2) });
+      }
+    } else {
+      targets.push({ kind: "plain", path: token });
+    }
+  }
+  if (targets.length === 0) return null;
+  return { program, targets };
+}
+
+function quoteTarget(target) {
+  if (target.kind === "home") {
+    // $HOME is the ONLY expansion allowed here. The tail is single-quoted:
+    // an escaped character in the original command (e.g. \$(reboot) or
+    // \`id\`) is a LITERAL byte for the shell, so re-emitting it inside double
+    // quotes would expand it and turn an approved "reversible delete" into
+    // arbitrary command execution. Concatenation keeps "$HOME" expanded and
+    // the tail verbatim: "$HOME"/'backups/app.$PID.log'.
+    return `"$HOME"/${shellQuote(target.path)}`;
+  }
+  return shellQuote(target.path);
+}
+
+/**
+ * Build the remote POSIX-shell script that implements the trash move for the
+ * parsed targets. The script:
+ *   1. creates `$HOME/.dsh-trash/`,
+ *   2. purges manifest entries older than `retentionMs` (no cron/at needed),
+ *      keeping the row of any copy whose removal failed — an index entry is
+ *      the only handle back to those bytes,
+ *   3. moves each existing target into the trash under `<epoch>-<basename>`,
+ *   4. appends a manifest line (name, original absolute path, epoch, ISO time),
+ *   5. reports one `__DSH_TRASH_V1__` line per target for host-side parsing.
+ * All paths are quoted; busybox/GNU/macOS coreutils all cover the used
+ * builtins (mkdir/mv/awk/date/printf). The script always exits 0 — failures
+ * are reported per target, never thrown.
+ */
+export function buildTrashCommand(targets, { retentionMs = TRASH_RETENTION_MS } = {}) {
+  const retentionSec = Math.max(1, Math.floor(retentionMs / 1000));
+  const list = targets.map(quoteTarget).join(" ");
+  return [
+    `__dsh_t="${TRASH_DIR}"`,
+    'mkdir -p "$__dsh_t" || { printf \'__DSH_TRASH_V1__\\terror\\ttrash-dir\\n\'; exit 0; }',
+    "__dsh_n=$(date +%s)",
+    `__dsh_m="$__dsh_t/${TRASH_MANIFEST}"`,
+    "if [ -f \"$__dsh_m\" ]; then",
+    `  __dsh_cut=$((__dsh_n - ${retentionSec}))`,
+    '  __dsh_tmp="$__dsh_t/.purge.$$"',
+    "  awk -F'\\t' -v c=\"$__dsh_cut\" '$3+0 > 0 && $3+0 < c { print $1 }' \"$__dsh_m\" > \"$__dsh_tmp\" 2>/dev/null || : > \"$__dsh_tmp\"",
+    '  __dsh_keep="$__dsh_t/.keep.$$"',
+    '  : > "$__dsh_keep"',
+    '  __dsh_purged=0',
+    '  while IFS= read -r __dsh_x; do',
+    '    case "$__dsh_x" in ""|"."|".."|*/*) continue ;; esac',
+    // A copy that could not be removed (permissions, an immutable flag, a
+    // busy mount) keeps its row: dropping it would leave the bytes on the
+    // server with no index and no way to delete them later.
+    '    rm -rf "$__dsh_t/$__dsh_x" 2>/dev/null || :',
+    '    if [ -e "$__dsh_t/$__dsh_x" ] || [ -L "$__dsh_t/$__dsh_x" ]; then',
+    '      printf \'%s\\n\' "$__dsh_x" >> "$__dsh_keep"',
+    '    else',
+    '      __dsh_purged=$((__dsh_purged + 1))',
+    '    fi',
+    '  done < "$__dsh_tmp"',
+    '  if [ "$__dsh_purged" -gt 0 ]; then',
+    "    awk -F'\\t' -v c=\"$__dsh_cut\" 'NR==FNR { keep[$1] = 1; next } ($3+0 > 0 && $3+0 < c) && !($1 in keep) { next } { print }' \"$__dsh_keep\" \"$__dsh_m\" > \"$__dsh_tmp\" 2>/dev/null && cat \"$__dsh_tmp\" > \"$__dsh_m\"",
+    '  fi',
+    '  rm -f "$__dsh_tmp" "$__dsh_keep"',
+    `  printf '${TRASH_MARKER}\\tpurged\\t%d\\n' "$__dsh_purged"`,
+    "fi",
+    "__dsh_i=0",
+    `for __dsh_p in ${list}; do`,
+    '  case "$__dsh_p" in /*) : ;; *) __dsh_p="./$__dsh_p" ;; esac',
+    '  __dsh_q=$__dsh_p',
+    '  while : ; do case "$__dsh_q" in */) __dsh_q="${__dsh_q%/}" ;; *) break ;; esac; done',
+    '  case "$__dsh_q" in /*) __dsh_abs=$__dsh_q ;; *) __dsh_abs="$(pwd -P 2>/dev/null || pwd)/${__dsh_q#./}" ;; esac',
+    '  if [ ! -e "$__dsh_q" ] && [ ! -L "$__dsh_q" ]; then',
+    `    printf '${TRASH_MARKER}\\tmissing\\t%s\\n' "$__dsh_abs"`,
+    '    continue',
+    '  fi',
+    '  __dsh_b=${__dsh_q##*/}',
+    '  __dsh_name="$__dsh_n-$__dsh_b"',
+    '  __dsh_d="$__dsh_t/$__dsh_name"',
+    '  while [ -e "$__dsh_d" ] || [ -L "$__dsh_d" ]; do',
+    '    __dsh_i=$((__dsh_i + 1))',
+    '    __dsh_name="$__dsh_n-$__dsh_i-$__dsh_b"',
+    '    __dsh_d="$__dsh_t/$__dsh_name"',
+    '  done',
+    '  if mv "$__dsh_q" "$__dsh_d"; then',
+    '    printf \'%s\\t%s\\t%s\\t%s\\n\' "$__dsh_name" "$__dsh_abs" "$__dsh_n" "$(date -u +%Y%m%dT%H%M%SZ)" >> "$__dsh_m"',
+    `    printf '${TRASH_MARKER}\\tmoved\\t%s\\t%s\\n' "$__dsh_abs" "$__dsh_d"`,
+    '  else',
+    `    printf '${TRASH_MARKER}\\tfailed\\t%s\\n' "$__dsh_abs"`,
+    '  fi',
+    'done',
+    'exit 0'
+  ].join("\n");
+}
+
+/**
+ * Extract the per-target report lines from a trash run's stdout and strip
+ * them so neither the tool result nor the terminal mirror shows the protocol
+ * lines. Returns `{ events, stdout }` with events like
+ * `{ event: "moved", original, trashPath }`, `{ event: "missing"|"failed", original }`
+ * and a single `{ event: "purged", count }`.
+ */
+export function parseTrashOutput(stdout) {
+  const events = [];
+  const kept = [];
+  for (const line of String(stdout ?? "").split("\n")) {
+    if (!line.startsWith(TRASH_MARKER)) { kept.push(line); continue; }
+    const parts = line.split("\t");
+    if (parts[1] === "moved" && parts.length >= 4) {
+      events.push({ event: "moved", original: parts[2], trashPath: parts[3] });
+    } else if ((parts[1] === "missing" || parts[1] === "failed" || parts[1] === "error") && parts.length >= 3) {
+      events.push({ event: parts[1], original: parts[2] });
+    } else if (parts[1] === "purged" && parts.length >= 3) {
+      events.push({ event: "purged", count: Number(parts[2]) || 0 });
+    }
+  }
+  return { events, stdout: kept.join("\n") };
+}

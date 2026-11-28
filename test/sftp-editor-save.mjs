@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
-import { saveEditorFile } from "../src/host/sftp-editor-save.js";
+import { saveEditorFile } from "../src/host/files/sftp-editor-save.js";
 
 function fixture() {
   const files = new Map([["/config", Buffer.from("old")]]);

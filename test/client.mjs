@@ -9,8 +9,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HarborApi } from "../src/client/api.js";
-import { privateKeyProblem, isEncryptedPrivateKey } from "../src/client/pemkey.js";
+import { HarborApi } from "../src/client/core/api.js";
+import { privateKeyProblem, isEncryptedPrivateKey } from "../src/client/features/connect/pemkey.js";
 
 // ── HarborApi: shared-credential RPC wrappers stay available to settings UI ───
 {

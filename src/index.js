@@ -11,19 +11,19 @@
  */
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
-import { fail } from "./host/envelope.js";
-import { noConnectionGuidance } from "./host/agent-connect.js";
-import { posixLoginShell } from "./host/exec-cwd.js";
+import { fail } from "./rpc/envelope.js";
+import { noConnectionGuidance } from "./host/resources/agent-connect.js";
+import { posixLoginShell } from "./host/exec/cwd.js";
 import { t } from "./i18n/core.js";
 import { HarborServiceCore } from "./host/service/index.js";
 import { MAX_BUFFER_BYTES, MAX_COMMAND_OUTPUT_BYTES, MAX_SESSIONS, MAX_SESSIONS_PER_CONNECTION, OPERATOR_APPROVAL_TIMEOUT_MS, READ_TIMEOUT_MS, STREAM_HEARTBEAT_MS, TTY_PROBE_MS, TTY_PROBE_RETRY_DELAYS_MS } from "./host/service/constants.js";
 import { streamRouteDescriptor } from "./host/service/stream-routes.js";
-import { anonymousSessions, indexOwner, normalizeOwner, ownerKey, ownerSessionIds, pickOwnerSession, unindexOwner } from "./host/terminal-owner.js";
-import { buildCensusScript, isPtyPath, parseCensus, pickNewTty } from "./host/terminal-census.js";
+import { anonymousSessions, indexOwner, normalizeOwner, ownerKey, ownerSessionIds, pickOwnerSession, unindexOwner } from "./host/terminal/owner.js";
+import { buildCensusScript, isPtyPath, parseCensus, pickNewTty } from "./host/terminal/census.js";
 import { promptFromTerminalData } from "./host/service/text.js";
 import { markSourceRemote } from "./host/service/source-remote.js";
-import { createSsh2Client } from "./host/ssh2-client.js";
-import { publishHarborService, retractHarborService } from "./shared/service-hub.js";
+import { createSsh2Client } from "./host/ssh/client.js";
+import { publishHarborService, retractHarborService } from "./host/runtime/service-hub.js";
 
 export { LEGACY_VRP_ALGORITHMS, isKexMismatchError } from "./host/service/constants.js";
 export { profileDomainSpec, credentialDomainSpec, knownHostDomainSpec, settingsDomainSpec, normalizeDefaultUsername, loadSettingsRecord } from "./host/service/models.js";

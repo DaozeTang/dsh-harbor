@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyAgentForwarding } from "../src/host/ssh-agent.js";
-import { createAuthTracker, makeAuthHandler } from "../src/host/ssh-auth.js";
+import { applyAgentForwarding } from "../src/host/ssh/agent.js";
+import { createAuthTracker, makeAuthHandler } from "../src/host/ssh/auth.js";
 
 test("disabled forwarding leaves the connect config untouched", () => {
   const config = { host: "h", username: "u" };

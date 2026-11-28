@@ -3,7 +3,7 @@
 // xterm's addon in a browser, which this suite cannot drive).
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { SEARCH_DECORATIONS, SEARCH_FIND_OPTIONS, SEARCH_FIND_OPTIONS_PLAIN, isMacPlatform, runFind, searchResultLabel, searchShortcutLabel, searchShortcutMatches } from "../src/client/terminal-search.js";
+import { SEARCH_DECORATIONS, SEARCH_FIND_OPTIONS, SEARCH_FIND_OPTIONS_PLAIN, isMacPlatform, runFind, searchResultLabel, searchShortcutLabel, searchShortcutMatches } from "../src/client/features/terminal/terminal-search.js";
 
 // ── the count label ─────────────────────────────────────────────────────────
 assert.equal(searchResultLabel({ resultIndex: 2, resultCount: 7 }, "error"), "3/7", "the addon indexes matches from 0; readers count from 1");

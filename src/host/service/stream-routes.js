@@ -1,9 +1,9 @@
 /**
  * Plain-HTTP byte routes for streaming downloads and uploads (/harbor/stream).
  */
-import { hashTransferStream } from "../transfer-tasks.js";
-import { replaceRemoteFile, siblingTempPath } from "../sftp-write.js";
-import { hasInteractiveTerminal, INTERACTIVE_UPLOAD_CHUNK_BYTES, scheduleUploadWrite } from "../ssh-upload-scheduling.js";
+import { hashTransferStream } from "../files/transfer-tasks.js";
+import { replaceRemoteFile, siblingTempPath } from "../files/sftp-write.js";
+import { hasInteractiveTerminal, INTERACTIVE_UPLOAD_CHUNK_BYTES, scheduleUploadWrite } from "../files/upload-scheduling.js";
 import { STREAM_ROUTE_PREFIX, STREAM_HIGH_WATER_MARK, STREAM_IDLE_TIMEOUT_MS } from "./constants.js";
 
 /**

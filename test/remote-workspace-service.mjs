@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import HarborService from "../src/index.js";
-import { RemoteWorkspaceStore, REMOTE_WORKSPACE_OFFLINE, REMOTE_WORKSPACE_OUTSIDE } from "../src/host/remote-workspace.js";
+import { RemoteWorkspaceStore, REMOTE_WORKSPACE_OFFLINE, REMOTE_WORKSPACE_OUTSIDE } from "../src/host/resources/remote-workspace.js";
 import { remoteWorkspaceListResultSchema, remoteWorkspaceSaveResultSchema } from "../src/rpc/schemas.js";
 
 const PROFILE_ID = "11111111-1111-4111-8111-111111111111";

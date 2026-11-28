@@ -3,7 +3,7 @@
 // folded transport into terminal liveness, so ssh_exec/sftp on a healthy
 // connection looked idle.
 import assert from "node:assert/strict";
-import { connectionStatusView } from "../src/client/connection-status.js";
+import { connectionStatusView } from "../src/client/shell/connection-status.js";
 
 const own = { sessionId: "t1", ownerSessionId: "conv-a", openedBy: "agent", alive: true, mine: true };
 const other = { sessionId: "t2", ownerSessionId: "conv-b", openedBy: "panel", alive: true, mine: false };

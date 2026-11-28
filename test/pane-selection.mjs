@@ -20,7 +20,7 @@ import {
   subscribePaneSessions,
   visiblePaneConnections,
   viewSession
-} from "../src/client/pane-selection.js";
+} from "../src/client/state/pane-selection.js";
 
 const connections = [{ connectionId: "a" }, { connectionId: "b" }];
 
@@ -187,7 +187,7 @@ console.log("pane selection: split-pane visibility survives remount, new panes s
 // pane and reveal the SSH surface. Announcing is idempotent per connection id
 // for the page lifetime — the poll runs every couple of seconds.
 {
-  const { harborUiAnnounceAgentConnections, harborUiResetAgentAnnouncements } = await import("../src/client/store.js");
+  const { harborUiAnnounceAgentConnections, harborUiResetAgentAnnouncements } = await import("../src/client/state/store.js");
   resetPaneSessions();
   const listed = [
     { connectionId: "agent-1", agentSession: true },

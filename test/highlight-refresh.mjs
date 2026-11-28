@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import xterm from "@xterm/xterm";
-import { OutputHighlightAddon, groupRunsByRow, MAX_DECORATIONS, COALESCE_MS } from "../src/client/terminal-display/addon.js";
-import { createRegexRunner } from "../src/client/terminal-display/regex-runner.js";
-import { getDisplaySettings, setDisplaySettings } from "../src/client/terminal-display/settings.js";
+import { OutputHighlightAddon, groupRunsByRow, MAX_DECORATIONS, COALESCE_MS } from "../src/client/features/terminal-display/addon.js";
+import { createRegexRunner } from "../src/client/features/terminal-display/regex-runner.js";
+import { getDisplaySettings, setDisplaySettings } from "../src/client/features/terminal-display/settings.js";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const write = (term, text) => new Promise((resolve) => term.write(text, resolve));

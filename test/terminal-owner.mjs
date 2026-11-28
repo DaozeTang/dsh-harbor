@@ -20,7 +20,7 @@ import {
   pickOwnerSession,
   resolveTerminalOwner,
   unindexOwner
-} from "../src/host/terminal-owner.js";
+} from "../src/host/terminal/owner.js";
 
 // ── owner ids ────────────────────────────────────────────────────────────────
 {

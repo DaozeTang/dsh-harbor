@@ -9,10 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "ssh2";
 import { startTestSshd } from "./support/start-test-sshd.mjs";
-import { uploadPipeline } from "../src/host/sftp-pipeline.js";
-import { saveEditorFile } from "../src/host/sftp-editor-save.js";
+import { uploadPipeline } from "../src/host/files/sftp-pipeline.js";
+import { saveEditorFile } from "../src/host/files/sftp-editor-save.js";
 const { default: HarborService } = await import(process.env.DSH_TEST_BUILT_HOST ? "../lib/index.js" : "../src/index.js");
-import { TransferTasks } from "../src/host/transfer-tasks.js";
+import { TransferTasks } from "../src/host/files/transfer-tasks.js";
 
 const root = mkdtempSync(join(tmpdir(), "dsh-sshd-sftp-test-"));
 writeFileSync(join(root, "seed.txt"), "seeded\n");

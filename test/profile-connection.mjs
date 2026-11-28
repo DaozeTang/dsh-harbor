@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { findReusableProfileConnection } from "../src/host/profile-connection.js";
+import { findReusableProfileConnection } from "../src/host/resources/profile-connection.js";
 
 const healthy = { id: "connection-a", profileId: "profile-a", host: "10.0.0.1", port: 22, username: "root", dead: false, closing: false, connecting: false };
 const connections = [healthy, { ...healthy, id: "closing", closing: true }, { ...healthy, id: "dead", dead: true }];

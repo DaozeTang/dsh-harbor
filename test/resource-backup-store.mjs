@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
-import { collectResourceBackup, restoreResourceBackup } from "../src/host/resource-backup-store.js";
-import { encryptResourceBackup, decryptResourceBackup } from "../src/host/resource-backup-crypto.js";
+import { collectResourceBackup, restoreResourceBackup } from "../src/host/resources/backup-store.js";
+import { encryptResourceBackup, decryptResourceBackup } from "../src/host/resources/backup-crypto.js";
 import HarborService, { profileDomainSpec, credentialDomainSpec, knownHostDomainSpec } from "../src/index.js";
 import { resourceBackupExportResultSchema, resourceBackupImportResultSchema } from "../src/rpc/schemas.js";
 

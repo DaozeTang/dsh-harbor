@@ -9,7 +9,7 @@ import {
   attachFileController, beginFileTask, beginFileUpload, cancelFileTask, clearFileUploadConflict,
   clearFinishedFileTasks, endFileUpload, getFileTransfers, releaseFileController,
   setFileUploadConflict, subscribeFileTransfers, updateFileTask
-} from "../src/client/file-transfers.js";
+} from "../src/client/features/files/file-transfers.js";
 
 test("the snapshot is stable between changes and scoped to one connection", () => {
   const id = beginFileTask("snap", { name: "a.bin", kind: "upload", status: "running", sent: 0, total: 10 });

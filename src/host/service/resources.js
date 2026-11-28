@@ -3,14 +3,14 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
-import { fail } from "../envelope.js";
-import { EXEC_POLICY_MODES } from "../safety.js";
+import { fail } from "../../rpc/envelope.js";
+import { EXEC_POLICY_MODES } from "../policy/safety.js";
 import { t } from "../../i18n/core.js";
-import { DEFAULT_HOST_KEY_MODE } from "../hostkey.js";
-import { findReusableProfileConnection } from "../profile-connection.js";
-import { collectResourceBackup, previewResourceBackup, restoreResourceBackup } from "../resource-backup-store.js";
-import { encryptResourceBackup, decryptResourceBackup } from "../resource-backup-crypto.js";
-import { readIdentityPrivateKey, scanOpenSshConfig } from "../openssh-import.js";
+import { DEFAULT_HOST_KEY_MODE } from "../ssh/hostkey.js";
+import { findReusableProfileConnection } from "../resources/profile-connection.js";
+import { collectResourceBackup, previewResourceBackup, restoreResourceBackup } from "../resources/backup-store.js";
+import { encryptResourceBackup, decryptResourceBackup } from "../resources/backup-crypto.js";
+import { readIdentityPrivateKey, scanOpenSshConfig } from "../resources/openssh-import.js";
 import { profileCredentialRefs, sharedCredentialRefs, profileJumpPasswordRef, profileJumpPrivateKeyRef, profileJumpPassphraseRef } from "./models.js";
 
 /**

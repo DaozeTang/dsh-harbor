@@ -5,11 +5,11 @@
  * server trash (see src/trash.js) whenever the path is a simple literal.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import { shellQuote } from "../safety.js";
-import { buildTrashCommand, parseSimpleDeleteCommand } from "../trash.js";
+import { shellQuote } from "../policy/safety.js";
+import { buildTrashCommand, parseSimpleDeleteCommand } from "../files/trash.js";
 import { t } from "../../i18n/core.js";
-import { posixLoginShell } from "../exec-cwd.js";
-import { inspectLocalAgentPath, resolveLocalAgentPath } from "../local-path-guard.js";
+import { posixLoginShell } from "../exec/cwd.js";
+import { inspectLocalAgentPath, resolveLocalAgentPath } from "../files/local-path-guard.js";
 import { askOperatorApproval, approvalTimeoutSeconds } from "./ssh-session.js";
 import { OPERATOR_APPROVAL_TIMEOUT_MS } from "../service/constants.js";
 

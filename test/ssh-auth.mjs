@@ -7,7 +7,7 @@ import {
   formatConnectFailure,
   wasAuthCut,
   CONNECT_FAILURE_STAGES
-} from "../src/host/ssh-auth.js";
+} from "../src/host/ssh/auth.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

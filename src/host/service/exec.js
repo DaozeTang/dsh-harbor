@@ -3,13 +3,13 @@
  */
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
-import { extractCliPrompt, promptReturned, cliPageRequested, stripCliOutput, sanitizeCliCommand } from "../network-cli.js";
-import { assessShellCommand, CATEGORY_DELETE_FILES } from "../safety.js";
-import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from "../trash.js";
-import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, censusPidFor, execEchoWarning, extractExecCwd, posixLoginShell } from "../exec-cwd.js";
-import { processTerminalInput } from "../terminal-input.js";
-import { anonymousSessions, pickOwnerSession } from "../terminal-owner.js";
-import { fail } from "../envelope.js";
+import { extractCliPrompt, promptReturned, cliPageRequested, stripCliOutput, sanitizeCliCommand } from "../exec/network-cli.js";
+import { assessShellCommand, CATEGORY_DELETE_FILES } from "../policy/safety.js";
+import { buildTrashCommand, parseSimpleDeleteCommand, parseTrashOutput } from "../files/trash.js";
+import { EXEC_CWD_ERROR_PREFIX, buildCwdAwareCommand, censusPidFor, execEchoWarning, extractExecCwd, posixLoginShell } from "../exec/cwd.js";
+import { processTerminalInput } from "../terminal/input.js";
+import { anonymousSessions, pickOwnerSession } from "../terminal/owner.js";
+import { fail } from "../../rpc/envelope.js";
 import { t } from "../../i18n/core.js";
 import { appendCapped, tailCapped, normalizeTerminalEol } from "./text.js";
 import { LOGIN_SHELL_PROBE_RETRY_MS, OPERATOR_APPROVAL_TTL_MS } from "./constants.js";

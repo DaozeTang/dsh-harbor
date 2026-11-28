@@ -32,17 +32,17 @@ assert.match(kit, /export function ConfirmHost/, "the kit exposes one mount poin
 assert.match(kit, /width="sm"/, "decisions render as a compact dialog");
 assert.match(kit, /data-modal-autofocus/, "Cancel takes focus, so Enter never confirms a deletion");
 
-for (const file of ["HarborPanel.jsx", "HarborResources.jsx"]) {
+for (const file of ["shell/HarborPanel.jsx", "features/resources/HarborResources.jsx"]) {
   const text = await read(file);
   assert.ok(text.includes("<ConfirmHost />"), `${file} mounts the confirm host`);
 }
 
 for (const file of [
-  "HarborFiles.jsx",
-  "HarborResources.jsx",
+  "features/files/HarborFiles.jsx",
+  "features/resources/HarborResources.jsx",
   "features/logs/logs-pane.jsx",
   "features/snippets/snippets-view.jsx",
-  "terminal-display/TerminalDisplaySettings.jsx"
+  "features/terminal-display/ui/TerminalDisplaySettings.jsx"
 ]) {
   const text = await read(file);
   assert.ok(text.includes("confirmAction"), `${file} routes its decisions through confirmAction`);

@@ -4,7 +4,7 @@
 // (shell-integration markers from a real server, an OSC 7 cwd report, an
 // OSC 1337 command, colour codes and bracketed-paste toggles).
 import assert from "node:assert/strict";
-import { readableLine, toReadableText } from "../src/host/terminal-text.js";
+import { readableLine, toReadableText } from "../src/shared/terminal-text.js";
 
 const ESC = "\u001b";
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { scpCommand, scpDownload, scpUpload } from "../src/host/scp.js";
+import { scpCommand, scpDownload, scpUpload } from "../src/host/files/scp.js";
 
 function mockChannel(onWrite) {
   const stream = new EventEmitter();

@@ -8,9 +8,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import HarborService from "../src/index.js";
-import { SessionLogStore } from "../src/host/session-log.js";
-import { TransferTasks } from "../src/host/transfer-tasks.js";
-import { SshTerminalSession } from "../src/host/terminal-backend.js";
+import { SessionLogStore } from "../src/host/terminal/session-log.js";
+import { TransferTasks } from "../src/host/files/transfer-tasks.js";
+import { SshTerminalSession } from "../src/host/terminal/backend.js";
 import { MAX_CONNECTIONS } from "../src/host/service/constants.js";
 
 /** Prototype stub: never runs the constructor, so tests wire what they use. */

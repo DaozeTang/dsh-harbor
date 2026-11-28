@@ -1,9 +1,9 @@
 import { Worker } from "node:worker_threads";
 import { buildSync } from "esbuild";
 import { fileURLToPath } from "node:url";
-import { createRegexRunner } from "../../src/client/terminal-display/regex-runner.js";
+import { createRegexRunner } from "../../src/client/features/terminal-display/regex-runner.js";
 
-const bundle = buildSync({ entryPoints: [fileURLToPath(new URL("../../src/client/terminal-display/highlight-worker.js", import.meta.url))], bundle: true,
+const bundle = buildSync({ entryPoints: [fileURLToPath(new URL("../../src/client/features/terminal-display/highlight-worker.js", import.meta.url))], bundle: true,
   write: false, platform: "browser", format: "iife", target: "es2022" }).outputFiles[0].text;
 export function createNodeHighlightWorker() {
   const worker = new Worker(`const {parentPort} = require('node:worker_threads');

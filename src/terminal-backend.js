@@ -9,8 +9,8 @@
  * The row is skipped when that group is absent (the Persistent terminals
  * plugin is not enabled), and Harbor's own tools keep working without it.
  */
-import { harborHub, publishHarborTerminalBackend } from "./shared/service-hub.js";
-import { HarborSshBackend } from "./host/terminal-backend.js";
+import { harborHub, publishHarborTerminalBackend } from "./host/runtime/service-hub.js";
+import { HarborSshBackend } from "./host/terminal/backend.js";
 
 /** Cordis plugin name. */
 export const name = "harbor-ssh-terminal";

@@ -13,8 +13,8 @@
 import * as React from "react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Dialog, Icon, Menu, MenuItem, MenuLabel, MenuSeparator } from "../../ui/kit.jsx";
-import { TIER_ORDER, execPolicyLabel, execPolicyLooseningDetail } from "../../exec-policy-ui.js";
-import { harborUiSetError } from "../../store.js";
+import { TIER_ORDER, execPolicyLabel, execPolicyLooseningDetail } from "./exec-policy-ui.js";
+import { harborUiSetError } from "../../state/store.js";
 import { t } from "../../../i18n/core.js";
 
 const TIER_ICON = { standard: "shield-outline", custom: "sliders-two-outline", allowAll: "warning-outline" };

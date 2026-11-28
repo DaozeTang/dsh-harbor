@@ -1,12 +1,12 @@
 /**
  * PTY sessions: the output journal, cursor and poll reads, and terminal history.
  */
-import { createTerminalOutput } from "../terminal-output.js";
-import { unindexOwner } from "../terminal-owner.js";
-import { noteTerminalInput } from "../ssh-upload-scheduling.js";
-import { buildCwdAwareCommand, censusPidFor, extractExecCwd, posixLoginShell } from "../exec-cwd.js";
-import { fail } from "../envelope.js";
-import { shellQuote } from "../safety.js";
+import { createTerminalOutput } from "../terminal/output.js";
+import { unindexOwner } from "../terminal/owner.js";
+import { noteTerminalInput } from "../files/upload-scheduling.js";
+import { buildCwdAwareCommand, censusPidFor, extractExecCwd, posixLoginShell } from "../exec/cwd.js";
+import { fail } from "../../rpc/envelope.js";
+import { shellQuote } from "../policy/safety.js";
 import { t } from "../../i18n/core.js";
 import { decodeData, encodeData } from "./text.js";
 import { MAX_EXITED_RETAINED, MAX_EXIT_TOMBSTONES } from "./constants.js";

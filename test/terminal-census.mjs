@@ -12,8 +12,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { CENSUS_MARKER, buildCensusScript, isPtyPath, parseCensus, pickNewTty } from "../src/host/terminal-census.js";
-import { buildCwdAwareCommand, extractExecCwd } from "../src/host/exec-cwd.js";
+import { CENSUS_MARKER, buildCensusScript, isPtyPath, parseCensus, pickNewTty } from "../src/host/terminal/census.js";
+import { buildCwdAwareCommand, extractExecCwd } from "../src/host/exec/cwd.js";
 
 // ── parser: only well-formed census lines count ─────────────────────────────
 {

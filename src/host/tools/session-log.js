@@ -5,8 +5,8 @@
  * session may contain anything the operator typed or saw.
  */
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import { redactForModel } from "../redact.js";
-import { toReadableText } from "../terminal-text.js";
+import { redactForModel } from "../policy/redact.js";
+import { toReadableText } from "../../shared/terminal-text.js";
 import { t } from "../../i18n/core.js";
 
 const MAX_READ_BYTES = 48 * 1024;

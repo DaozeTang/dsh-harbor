@@ -2,7 +2,7 @@
 // same session in two live panes, LRU eviction of unowned entries, and drop
 // on host session death. The pool is DOM-free; terminals are stubs.
 import assert from "node:assert/strict";
-import { createTerminalPool } from "../src/client/terminal-pool.js";
+import { createTerminalPool } from "../src/client/features/terminal/terminal-pool.js";
 
 function makeFactory(log) {
   let n = 0;

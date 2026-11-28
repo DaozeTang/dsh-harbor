@@ -12,9 +12,9 @@ import { Badge, Button, EmptyState, Field, Icon, IconButton, Row, Select, TextIn
 import {
   availableCommandSnippets, expandSnippet, loadCommandSnippets, matchingCommandSnippets,
   saveCommandSnippets, searchCommandSnippets, snippetParameters
-} from "../../command-snippets.js";
-import { harborUiSetError } from "../../store.js";
-import { resolvePaneTerminal } from "../../session-terminals.js";
+} from "./command-snippets.js";
+import { harborUiSetError } from "../../state/store.js";
+import { resolvePaneTerminal } from "../../state/session-terminals.js";
 import { t } from "../../../i18n/core.js";
 
 export function SnippetsView({ api, active, sessionId, profiles, groups, onFilled, shown = false }) {

@@ -17,8 +17,8 @@ import {
   encodeEditableText,
   filterEntries,
   looksBinary
-} from "../src/client/file-editor.js";
-import { favoritesKey, readFavorites, toggleFavorite, writeFavorites } from "../src/client/sftp-favorites.js";
+} from "../src/client/features/files/file-editor.js";
+import { favoritesKey, readFavorites, toggleFavorite, writeFavorites } from "../src/client/features/files/sftp-favorites.js";
 
 const utf8 = (text) => new TextEncoder().encode(text);
 
@@ -114,7 +114,7 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
 
 // ── JSX contract: the panel wires exactly these behaviours ──────────────────
 {
-  const files = await readFile(new URL("../src/client/HarborFiles.jsx", import.meta.url), "utf8");
+  const files = await readFile(new URL("../src/client/features/files/HarborFiles.jsx", import.meta.url), "utf8");
   const checks = [
     [/from "\.\/file-editor\.js"/, "the editor policy module is imported"],
     [/from "\.\/sftp-favorites\.js"/, "the favorites module is imported"],
@@ -136,7 +136,7 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
   assert.doesNotMatch(files, /lastSave|restoreBackup|dsh-backup|恢复备份|恢复上一个版本/,
     "HarborFiles.jsx: online editing never creates or offers a backup/version of the remote file");
 
-  const panel = await readFile(new URL("../src/client/HarborPanel.jsx", import.meta.url), "utf8");
+  const panel = await readFile(new URL("../src/client/shell/HarborPanel.jsx", import.meta.url), "utf8");
   assert.match(
     panel,
     /<HarborFiles\s+key=\{active\.connectionId\}/,
@@ -158,7 +158,7 @@ console.log("sftp files ui: editor policy, favorites store, filter and JSX wirin
   let root;
   try {
     const bundle = join(temp, "files.cjs");
-    await build({ entryPoints: ["src/client/HarborFiles.jsx"], outfile: bundle, bundle: true, platform: "node", format: "cjs", external: ["react"], logLevel: "silent" });
+    await build({ entryPoints: ["src/client/features/files/HarborFiles.jsx"], outfile: bundle, bundle: true, platform: "node", format: "cjs", external: ["react"], logLevel: "silent" });
     const { HarborFiles } = createRequire(import.meta.url)(bundle);
     const { createRoot } = await import("react-dom/client");
     const uploaded = [];

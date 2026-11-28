@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { EXEC_CWD_MARKER, buildCwdAwareCommand, extractExecCwd, posixLoginShell } from '../src/host/exec-cwd.js';
+import { EXEC_CWD_MARKER, buildCwdAwareCommand, extractExecCwd, posixLoginShell } from '../src/host/exec/cwd.js';
 
 // The whole feature inspects Linux /proc (fd/cwd symlinks, comm, environ) and
 // drives POSIX shells — there is nothing to exercise on Windows, and the

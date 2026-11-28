@@ -7,11 +7,11 @@
  * terminal-owner.js for the ownership model).
  */
 import { randomUUID } from "node:crypto";
-import { redactForModel } from "../redact.js";
-import { fail } from "../envelope.js";
-import { resolveProfileRef, noConnectionGuidance, AUTO_CONNECT_DISABLED_MESSAGE } from "../agent-connect.js";
+import { redactForModel } from "../policy/redact.js";
+import { fail } from "../../rpc/envelope.js";
+import { resolveProfileRef, noConnectionGuidance, AUTO_CONNECT_DISABLED_MESSAGE } from "../resources/agent-connect.js";
 import { t } from "../../i18n/core.js";
-import { isLiveSession, normalizeOwner, ownerKey, pickOwnerSession } from "../terminal-owner.js";
+import { isLiveSession, normalizeOwner, ownerKey, pickOwnerSession } from "../terminal/owner.js";
 
 /** How long an agent tool call keeps a connection's activity indicator lit. */
 const AGENT_ACTIVE_WINDOW_MS = 30_000;

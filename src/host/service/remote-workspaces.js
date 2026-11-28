@@ -3,11 +3,11 @@
  */
 import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
-import { findReusableProfileConnection } from "../profile-connection.js";
-import { normalizeOwner, pickOwnerSession } from "../terminal-owner.js";
-import { AUTO_CONNECT_DISABLED_MESSAGE } from "../agent-connect.js";
-import { RemoteWorkspacePathError, remoteWorkspacePromptText, normalizeRemoteRoot, resolveRemotePath, isRemotePathInside, workspaceRelativePart, assertNoControlCharacters, REMOTE_WORKSPACE_OFFLINE, REMOTE_WORKSPACE_OUTSIDE } from "../remote-workspace.js";
-import { fail } from "../envelope.js";
+import { findReusableProfileConnection } from "../resources/profile-connection.js";
+import { normalizeOwner, pickOwnerSession } from "../terminal/owner.js";
+import { AUTO_CONNECT_DISABLED_MESSAGE } from "../resources/agent-connect.js";
+import { RemoteWorkspacePathError, remoteWorkspacePromptText, normalizeRemoteRoot, resolveRemotePath, isRemotePathInside, workspaceRelativePart, assertNoControlCharacters, REMOTE_WORKSPACE_OFFLINE, REMOTE_WORKSPACE_OUTSIDE } from "../resources/remote-workspace.js";
+import { fail } from "../../rpc/envelope.js";
 import { t } from "../../i18n/core.js";
 
 export const withRemoteWorkspaces = (Base) => class extends Base {

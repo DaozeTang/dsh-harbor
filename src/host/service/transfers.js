@@ -5,13 +5,13 @@ import { constants as fsConstants, createReadStream, createWriteStream } from "n
 import { mkdir as fsMkdir, readdir as fsReaddir, rename as fsRename, stat as fsStat, unlink as fsUnlink } from "node:fs/promises";
 import { dirname as dirnamePath, join as joinPath, relative as relativePath } from "node:path";
 import { pipeline as streamPipeline } from "node:stream/promises";
-import { assertLocalPathInside, assertSafeEntryName, planCaseSafeDownloads, runTransferTasks, joinRemotePath, splitRemotePath } from "../sftp-dir.js";
-import { assertLocalWriteTarget, canonicalizeLocalPath } from "../local-path-guard.js";
-import { uploadPipeline } from "../sftp-pipeline.js";
-import { isOwnSiblingTemp, replaceRemoteFile, siblingTempPath } from "../sftp-write.js";
-import { hasInteractiveTerminal, scheduleUploadWrite } from "../ssh-upload-scheduling.js";
-import { hashTransferStream, transferConnectionIdentity } from "../transfer-tasks.js";
-import { fail } from "../envelope.js";
+import { assertLocalPathInside, assertSafeEntryName, planCaseSafeDownloads, runTransferTasks, joinRemotePath, splitRemotePath } from "../files/sftp-dir.js";
+import { assertLocalWriteTarget, canonicalizeLocalPath } from "../files/local-path-guard.js";
+import { uploadPipeline } from "../files/sftp-pipeline.js";
+import { isOwnSiblingTemp, replaceRemoteFile, siblingTempPath } from "../files/sftp-write.js";
+import { hasInteractiveTerminal, scheduleUploadWrite } from "../files/upload-scheduling.js";
+import { hashTransferStream, transferConnectionIdentity } from "../files/transfer-tasks.js";
+import { fail } from "../../rpc/envelope.js";
 import { SFTP_DIR_FILE_IDLE_TIMEOUT_MS } from "./constants.js";
 
 /**

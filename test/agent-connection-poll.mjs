@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { startAgentConnectionPoll } from "../src/client/agent-connection-poll.js";
+import { startAgentConnectionPoll } from "../src/client/shell/agent-connection-poll.js";
 
 let tick;
 let delay;

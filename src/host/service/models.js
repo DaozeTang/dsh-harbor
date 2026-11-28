@@ -6,7 +6,7 @@
  */
 import { z } from "zod";
 import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
-import { normalizePolicy, normalizeAllowList, normalizeExactRules } from "../safety.js";
+import { normalizePolicy, normalizeAllowList, normalizeExactRules } from "../policy/safety.js";
 import { featureSettingsSchema } from "../../rpc/schemas.js";
 
 const profileRecordSchema = z.object({

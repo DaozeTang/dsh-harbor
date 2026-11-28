@@ -17,7 +17,7 @@
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
@@ -36,7 +36,9 @@ const stubSurfaceComponents = {
       namespace: "surface-stub"
     }));
     build.onLoad({ filter: /\.jsx$/, namespace: "surface-stub" }, (args) => {
-      const name = args.path.replace(/^\.\//, "").replace(/\.jsx$/, "");
+      // The specifier may be "../features/resources/HarborResources.jsx"; only
+      // the basename is a legal export identifier.
+      const name = basename(args.path).replace(/\.jsx$/, "");
       return { contents: `export const ${name} = function ${name}() { return null; }`, loader: "jsx" };
     });
   }

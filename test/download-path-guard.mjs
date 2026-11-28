@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import HarborService from "../src/index.js";
-import { assertSafeEntryName, assertLocalPathInside } from "../src/host/sftp-dir.js";
+import { assertSafeEntryName, assertLocalPathInside } from "../src/host/files/sftp-dir.js";
 
 // A single readdir record is server-controlled: "/" and "\\" can change
 // directory level, and "." / ".." are never legitimate leaves.

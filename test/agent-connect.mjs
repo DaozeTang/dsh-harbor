@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { validateJsonSchemaValue } from "@deepseek-ai/dsh-tools";
 import HarborService, { loadSettingsRecord, normalizeDefaultUsername } from "../src/index.js";
 import { registerSshSessionTools } from "../src/host/tools/ssh-session.js";
-import { resolveProfileRef, noConnectionGuidance, formatSavedResources, AUTO_CONNECT_DISABLED_MESSAGE } from "../src/host/agent-connect.js";
+import { resolveProfileRef, noConnectionGuidance, formatSavedResources, AUTO_CONNECT_DISABLED_MESSAGE } from "../src/host/resources/agent-connect.js";
 import { agentSettingsGetRequestSchema, agentSettingsSaveRequestSchema, agentSettingsResultSchema, listResultSchema } from "../src/rpc/schemas.js";
 
 const PROFILES = [

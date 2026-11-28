@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { streamDownload } from "../src/client/stream-download.js";
+import { streamDownload } from "../src/client/features/files/stream-download.js";
 
 function fixture(chunks, length, digest = createHash("sha256").update(Buffer.from(chunks.flat())).digest("hex")) {
   const state = { chunks: [], closed: false, aborted: false };

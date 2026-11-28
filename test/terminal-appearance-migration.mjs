@@ -6,9 +6,9 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { matchText } from "../src/client/terminal-display/matcher.js";
+import { matchText } from "../src/client/features/terminal-display/matcher.js";
 
-import { COLORS, LIGHT_COLORS, colorsForTheme, HIGHLIGHT_RULES } from "../src/client/terminal-display/rules.js";
+import { COLORS, LIGHT_COLORS, colorsForTheme, HIGHLIGHT_RULES } from "../src/client/features/terminal-display/rules.js";
 import {
   MAX_SCHEME_ENTRIES,
   MAX_SCHEME_TEXT,
@@ -22,7 +22,7 @@ import {
   compileScheme,
   exportScheme,
   parseSchemeBackup,
-} from "../src/client/terminal-display/scheme.js";
+} from "../src/client/features/terminal-display/scheme.js";
 
 const BUILTIN_IDS = Object.keys(COLORS);
 

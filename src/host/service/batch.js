@@ -2,8 +2,8 @@
  * Operator-approved batch command runs across saved resources.
  */
 import { randomUUID } from "node:crypto";
-import { assessShellCommand } from "../safety.js";
-import { fail } from "../envelope.js";
+import { assessShellCommand } from "../policy/safety.js";
+import { fail } from "../../rpc/envelope.js";
 import { t } from "../../i18n/core.js";
 import { BATCH_MAX_CONCURRENCY, BATCH_TASK_LIMIT } from "./constants.js";
 

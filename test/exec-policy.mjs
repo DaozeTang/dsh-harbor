@@ -10,7 +10,7 @@
  * standard-only regardless of tiers, and no agent tool may write policy.
  */
 import assert from "node:assert/strict";
-import { assessShellCommand, normalizePolicy, ALL_CATEGORY_KEYS } from "../src/host/safety.js";
+import { assessShellCommand, normalizePolicy, ALL_CATEGORY_KEYS } from "../src/host/policy/safety.js";
 import HarborService, { loadSettingsRecord } from "../src/index.js";
 import { assessTerminalSend, registerSshSessionTools } from "../src/host/tools/ssh-session.js";
 import { registerBatchTools } from "../src/host/tools/batch.js";

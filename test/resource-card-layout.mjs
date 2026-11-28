@@ -13,8 +13,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = await readFile(new URL("../src/client/HarborResources.jsx", import.meta.url), "utf8");
-const sheet = await readFile(new URL("../src/client/features/settings/settings.css", import.meta.url), "utf8");
+const source = await readFile(new URL("../src/client/features/resources/HarborResources.jsx", import.meta.url), "utf8");
+const sheet = await readFile(new URL("../src/client/features/resources/settings.css", import.meta.url), "utf8");
 
 // ── server rows ────────────────────────────────────────────────────────────
 const serverRow = source.match(/<Row\s+className="hb-settings-server"[\s\S]{0,2600}/)?.[0] ?? "";

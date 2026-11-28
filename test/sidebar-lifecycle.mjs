@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { activateSidebarWhenAvailable } from "../src/client/sidebar-lifecycle.js";
+import { activateSidebarWhenAvailable } from "../src/client/shell/sidebar-lifecycle.js";
 
 function fakeContext() {
   let callback;

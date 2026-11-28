@@ -9,7 +9,7 @@ import {
   knownKeys,
   KnownHosts,
   HOST_KEY_MODES
-} from "../src/host/hostkey.js";
+} from "../src/host/ssh/hostkey.js";
 import HarborService from "../src/index.js";
 
 // ── blobAlgorithm ──────────────────────────────────────────────────────────

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import HarborService from "../src/index.js";
-import { inspectPrivateKeyText, scanOpenSshConfig } from "../src/host/openssh-import.js";
+import { inspectPrivateKeyText, scanOpenSshConfig } from "../src/host/resources/openssh-import.js";
 import { profileCredentialRefs } from "../src/host/service/models.js";
 import { openSshImportRequestSchema, openSshImportResultSchema } from "../src/rpc/schemas.js";
 
@@ -217,7 +217,7 @@ test("an unavailable credential service leaves the profile but reports the key",
 });
 
 test("key file pickers do not filter by extension", () => {
-  const files = ["../src/client/HarborResources.jsx", "../src/client/features/connect/connect-dialog.jsx"];
+  const files = ["../src/client/features/resources/HarborResources.jsx", "../src/client/features/connect/connect-dialog.jsx"];
   for (const file of files) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
     assert.match(source, /type="file"/, file + " still offers a file picker");

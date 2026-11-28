@@ -18,15 +18,15 @@
  * retry into a misleading duplicate-registration error that buries the cause.
  */
 import * as React from "react";
-import { createHarborApi } from "./api.js";
-import { HarborSidebarBody } from "./HarborSidebarBody.jsx";
-import { HarborResources } from "./HarborResources.jsx";
-import { HarborHeaderAction } from "./HarborHeaderAction.jsx";
-import { AgentRevealWatcher } from "./AgentRevealWatcher.jsx";
-import { harborUiSetSurfaceOpener } from "./store.js";
-import { activateSidebarWhenAvailable } from "./sidebar-lifecycle.js";
-import { readHostLanguage, setLanguage } from "./locale.js";
-import { registerSettingsNavIcon } from "./settings-nav-icon.js";
+import { createHarborApi } from "./core/api.js";
+import { HarborSidebarBody } from "./shell/HarborSidebarBody.jsx";
+import { HarborResources } from "./features/resources/HarborResources.jsx";
+import { HarborHeaderAction } from "./shell/HarborHeaderAction.jsx";
+import { AgentRevealWatcher } from "./shell/AgentRevealWatcher.jsx";
+import { harborUiSetSurfaceOpener } from "./state/store.js";
+import { activateSidebarWhenAvailable } from "./shell/sidebar-lifecycle.js";
+import { readHostLanguage, setLanguage } from "./core/locale.js";
+import { registerSettingsNavIcon } from "./shell/settings-nav-icon.js";
 import { installStyles } from "./ui/styles.js";
 import { Icon } from "./ui/kit.jsx";
 import TYPERT_REMOTE from "../rpc/remote.js";

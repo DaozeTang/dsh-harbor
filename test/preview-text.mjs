@@ -8,9 +8,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_PREVIEW_TEXT } from "../src/client/terminal-display/preview-text.js";
-import { defaultScheme, compileScheme } from "../src/client/terminal-display/scheme.js";
-import { matchText } from "../src/client/terminal-display/matcher.js";
+import { DEFAULT_PREVIEW_TEXT } from "../src/client/features/terminal-display/preview-text.js";
+import { defaultScheme, compileScheme } from "../src/client/features/terminal-display/scheme.js";
+import { matchText } from "../src/client/features/terminal-display/matcher.js";
 
 const previewLines = DEFAULT_PREVIEW_TEXT.split("\n");
 const HAN = /\p{Script=Han}/u;

@@ -7,7 +7,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 // transport can be disconnected, otherwise a five-second-old snapshot can kill
 // another conversation's terminal.
 {
-  const panel = await read("src/client/HarborPanel.jsx");
+  const panel = await read("src/client/shell/HarborPanel.jsx");
   assert.match(
     panel,
     /const latest = await api\.list\(sessionId\);\s*connection = latest\?\.connections\?\.find/,
@@ -22,14 +22,14 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 // The settings page owns no pane: it must not write its session-less listing
 // into the shared connection store.
 {
-  const resources = await read("src/client/HarborResources.jsx");
+  const resources = await read("src/client/features/resources/HarborResources.jsx");
   assert.doesNotMatch(resources, /harborUiSetConnections\(/, "HarborResources.jsx: settings cannot clobber the pane's connection list");
 }
 
 // Favorites resolve their key from the pane's connection on first render; no
 // async list call may sit between the click and the write.
 {
-  const files = await read("src/client/HarborFiles.jsx");
+  const files = await read("src/client/features/files/HarborFiles.jsx");
   assert.match(files, /const favoritesStorageKey = favoritesKey\(connection\)/, "HarborFiles.jsx: favorites key is synchronous");
   assert.doesNotMatch(files, /setFavoritesStorageKey/, "HarborFiles.jsx: no late favorite-key state");
   assert.match(files, /initialPathRef/, "HarborFiles.jsx: the mount path is captured once");
@@ -38,7 +38,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 // The keep-alive panes only poll while their view is visible.
 {
-  const panel = await read("src/client/HarborPanel.jsx");
+  const panel = await read("src/client/shell/HarborPanel.jsx");
   assert.match(panel, /<HarborFiles[\s\S]{0,200}active=\{view === "files"\}/, "HarborPanel.jsx: files polling follows the active view");
   assert.match(panel, /<TunnelsPane[^>]*active=\{view === "tunnels"\}/, "HarborPanel.jsx: tunnel polling follows the active view");
   const tunnels = await read("src/client/features/tunnels/tunnels-pane.jsx");
@@ -52,7 +52,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 // the five-second poll had not run yet: the pane showed "no terminal" right
 // after a connect that had just succeeded.
 {
-  const panel = await read("src/client/HarborPanel.jsx");
+  const panel = await read("src/client/shell/HarborPanel.jsx");
   assert.match(
     panel,
     /onConnected=\{\(connectionId\) => \{[\s\S]{0,400}?void refreshConnections\(api, sessionId\);/,
@@ -76,7 +76,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 // and a subsystem that failed while the transport was reconnecting left the
 // pane without delete/rename/mkdir/editor for the rest of the connection.
 {
-  const files = await read("src/client/HarborFiles.jsx");
+  const files = await read("src/client/features/files/HarborFiles.jsx");
   assert.match(files, /const retrySftp = \(\) => \{/, "HarborFiles.jsx: the SCP notice offers a retry");
   assert.match(files, /setTransferMode\("sftp"\);\s*setScpReason\(""\);\s*void load\("\/"\);/, "HarborFiles.jsx: the retry leaves SCP mode and reloads");
   assert.match(files, /onClick=\{retrySftp\}/, "HarborFiles.jsx: the retry is wired to the notice");
@@ -87,7 +87,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 // recoverable in place: each one used to leave the surface permanently broken
 // or silently discard work.
 {
-  const files = await read("src/client/HarborFiles.jsx");
+  const files = await read("src/client/features/files/HarborFiles.jsx");
   assert.match(files, /const closeEditor = async \(\) => \{/, "HarborFiles.jsx: one guard owns closing the editor");
   assert.match(files, /if \(editing\.text === editing\.original\) \{ setEditing\(null\); return; \}/, "HarborFiles.jsx: an unchanged buffer closes without a prompt");
   assert.match(files, /onClick=\{closeEditor\}>/, "HarborFiles.jsx: the 关闭 button asks before discarding edits");
@@ -97,7 +97,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 // Panes and the tab strips implement the patterns their ARIA roles promise.
 {
-  const panel = await read("src/client/HarborPanel.jsx");
+  const panel = await read("src/client/shell/HarborPanel.jsx");
   assert.match(
     panel,
     /componentDidUpdate\(previous\) \{\s*if \(this\.state\.error !== null && previous\.resetKey !== this\.props\.resetKey\) this\.reset\(\);/,
@@ -126,7 +126,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 // until the five-second status poll catches up: the live 连接 button opened a
 // second SSH connection (profileConnect does not reuse by default).
 {
-  const resources = await read("src/client/HarborResources.jsx");
+  const resources = await read("src/client/features/resources/HarborResources.jsx");
   assert.match(
     resources,
     /setConnectedProfiles\(\(current\) => \{\s*const next = new Set\(current \?\? \[\]\);\s*next\.add\(profile\.profileId\);/,

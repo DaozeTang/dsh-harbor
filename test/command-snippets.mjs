@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { availableCommandSnippets, defaultCommandSnippets, expandSnippet, matchingCommandSnippets, searchCommandSnippets, snippetParameters } from "../src/client/command-snippets.js";
+import { availableCommandSnippets, defaultCommandSnippets, expandSnippet, matchingCommandSnippets, searchCommandSnippets, snippetParameters } from "../src/client/features/snippets/command-snippets.js";
 
 const STARTER_COMMAND_SNIPPETS = defaultCommandSnippets().map((item) => [item.name, item.command]);
 
