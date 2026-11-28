@@ -1,4 +1,4 @@
-// Structural guards for the layout described in docs/restructure-plan.md.
+// Structural guards for the source layout: roots stay narrow, layers stay apart.
 //
 // These assertions are deliberately cheap: they read file names and import
 // specifiers, never module behaviour, so they fail on a move that was not

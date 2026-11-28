@@ -122,7 +122,7 @@ DeepSeek Harness 的 SSH 工作台：**在主对话里驱动服务器，同时�
 | `src/rpc/schemas/` `src/rpc/declarations/` | 按领域拆分的 zod schema 与 TS 声明；`src/rpc/typert.js` 只做汇总 |
 | `src/shared/` | 两端共用的纯函数，不 import `node:*`，也不 import 宿主或浏览器侧模块 |
 
-这些边界由 `test/meta/structure.test.mjs` 守着（根目录白名单、client/host 互不 import、feature 目录必须含代码）。目录为何这样划分、每个文件原来在哪，见[重构方案](./docs/restructure-plan.md)。
+这些边界由 `test/meta/structure.test.mjs` 守着（根目录白名单、client/host 互不 import、feature 目录必须含代码）。
 
 构建、测试、预览与打包命令见 [INSTALL.md](./INSTALL.md) 的「开发命令」一节，只在那里维护一份。
 
