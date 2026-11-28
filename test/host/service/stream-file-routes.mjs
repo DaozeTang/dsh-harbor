@@ -1,0 +1,178 @@
+import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
+import HarborService from "../../../src/index.js";
+import { streamRouteDescriptor } from "../../../src/host/service/stream-routes.js";
+
+function response() {
+  return {
+    destroyed: false,
+    headersSent: false,
+    writableEnded: false,
+    status: null,
+    headers: null,
+    body: "",
+    writeHead(status, headers) {
+      this.status = status;
+      this.headers = headers;
+      this.headersSent = true;
+    },
+    end(body = "") {
+      this.body += body;
+      this.writableEnded = true;
+    },
+    destroy() {
+      this.destroyed = true;
+    }
+  };
+}
+
+// An SFTP path is not proof that the same absolute path in an SSH exec channel
+// is safe: chrooted SFTP and shell namespaces may resolve it differently, so
+// archive requests are rejected outright — no archive implementation exists.
+{
+  const service = Object.create(HarborService.prototype);
+  const res = response();
+  // The WebServer admits a request before invoking the handler; this harness
+  // calls the handler as an already-admitted request.
+  service.handleStreamRoute(
+    { method: "GET", url: "/harbor/stream/archive?connectionId=c1&path=%2Fdata", socket: {} },
+    res
+ );
+
+  assert.equal(res.status, 501);
+  assert.deepEqual(JSON.parse(res.body), {
+    ok: false,
+    error: {
+      code: "archive-unavailable",
+      message: "archive streaming is disabled until SFTP namespace-safe archiving is available"
+    }
+  });
+}
+
+// The route descriptor is where the byte plane's admission contract lives.
+// DSH 0.2.2-rc.2 removed connection.requestRejection; WebServer registrations
+// default to auth: "required" and admit before the handler runs. Declaring it
+// explicitly keeps that security contract from depending on a host default.
+{
+  const calls = [];
+  const descriptor = streamRouteDescriptor({ handleStreamRoute: (...args) => calls.push(args) });
+  assert.equal(descriptor.kind, "prefix");
+  assert.equal(descriptor.path, "/harbor/stream");
+  assert.equal(descriptor.auth, "required", "the byte plane must never be anonymously reachable");
+  const req = { method: "GET", url: "/harbor/stream/file?connectionId=c1&path=%2Fx" };
+  const res = response();
+  descriptor.handler(req, res);
+  assert.deepEqual(calls, [[req, res]], "the registered handler delegates to the service");
+}
+
+console.log("stream routes: archive namespace guard passed");
+
+// A browser disconnect must stop the upstream SFTP stream, even if the peer
+// would otherwise continue producing data indefinitely.
+{
+  const service = Object.create(HarborService.prototype);
+  const upstream = new PassThrough();
+  service.ctx = { logger: { warn() {} } };
+  service.streamPrepareSftp = async () => ({ sftp: {
+    stat(_path, cb) { cb(null, { size: 1024, mode: 0o100600 }); },
+    createReadStream() { queueMicrotask(() => upstream.emit("open")); return upstream; }
+  } });
+  const res = new Writable({ write(_chunk, _encoding, cb) { cb(); } });
+  res.writeHead = () => {};
+  await service.streamDownloadFile({}, res, new URL("http://localhost/?path=%2Flarge"), "c1");
+  res.destroy();
+  await new Promise((resolve) => res.once("close", resolve));
+  assert.equal(upstream.destroyed, true, "closing the HTTP response destroys the SFTP reader");
+}
+
+{
+  const service = Object.create(HarborService.prototype);
+  const upstream = new PassThrough();
+  service.streamPrepareSftp = async () => ({ sftp: {
+    stat(_path, cb) { cb(null, { size: 1024, mode: 0o100600 }); },
+    createReadStream() { return upstream; }
+  } });
+  const res = new Writable({ write(_chunk, _encoding, cb) { cb(); } });
+  const id = "3d706ab7-640f-49bf-9a09-6bce2a82110a";
+  const pending = service.streamDownloadFile({}, res, new URL(`http://localhost/?path=%2Flarge&verify=sha256&verificationId=${id}`), "c1");
+  await new Promise((resolve) => setImmediate(resolve));
+  upstream.write(Buffer.alloc(256));
+  await new Promise((resolve) => setImmediate(resolve));
+  const poll = (connectionId) => {
+    const reply = response();
+    service.handleStreamRoute({ method: "GET", url: `/harbor/stream/verification?connectionId=${connectionId}&id=${id}` }, reply);
+    return reply;
+  };
+  assert.deepEqual(JSON.parse(poll("c1").body), { bytes: 256, total: 1024 });
+  assert.equal(poll("c2").status, 404);
+  res.destroy();
+  await pending;
+  assert.equal(upstream.destroyed, true, "cancelling during hashing destroys the SFTP reader");
+  assert.equal(poll("c1").status, 404, "progress is removed when cancelled");
+}
+
+// A browser upload must never truncate or delete an existing destination when
+// the request is cancelled. Only a completed temporary file may replace it.
+async function uploadFixture(cancel, concurrentTarget = false) {
+  const files = concurrentTarget ? new Map() : new Map([["/data/config", Buffer.from("original")]]);
+  const sftp = {
+    createWriteStream(path) {
+      const stream = new Writable({
+        write(chunk, _encoding, callback) {
+          files.set(path, Buffer.concat([files.get(path) ?? Buffer.alloc(0), chunk]));
+          callback();
+        }
+      });
+      queueMicrotask(() => stream.emit("open"));
+      return stream;
+    },
+    stat(path, callback) { callback(files.has(path) ? null : new Error("missing"), files.has(path) ? { size: files.get(path).length } : undefined); },
+    lstat(path, callback) {
+      if (files.has(path)) callback(null, { size: files.get(path).length });
+      else callback(Object.assign(new Error("missing"), { code: 2 }));
+    },
+    unlink(path, callback) { files.delete(path); callback(null); },
+    rename(_from, to, callback) {
+      assert.equal(concurrentTarget, true);
+      // A different client creates the target after our final existence check.
+      files.set(to, Buffer.from("other client"));
+      callback(new Error("already exists"));
+    },
+    ext_openssh_rename(from, to, callback) {
+      assert.equal(concurrentTarget, false, "no-overwrite transfers must not use the replacing rename extension");
+      if (!files.has(from)) return callback(new Error("temporary file missing"));
+      files.set(to, files.get(from));
+      files.delete(from);
+      callback(null);
+    }
+  };
+  const service = Object.create(HarborService.prototype);
+  const connection = { client: new EventEmitter() };
+  service.streamPrepareSftp = async () => ({ connection, sftp });
+  const req = new EventEmitter();
+  req.socket = { setTimeout() {}, removeListener() {} };
+  req.pause = () => {};
+  req.resume = () => {};
+  const res = Object.assign(new EventEmitter(), response());
+  const finished = new Promise((resolve) => {
+    const end = res.end.bind(res);
+    res.end = (body) => { end(body); resolve(); };
+  });
+  const url = new URL("http://localhost/harbor/stream/file?path=%2Fdata%2Fconfig");
+  if (concurrentTarget) url.searchParams.set("overwrite", "false");
+  await service.streamUploadFile(req, res, url, "c1");
+  req.emit("data", Buffer.from("replacement"));
+  if (cancel) req.emit("aborted");
+  else req.emit("end");
+  await finished;
+  assert.equal(files.get("/data/config").toString(), cancel ? "original" : concurrentTarget ? "other client" : "replacement");
+  assert.equal([...files.keys()].some((path) => path.includes(".dsh-upload-")), false);
+  assert.equal(res.status, cancel ? 502 : concurrentTarget ? 409 : 200);
+  if (concurrentTarget) assert.equal(JSON.parse(res.body).error.code, "target-exists");
+}
+
+await uploadFixture(true);
+await uploadFixture(false);
+await uploadFixture(false, true);
+console.log("stream routes: cancelled upload preserves target; completed upload replaces it");

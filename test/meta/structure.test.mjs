@@ -62,7 +62,7 @@ test("package.json keeps its public export surface", () => {
   }
 });
 
-test("every relative import in src, test and scripts resolves", () => {
+test("every relative import in src, test, scripts and preview resolves", () => {
   const broken = [];
   for (const dir of ["src", "test", "scripts", "preview"]) {
     for (const file of walk(path.join(ROOT, dir))) {
@@ -128,6 +128,22 @@ test("feature directories carry code, not only stylesheets", () => {
       return files.length > 0 && files.every((file) => file.endsWith(".css"));
     });
   assert.deepEqual(styleOnly, [], "feature directories must contain components or helpers");
+});
+
+test("specs live in directories that mirror src", () => {
+  const testDir = path.join(ROOT, "test");
+  const rootSpecs = fs
+    .readdirSync(testDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".mjs"))
+    .map((entry) => entry.name);
+  assert.deepEqual(rootSpecs, [], "a spec belongs in test/<area>/, not at test/ root");
+
+  const allowed = new Set(["client", "host", "rpc", "integration", "meta", "shared", "support", "fixtures", "node_modules"]);
+  const unexpected = fs
+    .readdirSync(testDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !allowed.has(entry.name))
+    .map((entry) => entry.name);
+  assert.deepEqual(unexpected, [], "test/ only holds the mirrored areas: " + [...allowed].join(", "));
 });
 
 test("shared/ stays platform neutral", () => {

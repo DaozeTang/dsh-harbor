@@ -10,7 +10,6 @@
  * Usage: node scripts/gen-typert.mjs [--check]
  */
 import fs from "node:fs";
-import path from "node:path";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import HarborService from "../src/index.js";
