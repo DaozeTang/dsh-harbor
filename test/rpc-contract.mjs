@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 import HarborService from "../src/index.js";
 import { DESCRIPTORS } from "../src/rpc/descriptors.js";
 import { TYPERT } from "../src/rpc/typert.js";
+import { MEMBERS } from "../src/rpc/typert.generated.js";
+import { deriveMembers } from "../src/rpc/typert-members.js";
 import { openSessionRequestSchema, sftpListResultSchema, sftpStatResultSchema } from "../src/rpc/schemas.js";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -173,4 +175,22 @@ const entry = { isDirectory: false, size: 4, mtime: 1750000000000, mode: 0o10064
 assert.equal(sftpListResultSchema.safeParse({ ok: true, value: { path: "/data", entries: [{ name: "one.txt", ...entry }] } }).success, true, "a listing entry carries name + attributes");
 assert.equal(sftpListResultSchema.safeParse({ ok: true, value: { path: "/data", entries: [entry] } }).success, false, "a listing entry still requires name");
 
-console.log("rpc contract: handlers, wire keys, host reads, facade calls and the drifted fields all agree");
+// ── the published manifest is generated, never hand edited ─────────────────
+// members: the 66 signatures used to be a second hand-maintained copy of the
+// descriptors. They are now derived from them (scripts/gen-typert.mjs), so a
+// hand edit to the generated file — or a method that changed between sync and
+// async without regenerating — must fail here instead of shipping.
+assert.deepEqual(
+  MEMBERS,
+  deriveMembers(DESCRIPTORS, proto),
+  "src/rpc/typert.generated.js is stale: run node scripts/gen-typert.mjs"
+);
+assert.equal(MEMBERS.length, DESCRIPTORS.length, "every descriptor publishes exactly one member");
+assert.equal(new Set(MEMBERS.map((member) => member.name)).size, MEMBERS.length, "member names are unique");
+assert.equal(
+  new Set(TYPERT.model.services[0].types.map((entry) => entry.name)).size,
+  TYPERT.model.services[0].types.length,
+  "published type names are unique"
+);
+
+console.log("rpc contract: handlers, wire keys, host reads, facade calls, generated members and the drifted fields all agree");

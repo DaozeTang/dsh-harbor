@@ -1,0 +1,9 @@
+// monitor wire types for the harbor service.
+//
+// Split out of typert.js: one file per RPC domain so a new method's request
+// and result types land next to the schemas that define them.
+
+export const MONITOR_TYPES = [
+  { name: "SystemStatsRequest", declaration: "export interface SystemStatsRequest { readonly connectionId?: string; readonly refresh?: boolean; }" },
+  { name: "SystemStatsResult", declaration: "export type SystemStatsResult = SshResult<{ sampledAt: string; sampleMs: number; platform: 'linux' | 'other'; platformName?: string; supported: boolean; reason?: 'no-posix-shell' | 'no-procfs' | 'probe-empty'; warmingUp?: boolean; host?: { hostname?: string; os?: string; kernel?: string; arch?: string; cores?: number; cpuModel?: string; uptimeSeconds?: number }; cpu?: { usagePercent: number | null; perCore: Array<number | null> | null; iowaitPercent?: number | null; stealPercent?: number | null; load: [number, number, number] | null; cores?: number | null; model?: string | null }; memory?: { totalBytes: number; freeBytes: number; availableBytes: number; buffersBytes: number; cachedBytes: number; swapTotalBytes: number; swapFreeBytes: number }; gpu: Array<{ index: number; name: string; utilizationPercent: number | null; memoryUsedBytes: number | null; memoryTotalBytes: number | null; temperatureC: number | null; powerW: number | null }>; disks: Array<{ mount: string; device: string; totalBytes: number; usedBytes: number; availableBytes: number; usePercent: number }>; diskIo: { readBytesPerSec: number; writeBytesPerSec: number } | null; network: Array<{ name: string; rxBytesPerSec: number | null; txBytesPerSec: number | null; rxTotalBytes: number; txTotalBytes: number }>; processes: { total: number | null; running: number | null; top: Array<{ pid: number; name: string; cpuPercent: number; memPercent: number }> } | null; capabilities: { processes: boolean; gpu: boolean; disks: boolean; io: boolean }; warnings: string[] }>;" },
+];
