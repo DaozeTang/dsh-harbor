@@ -112,7 +112,17 @@ DeepSeek Harness 的 SSH 工作台：**在主对话里驱动服务器，同时�
 - `src/client/` 浏览器半：侧栏标签、工作台、设置页、设计系统与终端外观。
 - `src/shared/` 两端共用模块；`src/i18n/` 中英文字典（中文为源语言，`messages.en.js` 为英文覆盖）。
 
-新增文件按职责放进对应目录，不再往这里手抄目录树。
+新增文件按职责放进对应目录，不再往这里手抄目录树：
+
+| 目录 | 放什么 |
+| --- | --- |
+| `src/host/ssh` `exec` `policy` `files` `terminal` `resources` `tunnels` `runtime` | 宿主侧按领域分的实现；`src/host/service/` 只放把它们组合成 RPC 方法的 mixin |
+| `src/client/core` `state` `shell` `ui` | 客户端基础设施：RPC 客户端与格式化、共享状态、侧栏/标签装配、设计系统 |
+| `src/client/features/<name>` | 一个功能的组件、hook、helper 与专属样式，目录内自包含 |
+| `src/rpc/schemas/` `src/rpc/declarations/` | 按领域拆分的 zod schema 与 TS 声明；`src/rpc/typert.js` 只做汇总 |
+| `src/shared/` | 两端共用的纯函数，不 import `node:*`，也不 import 宿主或浏览器侧模块 |
+
+这些边界由 `test/meta/structure.test.mjs` 守着（根目录白名单、client/host 互不 import、feature 目录必须含代码）。目录为何这样划分、每个文件原来在哪，见[重构方案](./docs/restructure-plan.md)。
 
 构建、测试、预览与打包命令见 [INSTALL.md](./INSTALL.md) 的「开发命令」一节，只在那里维护一份。
 

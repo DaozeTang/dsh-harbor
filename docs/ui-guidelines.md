@@ -41,6 +41,14 @@ Harbor lives inside DeepSeek Harness. It shares the document, the theme, the fon
 | Progress | `ProgressBar`（`tone="warn"` / `"err"` 表示读数越线）/ `Spinner` |
 | Confirmation | `toast(message, { tone: "error" })` for outcomes, `confirmAction({ message, danger })` for decisions — never `window.confirm` |
 
+## 组件放哪里
+
+- 只服务一个功能的组件放进 `src/client/features/<feature>/`，与它的 hook、纯函数和专属 CSS 同目录；目录内自包含，跨目录 import 视为放错了位置。
+- 两个以上功能共用、且不持有业务状态的组件放进 `src/client/ui/`。设计系统的入口是 `ui/kit.jsx`（barrel）：`kit/primitives.jsx`、`kit/surfaces.jsx`、`kit/overlays.jsx` 各管一层，新增控件加在对应的那一层并从 barrel 导出。
+- 跨功能的状态、订阅与选择器放 `src/client/state/`；标签页装配、侧栏与宿主槽位相关代码放 `src/client/shell/`；RPC 客户端与纯格式化放 `src/client/core/`。
+- 文件名说明它是什么：组件用 `PascalCase.jsx`，hook 用 `use-*.js`，纯函数用 `kebab-case.js`。不再往 `src/client/` 根目录加文件——`test/meta/structure.test.mjs` 只允许那里存在 `index.jsx`。
+- 宿主侧同理：实现进 `src/host/<domain>/`，只有把它们组合成 RPC 方法的 mixin 留在 `src/host/service/`；两端共用的纯函数进 `src/shared/`，且不得 import `node:*`。
+
 ## Icons
 
 `Icon name={...}` reads from `src/client/ui/icons.js`, whose geometry comes from the host's own icon sprite. That file is the list: it carries only glyphs the product actually uses, so its keys are the canonical names and no doc copy can drift from them.

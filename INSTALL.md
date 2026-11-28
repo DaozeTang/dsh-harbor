@@ -70,6 +70,8 @@ npm run pack:release # 构建并打包 release/dsh-harbor-<version>.tgz 与 .zip
 
 CI 在 Ubuntu + Node 22 上执行 `npm ci` → `npm run lint` → `npm run i18n:extract` → `npm run build` → `npm test`，与上面的本地命令一致；工作流文件是仓库里的 `.github/workflows/ci.yml`，发布包里不含它。
 
+构建产物只出现在三个目录，都不进版本库：`lib/`（宿主与浏览器各一个 bundle）、`preview/out/`（离线预览页）、`release/`（打包结果）。源码入口是 `src/index.js` 与 `src/client/index.jsx`，`package.json` 的 `exports` 指向 `lib/`。
+
 预览页的参数（`?capture`、`?bare`）与设计约定见 [docs/ui-guidelines.md](./docs/ui-guidelines.md)。
 
 `npm run install:dev` 是维护者用的本机安装快捷方式：它自己找 `dsh` 可执行文件，再调用 `dsh plugin --profile web add <本目录> -w`（比上面的手动命令多一个 `-w`），不重新构建产物。
