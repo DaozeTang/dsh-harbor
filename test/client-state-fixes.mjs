@@ -30,10 +30,11 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 // async list call may sit between the click and the write.
 {
   const files = await read("src/client/features/files/HarborFiles.jsx");
+  const transfers = await read("src/client/features/files/hooks/useTransfers.js");
   assert.match(files, /const favoritesStorageKey = favoritesKey\(connection\)/, "HarborFiles.jsx: favorites key is synchronous");
   assert.doesNotMatch(files, /setFavoritesStorageKey/, "HarborFiles.jsx: no late favorite-key state");
   assert.match(files, /initialPathRef/, "HarborFiles.jsx: the mount path is captured once");
-  assert.match(files, /if \(!active \|\| !connectionId/, "HarborFiles.jsx: transfer polling is gated by the active view");
+  assert.match(transfers, /if \(!active \|\| !connectionId/, "useTransfers.js: transfer polling is gated by the active view");
 }
 
 // The keep-alive panes only poll while their view is visible.
@@ -77,9 +78,10 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 // pane without delete/rename/mkdir/editor for the rest of the connection.
 {
   const files = await read("src/client/features/files/HarborFiles.jsx");
+  const scpPane = await read("src/client/features/files/scp-pane.jsx");
   assert.match(files, /const retrySftp = \(\) => \{/, "HarborFiles.jsx: the SCP notice offers a retry");
   assert.match(files, /setTransferMode\("sftp"\);\s*setScpReason\(""\);\s*void load\("\/"\);/, "HarborFiles.jsx: the retry leaves SCP mode and reloads");
-  assert.match(files, /onClick=\{retrySftp\}/, "HarborFiles.jsx: the retry is wired to the notice");
+  assert.match(scpPane, /onClick=\{retrySftp\}/, "scp-pane.jsx: the retry is wired to the notice");
 }
 
 
@@ -87,12 +89,14 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 // recoverable in place: each one used to leave the surface permanently broken
 // or silently discard work.
 {
-  const files = await read("src/client/features/files/HarborFiles.jsx");
-  assert.match(files, /const closeEditor = async \(\) => \{/, "HarborFiles.jsx: one guard owns closing the editor");
-  assert.match(files, /if \(editing\.text === editing\.original\) \{ setEditing\(null\); return; \}/, "HarborFiles.jsx: an unchanged buffer closes without a prompt");
-  assert.match(files, /onClick=\{closeEditor\}>/, "HarborFiles.jsx: the 关闭 button asks before discarding edits");
-  assert.match(files, /onClose=\{closeEditor\}/, "HarborFiles.jsx: Escape and the scrim ask too");
-  assert.match(files, /reason: cancelled \? "cancelled" : "failed"/, "HarborFiles.jsx: a failed search leaves the running state");
+  const editor = await read("src/client/features/files/hooks/useEditor.js");
+  const editorPane = await read("src/client/features/files/file-editor-pane.jsx");
+  const search = await read("src/client/features/files/hooks/useFileSearch.js");
+  assert.match(editor, /const closeEditor = async \(\) => \{/, "useEditor.js: one guard owns closing the editor");
+  assert.match(editor, /if \(editing\.text === editing\.original\) \{ setEditing\(null\); return; \}/, "useEditor.js: an unchanged buffer closes without a prompt");
+  assert.match(editorPane, /onClick=\{closeEditor\}>/, "file-editor-pane.jsx: the 关闭 button asks before discarding edits");
+  assert.match(editorPane, /onClose=\{closeEditor\}/, "file-editor-pane.jsx: Escape and the scrim ask too");
+  assert.match(search, /reason: cancelled \? "cancelled" : "failed"/, "useFileSearch.js: a failed search leaves the running state");
 }
 
 // Panes and the tab strips implement the patterns their ARIA roles promise.

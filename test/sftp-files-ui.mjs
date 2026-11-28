@@ -115,23 +115,26 @@ assert.equal(MAX_EDITABLE_BYTES, 10 * 1024 * 1024);
 // ── JSX contract: the panel wires exactly these behaviours ──────────────────
 {
   const files = await readFile(new URL("../src/client/features/files/HarborFiles.jsx", import.meta.url), "utf8");
+  const editorHook = await readFile(new URL("../src/client/features/files/hooks/useEditor.js", import.meta.url), "utf8");
+  const rowMenu = await readFile(new URL("../src/client/features/files/file-row-menu.jsx", import.meta.url), "utf8");
+  const toolbar = await readFile(new URL("../src/client/features/files/file-toolbar.jsx", import.meta.url), "utf8");
   const checks = [
-    [/from "\.\/file-editor\.js"/, "the editor policy module is imported"],
-    [/from "\.\/sftp-favorites\.js"/, "the favorites module is imported"],
-    [/onDragOver=\{.*setDragActive\(true\)/, "dragging over the list highlights the drop zone"],
-    [/onDrop=\{[\s\S]{0,260}upload\(files\)/, "dropping files uploads them through the existing path"],
-    [/visibleEntries = entries === null \? null : filterEntries\(entries, filter\)/, "the filter narrows the rendered listing"],
-    [/openEditor\(entry\)/, "file rows offer the editor"],
-    [/api\.sftpReadFile\(connectionId, path, MAX_EDITABLE_BYTES \+ 1\)/, "the editor reads with the size cap as its bound"],
-    [/encodeEditableText\(editing\.text\)/, "saving writes the editor text as UTF-8 bytes"],
-    [/sftpEditorSave\(connectionId, editing\.path, editing\.originalBytes, replacement\)/, "saving checks the original bytes"],
-    [/toggleFavorite\(favorites, cwd\)/, "the star pins the current directory"],
-    [/writeFavorites\(globalThis\.localStorage, favoritesStorageKey, next\)/, "favorites persist per server key"],
-    [/readFavorites\(globalThis\.localStorage, favoritesStorageKey\)/, "favorites load from the connection's stable key"],
-    [/favorites\.map\(\(path\) => \(/, "pinned paths render as chips"]
+    [/from "\.\/file-editor\.js"/, "the editor policy module is imported", files],
+    [/from "\.\/sftp-favorites\.js"/, "the favorites module is imported", files],
+    [/onDragOver=\{.*setDragActive\(true\)/, "dragging over the list highlights the drop zone", files],
+    [/onDrop=\{[\s\S]{0,260}upload\(files\)/, "dropping files uploads them through the existing path", files],
+    [/visibleEntries = entries === null \? null : filterEntries\(entries, filter\)/, "the filter narrows the rendered listing", files],
+    [/openEditor\(entry\)/, "file rows offer the editor", rowMenu],
+    [/api\.sftpReadFile\(connectionId, path, MAX_EDITABLE_BYTES \+ 1\)/, "the editor reads with the size cap as its bound", editorHook],
+    [/encodeEditableText\(editing\.text\)/, "saving writes the editor text as UTF-8 bytes", editorHook],
+    [/sftpEditorSave\(connectionId, editing\.path, editing\.originalBytes, replacement\)/, "saving checks the original bytes", editorHook],
+    [/toggleFavorite\(favorites, cwd\)/, "the star pins the current directory", files],
+    [/writeFavorites\(globalThis\.localStorage, favoritesStorageKey, next\)/, "favorites persist per server key", files],
+    [/readFavorites\(globalThis\.localStorage, favoritesStorageKey\)/, "favorites load from the connection's stable key", files],
+    [/favorites\.map\(\(path\) => \(/, "pinned paths render as chips", toolbar]
   ];
-  for (const [pattern, label] of checks) {
-    assert.match(files, pattern, `HarborFiles.jsx: ${label}`);
+  for (const [pattern, label, source] of checks) {
+    assert.match(source, pattern, `file browser: ${label}`);
   }
   assert.doesNotMatch(files, /lastSave|restoreBackup|dsh-backup|恢复备份|恢复上一个版本/,
     "HarborFiles.jsx: online editing never creates or offers a backup/version of the remote file");
