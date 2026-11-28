@@ -4,16 +4,24 @@
 // boundary honest — sftp_* moves to the remote root, the native file tools do
 // not. No DOM here, matching the repo's client-suite style.
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 const panel = await read("src/client/shell/HarborPanel.jsx");
-const resources = await read("src/client/features/resources/HarborResources.jsx");
+// The editor moved into its own component, so read the feature directory in a
+// fixed sorted order and assert over the concatenation.
+const resourcesDir = new URL("../src/client/features/resources/", import.meta.url);
+const resources = (await Promise.all(
+  (await readdir(resourcesDir))
+    .filter((name) => name.endsWith(".jsx"))
+    .sort()
+    .map((name) => readFile(new URL(name, resourcesDir), "utf8"))
+)).join("\n");
 const workspaces = await read("src/client/features/resources/ResourceWorkspaces.jsx");
 const api = await read("src/client/core/api.js");
 const descriptors = await read("src/rpc/descriptors.js");
-const typert = await read("src/rpc/typert.js");
+const typert = [await read("src/rpc/typert.js"), await read("src/rpc/typert.generated.js")].join("\n");
 const messages = await read("src/i18n/messages.en.js");
 
 // ── it lives beside 默认项目目录, not as an SSH panel tab ────────────────────

@@ -9,9 +9,17 @@
  * settings column, which this suite cannot boot.
  */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 
-const source = await readFile(new URL("../src/client/features/resources/HarborResources.jsx", import.meta.url), "utf8");
+// Group disclosure lives in the server-list card; read the whole feature
+// directory in a fixed sorted order so the assertion follows the split.
+const resourcesDir = new URL("../src/client/features/resources/", import.meta.url);
+const source = (await Promise.all(
+  (await readdir(resourcesDir))
+    .filter((name) => name.endsWith(".jsx"))
+    .sort()
+    .map((name) => readFile(new URL(name, resourcesDir), "utf8"))
+)).join("\n");
 
 assert.match(
   source,

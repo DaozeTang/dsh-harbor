@@ -4,8 +4,7 @@
 // 2. Importing ~/.ssh/config must carry each IdentityFile's key into the
 //    imported resource's credential slot instead of asking for a manual edit.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -216,10 +215,22 @@ test("an unavailable credential service leaves the profile but reports the key",
   assert.equal(imported.details[0].reason, "key");
 });
 
-test("key file pickers do not filter by extension", () => {
-  const files = ["../src/client/features/resources/HarborResources.jsx", "../src/client/features/connect/connect-dialog.jsx"];
-  for (const file of files) {
-    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+test("key file pickers do not filter by extension", async () => {
+  // The ResourceEditor and SharedCredentialEditor moved out of HarborResources,
+  // so assert over every component in the feature directory (fixed sorted
+  // order) instead of one file.
+  const resourcesDir = new URL("../src/client/features/resources/", import.meta.url);
+  const resources = (await Promise.all(
+    (await readdir(resourcesDir))
+      .filter((name) => name.endsWith(".jsx"))
+      .sort()
+      .map((name) => readFile(new URL(name, resourcesDir), "utf8"))
+  )).join("\n");
+  const files = [
+    ["../src/client/features/resources/*.jsx", resources],
+    ["../src/client/features/connect/connect-dialog.jsx", await readFile(new URL("../src/client/features/connect/connect-dialog.jsx", import.meta.url), "utf8")]
+  ];
+  for (const [file, source] of files) {
     assert.match(source, /type="file"/, file + " still offers a file picker");
     assert.doesNotMatch(
       source,
