@@ -453,12 +453,12 @@ src/
 
 顺序（每个文件一个提交，先拆纯函数再拆组件）：
 
-1. `HarborResources.jsx` → 8 个组件 + `form.js`（第 7 节给出函数边界与行号）。
-2. `HarborFiles.jsx` → `path-utils.js`、`entries.js`、4 个 hook、展示组件；30 个 `useState` 收敛到 5 组。
+1. `HarborResources.jsx` → 7 个组件 + 两张卡片组件 + `form.js` + 2 个页面级 hook（第 7 节给出函数边界与行号）。
+2. `HarborFiles.jsx` → `path-utils.js`、`entries.js`、5 个 hook、11 个展示组件；30 个 `useState` 收敛到 5 组。
 3. `kit.jsx` → `primitives` / `surfaces` / `overlays` + barrel；`kit.jsx` 改为 re-export，避免一次性改 20 个消费方。
 4. `schemas.js` → 13 个领域文件 + barrel。
-5. `safety.js` → `categories.js`（分类与标签）/ `rules.js`（清单归一化）/ `decision.js`（判定与文案）；保留 `safety.js` barrel。
-6. 抽 `connection-fields.jsx`，两处表单复用。
+5. `safety.js` → `categories.js`（分类与标签）/ `canonical.js`（命令规范化词法）/ `rules.js`（解析与清单归一化）/ `decision.js`（判定与文案）；保留 `safety.js` barrel。
+6. 抽 `connection-fields.jsx`，两处表单复用（实际评估后跳过，见第 11 节）。
 
 验收：每步 `npm test` 绿；`HarborResources` 与 `HarborFiles` 单文件降到 400 行以内；预览页交互抽查（文件列表、编辑器、上传任务、资源编辑、导入/备份对话框）。
 
@@ -493,10 +493,10 @@ src/
 | 文件 | 行数 | 拆分 | 目标 |
 | --- | ---: | --- | --- |
 | `HarborResources.jsx` | 1,912 | 按现有顶层函数边界 | `ResourceEditor`（149–453）、`ImportSourceDialog`（454–480）、`OpenSshImportDialog`（481–614）、`ResourceBackupDialog`（615–722）、`SharedCredentialEditor`（723–851）、`HostKeyDialog`（852–886）、`ServerRow`（887–970）、`HarborResources`（971–1912）、`form.js`（`emptyForm` 59–83、`profileToForm` 84–113、`readLegacyProfiles` 114–148） |
-| `HarborFiles.jsx` | 1,482 | 纯函数 → hook → 展示 | `path-utils.js`（48–67）、`entries.js`（68–112）、`hooks/useFileList`、`useFileSearch`、`useEditor`、`useTransfers`（从 113 行起的 30 个 state 分组）、`FileToolbar` / `FileList` / `FileEditorPane` / `TransferTasks` / 4 个对话框 |
+| `HarborFiles.jsx` | 1,482 | 纯函数 → hook → 展示 | `path-utils.js`（48–67）、`entries.js`（68–112）、`hooks/useFileList`、`useFileSearch`、`useEditor`、`useTransfers`、`useDownloads`（从 113 行起的 30 个 state 分组）、`FileToolbar` / `FileList` / `FileSearchPanel` / `FileEditorPane` / `TransferTasks` / `ScpPane` / 3 个对话框 |
 | `kit.jsx` | 854 | 按组件类型 | `primitives`（Button/Input/Field/Switch/Checkbox/Segmented/Tabs）、`surfaces`（Card/Section/Row/Badge/Dot/Pill/Empty/Spinner/Error/Notice/Progress）、`overlays`（Dialog/Confirm/Menu/Toast）、`useCopy`；`kit.jsx` 保留 barrel |
 | `schemas.js` | 1,085 | 按现有领域注释 | `common`（信封、错误、owner）、`auth`、`connections`、`resources`、`credentials`、`workspaces`、`files`、`terminal`、`settings`、`monitor`、`batch`、`logs`、`tunnels`；`schemas.js` barrel |
-| `safety.js` | 697 | 按职责 | `categories.js`、`rules.js`、`decision.js`；`safety.js` barrel |
+| `safety.js` | 697 | 按职责 | `categories.js`、`canonical.js`、`rules.js`、`decision.js`；`safety.js` barrel（词法层单拆，四个文件都在 140–410 行） |
 | `host/service/connections.js` | 951 | 可选 P2b | 按阶段拆 connect / hostkey / keepalive-reconnect / jump；mixin 组合顺序需保持，风险高于其他拆分 |
 | `host/service/exec.js` | 596 | 可选 P2b | exec 通道 / 网络 CLI 回退 / 终端输入闸门 |
 | `host/service/transfers.js` | 579 | 可选 P2b | 目录批传 / 可恢复上传任务 |
@@ -588,3 +588,50 @@ src/
 ```
 
 执行顺序建议：`git mv` 与 import 重写放在同一提交；随后跑 `npm run build && npm test`；确认 `git diff --stat` 中只有 rename 与 import 行，再进入 P2。
+
+---
+
+## 11. 执行记录（2026-11-28）
+
+P0 → P5 已按顺序落地，每个阶段一个提交；每次提交前 `npm run lint`、`npm run build`、`npm test`、`npm run i18n:extract` 均为绿。
+
+| 提交 | 阶段 | 内容 |
+| --- | --- | --- |
+| `64bda61` | P0 | `test/meta/structure.test.mjs` 结构守卫、`scripts/run-tests.mjs` 递归发现、迁移映射脚本 |
+| `c6f4cc5` | P1 | 88 个文件移动、583 条 import 与 123 处路径字符串重写；新增 `src/shared/shell-quote.js` |
+| `d933f22` | P2 | `safety` 拆分为 categories / canonical / rules / decision |
+| `f07e8e2` | P3 | typert 成员由 descriptors 生成；142 条声明拆到 `src/rpc/declarations/` |
+| `2a33feb` | P2 | `kit` 拆成 primitives / surfaces / overlays，barrel 保留 34 个导出 |
+| `a382167` | P2 | `schemas` 拆成 13 个领域模块 + barrel（132 个导出逐一比对一致） |
+| `28a017b` | P2 | `HarborResources` 1,912 → 312 行 + 17 个模块 |
+| `f0b8dfc` | P2 | `HarborFiles` 1,482 → 384 行 + 5 个 hook + 11 个展示组件 |
+| `6281cb7` | P4 | 114 个 spec 迁入镜像目录，路径与 `import.meta.url` 引用同步重算 |
+| `f75aa0b` `1fcd4e0` | P5 | README / INSTALL / ui-guidelines 的目录职责与落点规则 |
+
+### 结果
+
+| 指标 | 重构前 | 重构后 |
+| --- | ---: | ---: |
+| `src/host/` 根级 `.js` | 36 | 0 |
+| `src/client/` 根级文件 | 34 | 1（`index.jsx`） |
+| 超过 500 行的源文件 | 17 | 8 |
+| `test/` 根级 spec | 114 | 0（20 个子目录） |
+| 结构守卫断言 | 0 | 8 |
+| 测试用例 | 368 | 376（原 368 + 8 条结构断言） |
+
+护栏：`test/meta/structure.test.mjs` 现在会拒绝根目录新增文件、client↔host 互相 import、只有 CSS 的 feature 目录、`shared/` 引用 `node:*`、无法解析的相对 import，以及把 spec 放回 `test/` 根目录。
+
+### 与方案的差异
+
+1. **`safety` 拆成 4 个文件**（多一个 `canonical.js`）。命令规范化是一段独立词法逻辑，合在 `rules.js` 里会让该文件超过 400 行；拆开后四个文件是 60 / 140 / 410 / 101 行。
+2. **R10 连接表单未合并**。两处表单控件不同（`Select` vs `SegmentedControl`）、字段标签与校验规则也不同，共享组件需要为几乎每个字段加 variant，反而比重复更难读。真正共用的部分（私钥体检、凭据写入）此前已在 `features/connect/pemkey.js` 与 `features/resources/form.js` 中共享。
+3. **P3 用「生成物 + 派生函数 + 漂移测试」而非纯脚本覆盖**。`scripts/gen-typert.mjs` 写 `src/rpc/typert.generated.js`，`test/rpc-contract.mjs` 把生成物与 `deriveMembers(DESCRIPTORS, prototype)` 逐项比较：手改生成物或改了方法同步性却忘记重新生成都会失败。
+4. **回归批次 spec 仍成组保留**（`test/integration/regressions/`）。按用例归属拆回领域文件需要逐条判断覆盖范围，风险和收益不成比例，留作独立任务。
+5. 新增 `test/shared/`，镜像唯一一个 `src/shared/` spec。
+
+### 留下的后续（不在本次范围）
+
+- `host/service/connections.js`（951）、`exec.js`（596）、`transfers.js`（579）仍按 P2b 处理：拆分要先固定 mixin 组合顺序，风险高于本轮。
+- `HarborPanel.jsx`（657）与 `TerminalDisplaySettings.jsx`（610）未在方案的第 7 节清单内，本轮未动。
+- 回归批次 spec 的按领域拆分。
+- 源码文本断言仍分散在各 spec（拆分时已逐条改读到新的归属文件），尚未集中到单一文件 + 路径映射表。
