@@ -26,7 +26,7 @@ await walk(root);
 const native = sources.filter(([, text]) => /(?:window|globalThis)\.confirm\s*\(/.test(text)).map(([name]) => name);
 assert.deepEqual(native, [], "no surface calls window.confirm; decisions use confirmAction");
 
-const kit = await read("ui/kit.jsx");
+const kit = await read("ui/kit/overlays.jsx");
 assert.match(kit, /export function confirmAction/, "the kit exposes one prompt primitive");
 assert.match(kit, /export function ConfirmHost/, "the kit exposes one mount point");
 assert.match(kit, /width="sm"/, "decisions render as a compact dialog");

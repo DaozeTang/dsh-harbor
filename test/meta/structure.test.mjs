@@ -64,7 +64,7 @@ test("package.json keeps its public export surface", () => {
 
 test("every relative import in src, test and scripts resolves", () => {
   const broken = [];
-  for (const dir of ["src", "test", "scripts"]) {
+  for (const dir of ["src", "test", "scripts", "preview"]) {
     for (const file of walk(path.join(ROOT, dir))) {
       if (file.endsWith(".css")) continue;
       for (const spec of readImports(file)) {

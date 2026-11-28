@@ -11,8 +11,8 @@
  */
 import * as React from "react";
 import { createRoot } from "react-dom/client";
-import { HarborPanel } from "../src/client/HarborPanel.jsx";
-import { harborUiSetActiveConnection, harborUiSetConnections, harborUiSetFeatures } from "../src/client/store.js";
+import { HarborPanel } from "../src/client/shell/HarborPanel.jsx";
+import { harborUiSetActiveConnection, harborUiSetConnections, harborUiSetFeatures } from "../src/client/state/store.js";
 import { installStyles } from "../src/client/ui/styles.js";
 import { createMockApi } from "./mock-api.js";
 

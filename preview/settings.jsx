@@ -4,7 +4,7 @@
  */
 import * as React from "react";
 import { createRoot } from "react-dom/client";
-import { HarborResources } from "../src/client/HarborResources.jsx";
+import { HarborResources } from "../src/client/features/resources/HarborResources.jsx";
 import { installStyles } from "../src/client/ui/styles.js";
 import { createMockApi } from "./mock-api.js";
 

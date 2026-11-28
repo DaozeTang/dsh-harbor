@@ -117,7 +117,7 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
   const snippets = await read("src/client/features/snippets/snippets-view.jsx");
   assert.match(snippets, /if \(!shown\) return undefined;/, "snippets-view.jsx: autofocus waits until the tab is visible");
 
-  const kit = await read("src/client/ui/kit.jsx");
+  const kit = await read("src/client/ui/kit/primitives.jsx");
   assert.match(kit, /const walk = \(from, direction\) => \{/, "kit.jsx: Tabs walks enabled tabs for the keyboard");
   assert.match(kit, /tabIndex=\{item\.value === value \? 0 : -1\}/, "kit.jsx: Tabs has one tab stop");
 }
